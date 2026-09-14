@@ -103,7 +103,7 @@ print("VERIFY core_version", core.core_version())
 bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=20, size=1.0)
 obj = bpy.context.active_object
 obj.location = (0.0, 0.0, 1.0)
-bpy.context.scene.cloth_md_props.collision_enabled = False
+obj.cloth_md.collision_enabled = False   # 設定は布ごとに持つ
 before = obj.data.vertices[0].co.z
 assert bpy.ops.cloth_md.start_sim() == {"FINISHED"}, "開始できない"
 for f in range(1, 13):

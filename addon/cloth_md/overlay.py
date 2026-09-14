@@ -83,8 +83,8 @@ def invalidate_cache(obj=None):
 def _draw():
     context = bpy.context
     scene = context.scene
-    props = getattr(scene, "cloth_md_props", None)
-    if props is None or not props.show_seams:
+    tools = getattr(scene, "cloth_md_tools", None)
+    if tools is None or not tools.show_seams:
         return
 
     objects = [

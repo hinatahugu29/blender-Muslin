@@ -98,11 +98,16 @@ def clear_cache(obj):
         state["cache"] = {state["start_frame"]: state["rest_positions"]}
 
 
-def effective_dt(scene, props):
-    if props.use_scene_fps:
+def effective_dt(scene, _props=None):
+    """1フレームが表す時間(秒)。
+
+    時間の刻みはシーン全体で共通なので、布ごとではなくツール設定から取る。
+    """
+    tools = scene.cloth_md_tools
+    if tools.use_scene_fps:
         fps = scene.render.fps / max(scene.render.fps_base, 1e-6)
         return 1.0 / max(fps, 1e-6)
-    return props.dt
+    return tools.dt
 
 
 def _update_animated_colliders(state, props):
@@ -233,8 +238,7 @@ def _frame_change_handler(scene, depsgraph=None):
     if not _running:
         return
 
-    props = scene.cloth_md_props
-    dt = effective_dt(scene, props)
+    dt = effective_dt(scene)
     frame = scene.frame_current
 
     for key, state in list(_running.items()):
@@ -244,6 +248,8 @@ def _frame_change_handler(scene, depsgraph=None):
             continue
         state["name"] = obj.name  # リネームに追従する
         obj_name = obj.name
+        # 設定は布ごとなので、オブジェクトから取る
+        props = obj.cloth_md
 
         try:
             positions = _simulate_to(state, props, dt, frame)

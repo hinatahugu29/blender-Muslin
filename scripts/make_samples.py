@@ -116,7 +116,7 @@ def sample_drape():
     smooth(cloth)
     mark_as_cloth(cloth)
 
-    props = scene.cloth_md_props
+    props = cloth.cloth_md             # 設定は布ごとに持つ
     props.fabric_preset = 'COTTON'     # 物性はプリセットから
     props.collider_object = sphere
     props.collision_enabled = True
@@ -153,7 +153,7 @@ def sample_flag():
                                         location=(-0.6, 0.0, 0.6))
     bpy.context.active_object.name = "Pole"
 
-    props = scene.cloth_md_props
+    props = cloth.cloth_md
     props.fabric_preset = 'SILK'   # 軽くなめらかになびく
     props.pin_vertex_group = "Pin"
     props.collision_enabled = False
@@ -178,10 +178,10 @@ def sample_sewing():
     print("03_sewing: 2枚を縫って筒にする", flush=True)
     scene = fresh_scene(frame_end=180)
 
-    props = scene.cloth_md_props
-    props.pattern_width = 0.45
-    props.pattern_height = 0.7
-    props.pattern_resolution = 0.025
+    tools = scene.cloth_md_tools   # パターンの寸法はシーンの道具設定
+    tools.pattern_width = 0.45
+    tools.pattern_height = 0.7
+    tools.pattern_resolution = 0.025
 
     # 前身頃と後ろ身頃を向かい合わせに置く
     bpy.ops.cloth_md.add_pattern_piece()
@@ -242,6 +242,7 @@ def sample_sewing():
         bpy.ops.object.mode_set(mode='OBJECT')
     print(f"  シーム {made} 本", flush=True)
 
+    props = piece.cloth_md
     props.fabric_preset = 'COTTON'
     props.pin_vertex_group = "Shoulder"
     props.collision_enabled = False

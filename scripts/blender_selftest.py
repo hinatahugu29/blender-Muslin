@@ -145,7 +145,7 @@ def main():
     section("シミュレーションの実行")
     clear_scene()
     obj = make_grid("Cloth", side=11, z=1.0)
-    props = bpy.context.scene.cloth_md_props
+    props = obj.cloth_md      # 設定は布ごとに持つ
     props.collision_enabled = False
 
     rest = positions_of(obj)
@@ -185,7 +185,7 @@ def main():
     group = obj.vertex_groups.new(name="Pin")
     top = [i for i, v in enumerate(obj.data.vertices) if v.co.y > 0.99]
     group.add(top, 1.0, 'REPLACE')
-    props = bpy.context.scene.cloth_md_props
+    props = obj.cloth_md
     props.pin_vertex_group = "Pin"
     props.collision_enabled = False
 
@@ -216,7 +216,7 @@ def main():
     sphere.modifiers.new(name="Subsurf", type='SUBSURF')
 
     obj = make_grid("Drape", side=15, z=0.8)
-    props = bpy.context.scene.cloth_md_props
+    props = obj.cloth_md
     props.pin_vertex_group = ""
     props.collision_enabled = True
     props.collider_object = sphere
@@ -268,6 +268,41 @@ def main():
     )
 
     # ----------------------------------------------------------------
+    section("布ごとに別の設定を持てる")
+    clear_scene()
+    silk = make_grid("Silk", side=11, z=1.0)
+    silk.location = (0.0, 0.0, 0.0)
+    denim = make_grid("Denim", side=11, z=1.0)
+    denim.location = (2.0, 0.0, 0.0)
+
+    silk.cloth_md.fabric_preset = 'CHIFFON'
+    denim.cloth_md.fabric_preset = 'LEATHER'
+    check(
+        "同じシーンで別々の生地を設定できる",
+        silk.cloth_md.density != denim.cloth_md.density,
+        f"{silk.cloth_md.density:.2f} kg/m2 vs {denim.cloth_md.density:.2f} kg/m2",
+    )
+
+    for obj in (silk, denim):
+        obj.cloth_md.collision_enabled = False
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.cloth_md.start_sim()
+    check("2枚とも同時に走らせられる",
+          sim_state.is_running(silk) and sim_state.is_running(denim))
+
+    advance(20, start=1)
+    infos = (sim_state.get_state(silk)["info"], sim_state.get_state(denim)["info"])
+    check("それぞれの状態が独立している", infos[0] is not infos[1])
+    check(
+        "設定を変えても互いに影響しない",
+        silk.cloth_md.density != denim.cloth_md.density,
+        "開始後も別々のまま",
+    )
+    for obj in (silk, denim):
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.cloth_md.stop_sim()
+
+    # ----------------------------------------------------------------
     section("厚みの自動設定")
     clear_scene()
     obj = make_grid("Fine", side=21, size=1.0)  # エッジ長 0.05
@@ -286,7 +321,7 @@ def main():
 
     obj.scale = (1.0, 1.0, 1.0)
     bpy.context.view_layer.update()
-    props = bpy.context.scene.cloth_md_props
+    props = obj.cloth_md
     props.self_collision_enabled = True
     props.self_collision_thickness = 0.5   # エッジ長 0.05 に対して明らかに過大
     props.collision_enabled = False
@@ -319,7 +354,7 @@ def main():
     obj = make_grid("Baked", side=9, z=1.0)
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, 15
-    props = scene.cloth_md_props
+    props = obj.cloth_md
     props.collision_enabled = False
     props.pin_vertex_group = ""
 
@@ -404,7 +439,7 @@ def main():
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)
-    bpy.context.scene.cloth_md_props.collision_enabled = False
+    obj.cloth_md.collision_enabled = False
     bpy.ops.cloth_md.start_sim()
     advance(5, start=1)
     res = bpy.ops.cloth_md.print_timings()
@@ -452,7 +487,7 @@ def main():
         )
         check(
             f"{path.name}: 厚みの設定が妥当",
-            not mesh_io.check_thickness(cloth, scene.cloth_md_props),
+            not mesh_io.check_thickness(cloth, cloth.cloth_md),
         )
         bpy.ops.cloth_md.stop_sim()
 

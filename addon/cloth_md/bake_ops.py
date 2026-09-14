@@ -80,8 +80,8 @@ class CLOTHMD_OT_bake(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        props = scene.cloth_md_props
         obj = context.active_object
+        props = obj.cloth_md
 
         start = scene.frame_start
         end = scene.frame_end

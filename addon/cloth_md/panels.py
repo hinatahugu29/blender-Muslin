@@ -9,6 +9,24 @@ class _ClothMDPanelBase:
     bl_category = "Cloth MD"
 
 
+class _ClothSettingsPanel(_ClothMDPanelBase):
+    """布ごとの設定を出すパネルの共通部分。
+
+    設定はオブジェクトが持つので、メッシュが選ばれていないときは
+    プロパティを出しようがない。その旨だけ表示する。
+    """
+
+    def draw(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            self.layout.label(text="メッシュを選択してください", icon='INFO')
+            return
+        self.draw_cloth(context, self.layout, obj.cloth_md)
+
+    def draw_cloth(self, context, layout, props):
+        raise NotImplementedError
+
+
 class CLOTHMD_PT_main(_ClothMDPanelBase, bpy.types.Panel):
     bl_label = "Cloth MD"
     bl_idname = "CLOTHMD_PT_main"
@@ -40,19 +58,18 @@ class CLOTHMD_PT_main(_ClothMDPanelBase, bpy.types.Panel):
             col.label(text=f"Contacts: {state.get('last_contacts', 0)}")
 
 
-class CLOTHMD_PT_solver(_ClothMDPanelBase, bpy.types.Panel):
+class CLOTHMD_PT_solver(_ClothSettingsPanel, bpy.types.Panel):
     bl_label = "Solver"
     bl_parent_id = "CLOTHMD_PT_main"
 
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.cloth_md_props
-
+    def draw_cloth(self, context, layout, props):
+        # 1フレームが表す時間はシーン全体で共通
+        tools = context.scene.cloth_md_tools
         col = layout.column(align=True)
-        col.prop(props, "use_scene_fps")
+        col.prop(tools, "use_scene_fps")
         sub = col.column(align=True)
-        sub.enabled = not props.use_scene_fps
-        sub.prop(props, "dt")
+        sub.enabled = not tools.use_scene_fps
+        sub.prop(tools, "dt")
 
         col = layout.column(align=True)
         col.prop(props, "iterations")
@@ -62,13 +79,11 @@ class CLOTHMD_PT_solver(_ClothMDPanelBase, bpy.types.Panel):
         col.prop(props, "use_cache")
 
 
-class CLOTHMD_PT_material(_ClothMDPanelBase, bpy.types.Panel):
+class CLOTHMD_PT_material(_ClothSettingsPanel, bpy.types.Panel):
     bl_label = "Fabric"
     bl_parent_id = "CLOTHMD_PT_main"
 
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.cloth_md_props
+    def draw_cloth(self, context, layout, props):
 
         layout.prop(props, "fabric_preset")
 
@@ -79,26 +94,22 @@ class CLOTHMD_PT_material(_ClothMDPanelBase, bpy.types.Panel):
         col.prop(props, "damping")
 
 
-class CLOTHMD_PT_forces(_ClothMDPanelBase, bpy.types.Panel):
+class CLOTHMD_PT_forces(_ClothSettingsPanel, bpy.types.Panel):
     bl_label = "Forces"
     bl_parent_id = "CLOTHMD_PT_main"
 
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.cloth_md_props
+    def draw_cloth(self, context, layout, props):
 
         col = layout.column(align=True)
         col.prop(props, "gravity")
         col.prop(props, "wind")
 
 
-class CLOTHMD_PT_collision(_ClothMDPanelBase, bpy.types.Panel):
+class CLOTHMD_PT_collision(_ClothSettingsPanel, bpy.types.Panel):
     bl_label = "Collision"
     bl_parent_id = "CLOTHMD_PT_main"
 
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.cloth_md_props
+    def draw_cloth(self, context, layout, props):
 
         layout.operator("cloth_md.fit_thickness", icon='DRIVER_DISTANCE')
 
@@ -128,19 +139,13 @@ class CLOTHMD_PT_collision(_ClothMDPanelBase, bpy.types.Panel):
         sub.prop(props, "friction")
 
 
-class CLOTHMD_PT_pinning(_ClothMDPanelBase, bpy.types.Panel):
+class CLOTHMD_PT_pinning(_ClothSettingsPanel, bpy.types.Panel):
     bl_label = "Pinning"
     bl_parent_id = "CLOTHMD_PT_main"
 
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.cloth_md_props
-        obj = context.active_object
-
-        if obj is not None and obj.type == 'MESH':
-            layout.prop_search(props, "pin_vertex_group", obj, "vertex_groups")
-        else:
-            layout.label(text="メッシュを選択してください", icon='INFO')
+    def draw_cloth(self, context, layout, props):
+        layout.prop_search(props, "pin_vertex_group", context.active_object,
+                           "vertex_groups")
 
 
 class CLOTHMD_UL_seams(bpy.types.UIList):
@@ -160,12 +165,12 @@ class CLOTHMD_PT_pattern(_ClothMDPanelBase, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.cloth_md_props
+        tools = context.scene.cloth_md_tools
 
         col = layout.column(align=True)
-        col.prop(props, "pattern_width")
-        col.prop(props, "pattern_height")
-        col.prop(props, "pattern_resolution")
+        col.prop(tools, "pattern_width")
+        col.prop(tools, "pattern_height")
+        col.prop(tools, "pattern_resolution")
 
         layout.operator("cloth_md.add_pattern_piece", icon='MESH_GRID')
         layout.operator("cloth_md.fill_outline", icon='MOD_TRIANGULATE')
@@ -180,12 +185,13 @@ class CLOTHMD_PT_sewing(_ClothMDPanelBase, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.cloth_md_props
         obj = context.active_object
 
         if obj is None or obj.type != 'MESH':
             layout.label(text="メッシュを選択してください", icon='INFO')
             return
+        props = obj.cloth_md
+        tools = context.scene.cloth_md_tools
 
         layout.label(text="編集モードで2本の縫い代エッジを選択:")
         layout.operator("cloth_md.add_seam", icon='ADD')
@@ -202,7 +208,7 @@ class CLOTHMD_PT_sewing(_ClothMDPanelBase, bpy.types.Panel):
         layout.operator("cloth_md.validate_seams", icon='CHECKMARK')
 
         col = layout.column(align=True)
-        col.prop(props, "show_seams")
+        col.prop(tools, "show_seams")
         col.prop(props, "seam_close_frames")
         col.prop(props, "seam_compliance")
 

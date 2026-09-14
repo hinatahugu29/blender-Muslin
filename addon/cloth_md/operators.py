@@ -217,7 +217,7 @@ class CLOTHMD_OT_fit_thickness(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = context.scene.cloth_md_props
+        props = obj.cloth_md
 
         suggestion = mesh_io.suggest_thickness(obj)
         if suggestion is None:
@@ -250,7 +250,7 @@ class CLOTHMD_OT_start_sim(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = context.scene.cloth_md_props
+        props = obj.cloth_md
 
         try:
             info = sim_state.start_simulation(obj, props)

@@ -39,7 +39,7 @@ class CLOTHMD_OT_add_pattern_piece(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        props = context.scene.cloth_md_props
+        props = context.scene.cloth_md_tools
         width = props.pattern_width
         height = props.pattern_height
         resolution = max(props.pattern_resolution, 1e-4)
@@ -99,7 +99,7 @@ class CLOTHMD_OT_fill_outline(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = context.scene.cloth_md_props
+        props = context.scene.cloth_md_tools
         target_length = max(props.pattern_resolution, 1e-4)
 
         bm = bmesh.from_edit_mesh(obj.data)

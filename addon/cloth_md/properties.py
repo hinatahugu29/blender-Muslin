@@ -61,7 +61,9 @@ class CLOTHMD_PG_seam(bpy.types.PropertyGroup):
     )
 
 
-class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
+class CLOTHMD_PG_tools(bpy.types.PropertyGroup):
+    """シーン単位の設定。ツールと表示に関わるものだけ。"""
+
     # --- 時間 ---
     use_scene_fps: bpy.props.BoolProperty(
         name="Use Scene FPS",
@@ -76,6 +78,48 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
         soft_max=0.1,
     )
 
+    # --- 表示 ---
+    show_seams: bpy.props.BoolProperty(
+        name="Show Seams",
+        description="ビューポートに縫い目を線で表示する",
+        default=True,
+    )
+
+    # --- 表示 ---
+
+    # --- パターン作成の道具 ---
+    pattern_width: bpy.props.FloatProperty(
+        name="Width",
+        description="作成するパターンピースの幅",
+        default=0.5,
+        min=0.001,
+        soft_max=3.0,
+        unit='LENGTH',
+    )
+    pattern_height: bpy.props.FloatProperty(
+        name="Height",
+        description="作成するパターンピースの高さ",
+        default=0.7,
+        min=0.001,
+        soft_max=3.0,
+        unit='LENGTH',
+    )
+    pattern_resolution: bpy.props.FloatProperty(
+        name="Resolution",
+        description="パターンの目標エッジ長。小さいほど細かく、シワが細かくなるが重くなる",
+        default=0.03,
+        min=0.002,
+        soft_max=0.2,
+        unit='LENGTH',
+    )
+
+
+class CLOTHMD_PG_cloth(bpy.types.PropertyGroup):
+    """オブジェクト単位のシミュレーション設定。
+
+    Blender 標準の Cloth モディファイアと同じく、布ごとに持つ。
+    こうしないと1つのシーンで生地を作り分けられない。
+    """
     # --- ソルバー ---
     iterations: bpy.props.IntProperty(
         name="Iterations",
@@ -270,11 +314,6 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
     )
 
     # --- 縫製(M3) ---
-    show_seams: bpy.props.BoolProperty(
-        name="Show Seams",
-        description="ビューポートに縫い目を線で表示する",
-        default=True,
-    )
     seam_close_frames: bpy.props.IntProperty(
         name="Seam Close Frames",
         description="縫い目が完全に閉じるまでのフレーム数(0で即座に閉じる)",
@@ -298,44 +337,23 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
         default=True,
     )
 
-    # --- パターン作成(M3) ---
-    pattern_width: bpy.props.FloatProperty(
-        name="Width",
-        description="作成するパターンピースの幅",
-        default=0.5,
-        min=0.001,
-        soft_max=3.0,
-        unit='LENGTH',
-    )
-    pattern_height: bpy.props.FloatProperty(
-        name="Height",
-        description="作成するパターンピースの高さ",
-        default=0.7,
-        min=0.001,
-        soft_max=3.0,
-        unit='LENGTH',
-    )
-    pattern_resolution: bpy.props.FloatProperty(
-        name="Resolution",
-        description="パターンの目標エッジ長。小さいほど細かく、シワが細かくなるが重くなる",
-        default=0.03,
-        min=0.002,
-        soft_max=0.2,
-        unit='LENGTH',
-    )
 
 
 _classes = (
     CLOTHMD_PG_vertex_index,
     CLOTHMD_PG_seam,
-    CLOTHMD_PG_properties,
+    CLOTHMD_PG_tools,
+    CLOTHMD_PG_cloth,
 )
 
 
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.cloth_md_props = bpy.props.PointerProperty(type=CLOTHMD_PG_properties)
+    # シミュレーション設定は布ごとの性質なのでオブジェクトに持たせる。
+    # シーンに残すのはツールと表示の設定だけ。
+    bpy.types.Object.cloth_md = bpy.props.PointerProperty(type=CLOTHMD_PG_cloth)
+    bpy.types.Scene.cloth_md_tools = bpy.props.PointerProperty(type=CLOTHMD_PG_tools)
     # シームは「どのメッシュに属するか」が本質なのでオブジェクトに持たせる
     bpy.types.Object.cloth_md_seams = bpy.props.CollectionProperty(type=CLOTHMD_PG_seam)
     bpy.types.Object.cloth_md_seam_active = bpy.props.IntProperty(default=0)
@@ -344,6 +362,7 @@ def register():
 def unregister():
     del bpy.types.Object.cloth_md_seam_active
     del bpy.types.Object.cloth_md_seams
-    del bpy.types.Scene.cloth_md_props
+    del bpy.types.Scene.cloth_md_tools
+    del bpy.types.Object.cloth_md
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

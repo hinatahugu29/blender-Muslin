@@ -72,6 +72,18 @@ Windows はロード中の DLL を削除できません。Blender を起動し�
 blender --background --factory-startup --python scripts/make_samples.py
 ```
 
+## 設定はどこにあるか
+
+**シミュレーションの設定は布(オブジェクト)ごとに持ちます。** Blender 標準の
+Cloth モディファイアと同じで、1つのシーンでシルクのブラウスとデニムのパンツを
+同居させられます。N パネルの表示は、選択中のメッシュの設定です。
+
+シーン全体で共通なのは次の3つだけです。
+
+- `Use Scene FPS` / `Time Step` — 1フレームが表す時間
+- `Show Seams` — 縫い線の表示
+- Pattern パネルの `Width` / `Height` / `Resolution` — パターン作成の道具設定
+
 ## 使い方
 
 ### 布を垂らす
