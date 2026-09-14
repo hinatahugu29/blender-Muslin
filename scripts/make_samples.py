@@ -117,12 +117,12 @@ def sample_drape():
     mark_as_cloth(cloth)
 
     props = scene.cloth_md_props
+    props.fabric_preset = 'COTTON'     # 物性はプリセットから
     props.collider_object = sphere
     props.collision_enabled = True
     props.self_collision_enabled = True
-    props.damping = 0.08          # 揺れを落ち着かせて最終形を見せる
-    props.bending_compliance = 1e-4
-    bpy.ops.cloth_md.fit_thickness()   # メッシュの細かさに合わせる
+    props.damping = 0.08               # 揺れを落ち着かせて最終形を見せる
+    bpy.ops.cloth_md.fit_thickness()   # 厚みはメッシュの細かさに合わせる
 
     add_note("Cloth MD: Start Simulation を押して再生",
              location=(0.0, 0.0, 1.45))
@@ -154,14 +154,14 @@ def sample_flag():
     bpy.context.active_object.name = "Pole"
 
     props = scene.cloth_md_props
+    props.fabric_preset = 'SILK'   # 軽くなめらかになびく
     props.pin_vertex_group = "Pin"
     props.collision_enabled = False
     props.self_collision_enabled = False
     props.wind = (0.0, 6.0, 0.0)
-    props.damping = 0.0           # 人工減衰の違いを見せたいので 0
-    props.density = 0.12
-    props.bending_compliance = 2e-3
-    # 揺れを持続させる設定。README の「Substeps は揺れの持ちに効く」の実例
+    props.damping = 0.0            # 人工減衰の違いを見せたいので 0
+    # 揺れを持続させる設定。README の「Substeps は揺れの持ちに効く」の実例。
+    # Substeps 16 は生地ごとの曲げの違いが出る領域でもある
     props.iterations = 2
     props.substeps = 16
 
@@ -242,12 +242,14 @@ def sample_sewing():
         bpy.ops.object.mode_set(mode='OBJECT')
     print(f"  シーム {made} 本", flush=True)
 
+    props.fabric_preset = 'COTTON'
     props.pin_vertex_group = "Shoulder"
     props.collision_enabled = False
     props.self_collision_enabled = True
     props.seam_close_frames = 40
     props.damping = 0.06
     props.show_seams = True
+    props.substeps = 16            # 生地の曲げが効く設定にしておく
     bpy.ops.cloth_md.fit_thickness()
 
     add_note("2枚のピースを左右で縫う / 再生すると 40 フレームかけて閉じる",
