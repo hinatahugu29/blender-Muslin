@@ -413,6 +413,49 @@ def main():
     check("内訳の合計が正", t["total"] > 0.0, f"{t['total']:.3f} ms")
     bpy.ops.cloth_md.stop_sim()
 
+    # ----------------------------------------------------------------
+    section("サンプルシーン")
+    samples = sorted((REPO_ROOT / "samples").glob("*.blend"))
+    if not samples:
+        check("サンプルがある", False, "samples/ が空。make_samples.py を実行してください")
+    for path in samples:
+        bpy.ops.wm.open_mainfile(filepath=str(path))
+        scene = bpy.context.scene
+
+        # サンプル側で布に印をつけてある。頂点数で選ぶと球を拾ってしまう
+        cloth = next(
+            (o for o in scene.objects if o.get("cloth_md_sample", False)), None
+        )
+        if cloth is None:
+            check(f"{path.name}: 布がある", False)
+            continue
+
+        bpy.context.view_layer.objects.active = cloth
+        rest = positions_of(cloth)
+        res = bpy.ops.cloth_md.start_sim()
+        if res != {'FINISHED'}:
+            check(f"{path.name}: 開始できる", False, str(res))
+            continue
+
+        info = sim_state.get_state(cloth)["info"]
+        advance(24, start=scene.frame_start)
+        now = positions_of(cloth)
+        moved = max(
+            max(abs(a[k] - b[k]) for k in range(3)) for a, b in zip(rest, now)
+        )
+        state = sim_state.get_state(cloth)
+        check(
+            f"{path.name}: 開いて再生すると動く",
+            moved > 0.005 and state["sim"].is_finite(),
+            f"{cloth.name} {info['vertices']}頂点 / {moved:.4f} m 移動"
+            f" / 縫い目 {info['seams']}",
+        )
+        check(
+            f"{path.name}: 厚みの設定が妥当",
+            not mesh_io.check_thickness(cloth, scene.cloth_md_props),
+        )
+        bpy.ops.cloth_md.stop_sim()
+
     section("片付け")
     cloth_md.unregister()
     check(

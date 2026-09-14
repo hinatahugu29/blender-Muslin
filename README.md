@@ -43,6 +43,24 @@ Windows はロード中の DLL を削除できません。Blender を起動し�
 動作確認環境: Blender 5.2 LTS / Windows。
 拡張モジュールは abi3-py311 でビルドしているため Python 3.11 以降で動きます。
 
+## サンプル
+
+`samples/` に .blend を3つ用意しています。**開いて `Start Simulation` を押し、
+再生するだけ**で結果が見られます。
+
+| ファイル | 内容 |
+|---|---|
+| `01_drape.blend` | 球に布を被せる。最も基本的な使い方 |
+| `02_flag.blend` | 風になびく旗。Substeps を上げて揺れを持続させた例 |
+| `03_sewing.blend` | 2枚のパターンを左右で縫って筒にする。MD らしさの核心 |
+
+手で作った .blend ではなくスクリプトから生成しているので、
+アドオンが変わったら作り直せます。
+
+```bash
+blender --background --factory-startup --python scripts/make_samples.py
+```
+
 ## 使い方
 
 ### 布を垂らす
