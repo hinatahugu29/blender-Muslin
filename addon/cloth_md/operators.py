@@ -55,22 +55,20 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
         def vid(x, y):
             return y * nx + x
 
-        edges, bending, tris = [], [], []
+        edges, tris = [], []
         for y in range(ny):
             for x in range(nx):
                 if x + 1 < nx:
                     edges.append((vid(x, y), vid(x + 1, y)))
                 if y + 1 < ny:
                     edges.append((vid(x, y), vid(x, y + 1)))
-                if x + 2 < nx:
-                    bending.append((vid(x, y), vid(x + 2, y)))
-                if y + 2 < ny:
-                    bending.append((vid(x, y), vid(x, y + 2)))
                 if x + 1 < nx and y + 1 < ny:
                     tris.append((vid(x, y), vid(x + 1, y), vid(x + 1, y + 1)))
                     tris.append((vid(x, y), vid(x + 1, y + 1), vid(x, y + 1)))
 
         pinned = [vid(x, ny - 1) for x in range(nx)]
+        # 曲げ制約の4頂点は三角形から導く(コア側の関数を使う)
+        bending = cloth_core.bending_quads_from_triangles(tris)
         grid = cloth_core.ClothSim(positions, edges, bending, tris, pinned, 0.2, 0.0, 1e-4)
         for _ in range(180):
             grid.step(1.0 / 60.0, -9.81, 10, 4, 0.01)
@@ -113,7 +111,7 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
                 sphere_tris.append((a, d, c))
                 sphere_tris.append((a, c, b))
 
-        positions2, edges2, bending2, tris2 = [], [], [], []
+        positions2, edges2, tris2 = [], [], []
         n2 = 15
         for y in range(n2):
             for x in range(n2):
@@ -125,14 +123,11 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
                     edges2.append((i, i + 1))
                 if y + 1 < n2:
                     edges2.append((i, i + n2))
-                if x + 2 < n2:
-                    bending2.append((i, i + 2))
-                if y + 2 < n2:
-                    bending2.append((i, i + 2 * n2))
                 if x + 1 < n2 and y + 1 < n2:
                     tris2.append((i, i + 1, i + n2 + 1))
                     tris2.append((i, i + n2 + 1, i + n2))
 
+        bending2 = cloth_core.bending_quads_from_triangles(tris2)
         drape = cloth_core.ClothSim(positions2, edges2, bending2, tris2, [], 0.2, 0.0, 1e-4)
         drape.add_collider(sphere_pos, sphere_tris)
         touched = False

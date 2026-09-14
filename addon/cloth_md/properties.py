@@ -1,6 +1,42 @@
 import bpy
 
 
+# 生地プリセット。
+#
+# `density` は実際の目付(g/m^2)を kg/m^2 に直したもので、根拠のある値。
+#   シフォン 40-60 / シルク 60-90 / コットンシャツ地 110-150
+#   ウール 250-350 / デニム 300-450 / 革 800-1000
+# コンプライアンスは物性の実測値ではなく、XPBD 上で「らしく」見える相対値。
+# 硬い生地ほど bending を小さく、伸びる生地ほど stretch を大きくしてある。
+#
+# bending の値はカンチレバー法(片持ちの短冊がどれだけ垂れるか)で較正した。
+# 有効なのは 0 〜 0.3 の範囲で、それより大きくしても「完全に柔らかい」で頭打ちになる。
+#
+# **曲げ剛性は Substeps に強く依存する**。既定の Substeps 4 では、どの生地も
+# ほとんど同じように垂れる。生地の違いを出したいなら Substeps を 16 以上にすること
+# (実測は README「パラメータの決め方」を参照)。
+FABRIC_PRESETS = {
+    'CHIFFON': dict(density=0.05, stretch=0.0, bending=0.3, damping=0.02),
+    'SILK': dict(density=0.08, stretch=0.0, bending=0.1, damping=0.03),
+    'KNIT': dict(density=0.18, stretch=5e-4, bending=5e-2, damping=0.05),
+    'COTTON': dict(density=0.15, stretch=0.0, bending=2e-2, damping=0.05),
+    'WOOL': dict(density=0.30, stretch=1e-5, bending=5e-3, damping=0.08),
+    'DENIM': dict(density=0.40, stretch=0.0, bending=1e-3, damping=0.08),
+    'LEATHER': dict(density=0.90, stretch=0.0, bending=0.0, damping=0.12),
+}
+
+
+def _apply_fabric_preset(self, context):
+    """プリセットが選ばれたら物性値を流し込む。"""
+    values = FABRIC_PRESETS.get(self.fabric_preset)
+    if values is None:      # 'CUSTOM' は何もしない
+        return
+    self.density = values["density"]
+    self.stretch_compliance = values["stretch"]
+    self.bending_compliance = values["bending"]
+    self.damping = values["damping"]
+
+
 class CLOTHMD_PG_vertex_index(bpy.types.PropertyGroup):
     """シームのチェーンを構成する頂点インデックス(順序を保持する)。"""
 
@@ -105,6 +141,25 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
     )
 
     # --- 生地物性 ---
+    fabric_preset: bpy.props.EnumProperty(
+        name="Fabric",
+        description=(
+            "生地のプリセット。選ぶと Density / Stretch / Bending / Damping が"
+            "まとめて設定される"
+        ),
+        items=[
+            ('CUSTOM', "Custom", "手動で設定する(選んでも値は変わりません)"),
+            ('CHIFFON', "Chiffon", "シフォン: 非常に軽く柔らかい (50 g/m^2)"),
+            ('SILK', "Silk", "シルク: 軽くなめらかに落ちる (80 g/m^2)"),
+            ('COTTON', "Cotton", "コットン: 標準的なシャツ地 (150 g/m^2)"),
+            ('KNIT', "Knit", "ニット: 伸びる編み地 (180 g/m^2)"),
+            ('WOOL', "Wool", "ウール: 厚みがありゆったり落ちる (300 g/m^2)"),
+            ('DENIM', "Denim", "デニム: 重く硬い (400 g/m^2)"),
+            ('LEATHER', "Leather", "革: 非常に重く曲がりにくい (900 g/m^2)"),
+        ],
+        default='CUSTOM',
+        update=_apply_fabric_preset,
+    )
     density: bpy.props.FloatProperty(
         name="Density",
         description="面密度 kg/m^2。頂点質量を面積から算出するのに使う",
@@ -122,11 +177,15 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
     )
     bending_compliance: bpy.props.FloatProperty(
         name="Bending Compliance",
-        description="曲げ制約のコンプライアンス(大きいほど柔らかく曲がりやすい)",
-        default=0.0001,
+        description=(
+            "曲げにくさ(0 で最も硬い。大きいほど柔らかい)。"
+            "効くのは 0〜0.3 の範囲。"
+            "曲げ剛性は Substeps に強く依存するので、硬い生地は Substeps を上げること"
+        ),
+        default=0.02,
         min=0.0,
-        soft_max=0.1,
-        precision=6,
+        soft_max=0.5,
+        precision=5,
     )
 
     # --- 衝突(暫定: 床のみ。本格的なコリジョンは M2) ---

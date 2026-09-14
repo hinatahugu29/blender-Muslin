@@ -19,10 +19,10 @@ from .transform import transform as _transform
 # ---------------------------------------------------------------- トポロジ抽出
 
 def _collect_topology(mesh):
-    """メッシュから (edges, bending_pairs, triangles) を取り出す。
+    """メッシュから (edges, bending_quads, triangles) を取り出す。
 
-    bending_pairs は Provot 方式: 各エッジに隣接する2面の対角頂点同士を
-    距離制約で結ぶことで曲げ剛性を表現する。
+    bending_quads は曲げ制約の4頂点で、`(エッジの端点2つ, 両側の対角頂点2つ)`。
+    2つの面に共有されるエッジだけが対象(境界のエッジは曲げようがない)。
     """
     bm = bmesh.new()
     bm.from_mesh(mesh)
@@ -32,11 +32,12 @@ def _collect_topology(mesh):
 
     edges = [(e.verts[0].index, e.verts[1].index) for e in bm.edges]
 
-    bending_pairs = []
+    bending_quads = []
     for edge in bm.edges:
         if len(edge.link_faces) != 2:
             continue
-        edge_verts = {v.index for v in edge.verts}
+        a, b = edge.verts[0].index, edge.verts[1].index
+        edge_verts = {a, b}
         opposite = []
         for face in edge.link_faces:
             for v in face.verts:
@@ -44,7 +45,7 @@ def _collect_topology(mesh):
                     opposite.append(v.index)
                     break
         if len(opposite) == 2 and opposite[0] != opposite[1]:
-            bending_pairs.append((opposite[0], opposite[1]))
+            bending_quads.append((a, b, opposite[0], opposite[1]))
 
     triangles = []
     for face in bm.faces:
@@ -54,7 +55,7 @@ def _collect_topology(mesh):
             triangles.append((idx[0], idx[i], idx[i + 1]))
 
     bm.free()
-    return edges, bending_pairs, triangles
+    return edges, bending_quads, triangles
 
 
 def get_world_positions(obj):
@@ -325,13 +326,13 @@ def build_cloth_sim(obj, props):
     mesh = obj.data
     warnings = validate_mesh(obj) + check_thickness(obj, props)
     positions = get_world_positions(obj)
-    edges, bending_pairs, triangles = _collect_topology(mesh)
+    edges, bending_quads, triangles = _collect_topology(mesh)
     pinned = find_vertex_group_indices(obj, props.pin_vertex_group)
 
     sim = cloth_core.ClothSim(
         positions,
         edges,
-        bending_pairs,
+        bending_quads,
         triangles,
         pinned,
         props.density,
@@ -358,7 +359,7 @@ def build_cloth_sim(obj, props):
     info = {
         "vertices": len(mesh.vertices),
         "edges": len(edges),
-        "bending": len(bending_pairs),
+        "bending": len(bending_quads),
         "triangles": len(triangles),
         "pinned": len(pinned),
         "seams": len(seam_pairs),

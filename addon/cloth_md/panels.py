@@ -70,6 +70,8 @@ class CLOTHMD_PT_material(_ClothMDPanelBase, bpy.types.Panel):
         layout = self.layout
         props = context.scene.cloth_md_props
 
+        layout.prop(props, "fabric_preset")
+
         col = layout.column(align=True)
         col.prop(props, "density")
         col.prop(props, "stretch_compliance")

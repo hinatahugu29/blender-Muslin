@@ -7,6 +7,7 @@
 //! - XPBD の λ(ラグランジュ乗数)はサブステップごとにリセットし、反復内で累積する
 //!   (これにより compliance が実際の物性値として反復回数に依存しなくなる)。
 
+use crate::bending::{solve_bending, BendingConstraint};
 use crate::collision::{SpatialHash, TriangleBvh};
 use crate::math::Vec3;
 
@@ -175,7 +176,9 @@ pub struct ClothSim {
     pub vertex_area: Vec<f64>,
 
     pub stretch_constraints: Vec<DistanceConstraint>,
-    pub bending_constraints: Vec<DistanceConstraint>,
+    /// 二面角による曲げ制約。距離制約では曲げ剛性を制御できないため
+    /// (詳しくは `bending` モジュールを参照)、角度で直接扱う。
+    pub bending_constraints: Vec<BendingConstraint>,
     /// 縫製制約(M3)。`seam_closure` によって rest_length が変化する。
     pub seam_constraints: Vec<DistanceConstraint>,
 
@@ -219,7 +222,7 @@ impl ClothSim {
     pub fn new(
         positions: Vec<Vec3>,
         edges: &[(usize, usize)],
-        bending_pairs: &[(usize, usize)],
+        bending_quads: &[(usize, usize, usize, usize)],
         triangles: &[(usize, usize, usize)],
         pinned: &[usize],
         density: f64,
@@ -243,7 +246,16 @@ impl ClothSim {
         };
 
         let stretch_constraints = build(edges, stretch_compliance);
-        let bending_constraints = build(bending_pairs, bending_compliance);
+        let bending_constraints: Vec<BendingConstraint> = bending_quads
+            .iter()
+            .filter_map(|&(a, b, c, d)| {
+                let n = positions.len();
+                if a >= n || b >= n || c >= n || d >= n {
+                    return None;
+                }
+                BendingConstraint::new(&positions, a, b, c, d, bending_compliance)
+            })
+            .collect();
 
         // ピン留め前の逆質量(ピンの解除時に元の質量分布へ戻せるようにする)
         let base_inv_mass: Vec<f64> = inv_mass
@@ -261,8 +273,14 @@ impl ClothSim {
             .collect();
 
         let mut constrained_pairs = crate::hashing::FastSet::default();
-        for c in stretch_constraints.iter().chain(bending_constraints.iter()) {
+        for c in stretch_constraints.iter() {
             let (a, b) = (c.i0.min(c.i1) as u32, c.i0.max(c.i1) as u32);
+            constrained_pairs.insert((a, b));
+        }
+        // 曲げ制約でつながる対角の頂点対も自己衝突から除く。
+        // 距離制約だった頃と同じ扱い(近すぎる隣どうしが押し合うのを防ぐ)。
+        for c in bending_constraints.iter() {
+            let (a, b) = (c.p3.min(c.p4) as u32, c.p3.max(c.p4) as u32);
             constrained_pairs.insert((a, b));
         }
 
@@ -516,7 +534,7 @@ impl ClothSim {
             self.timings.stretch += ms_since(t);
 
             let t = std::time::Instant::now();
-            solve_distance(
+            solve_bending(
                 &mut self.positions,
                 &self.inv_mass,
                 &self.bending_constraints,
@@ -953,6 +971,66 @@ fn solve_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 曲げのコンプライアンスが剛性として機能するかを、カンチレバー法で確かめる。
+    ///
+    /// 短冊の片端を固定して水平に突き出し、自重でどれだけ垂れるかを見る。
+    /// 繊維の分野で曲げ剛性を測る標準的な方法。
+    ///
+    /// **solver の設定について**: 曲げ剛性は PBD の反復数に依存する。
+    /// 同じ compliance=0(完全剛体)でも、突き出し長に対する垂れ比は
+    ///   iter 20 / subs 8  -> 0.94   (ほぼ垂れる)
+    ///   iter 200 / subs 8 -> 0.76
+    ///   iter 20 / subs 32 -> 0.65
+    ///   iter 200 / subs 32 -> 0.11  (ほぼ真っ直ぐ)
+    /// と変わる。硬い生地を表現したいなら Substeps を上げる必要がある。
+    /// ここでは差が見える 20 x 32 で確かめる。
+    #[test]
+    fn bending_compliance_controls_cantilever_droop() {
+        let (nx, ny, edge) = (51usize, 9usize, 0.005);
+        let clamp_cols = 7usize;
+        let overhang = (nx - clamp_cols) as f64 * edge;
+
+        let droop = |compliance: f64| -> Option<f64> {
+            let (positions, edges, quads, tris, _) = build_grid(nx, ny, edge);
+            let idx = |x: usize, y: usize| y * nx + x;
+            let pinned: Vec<usize> = (0..ny)
+                .flat_map(|y| (0..clamp_cols).map(move |x| idx(x, y)))
+                .collect();
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.15, 0.0, compliance);
+            let params = SimParams {
+                iterations: 20,
+                substeps: 32,
+                damping: 0.6,
+                collision_enabled: false,
+                ..Default::default()
+            };
+            for _ in 0..400 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            if !sim.is_finite() || sim.average_stretch_error() > 0.01 {
+                return None;
+            }
+            let tip: f64 =
+                (0..ny).map(|y| sim.positions[idx(nx - 1, y)].z).sum::<f64>() / ny as f64;
+            Some(-tip / overhang)
+        };
+
+        let stiff = droop(0.0).expect("硬い設定で発散した");
+        let medium = droop(1e-2).expect("中間の設定で発散した");
+        let soft = droop(10.0).expect("柔らかい設定で発散した");
+
+        assert!(
+            stiff < 0.8,
+            "完全剛体なのに垂れすぎ: 突き出し長の {:.0}%",
+            stiff * 100.0
+        );
+        assert!(
+            soft > stiff + 0.15 && medium > stiff,
+            "compliance が曲げ剛性として効いていない: 硬い {stiff:.3} / 中 {medium:.3} / 柔 {soft:.3}"
+        );
+    }
 
     /// 制約なしの単一頂点は自由落下する: z = -0.5*g*t^2
     #[test]
@@ -1471,6 +1549,10 @@ mod tests {
     }
 
     /// テスト用の平面グリッド生成。上端の行をピン留め対象として返す。
+    /// テスト用の平面グリッド生成。
+    ///
+    /// 曲げ制約は三角形から導く(`bending::quads_from_triangles`)。
+    /// 戻り値: (頂点, 伸び制約, 曲げの4頂点, 三角形, 上端の行)
     fn build_grid(
         nx: usize,
         ny: usize,
@@ -1478,7 +1560,7 @@ mod tests {
     ) -> (
         Vec<Vec3>,
         Vec<(usize, usize)>,
-        Vec<(usize, usize)>,
+        Vec<(usize, usize, usize, usize)>,
         Vec<(usize, usize, usize)>,
         Vec<usize>,
     ) {
@@ -1491,7 +1573,6 @@ mod tests {
         }
 
         let mut edges = Vec::new();
-        let mut bending = Vec::new();
         let mut tris = Vec::new();
         for y in 0..ny {
             for x in 0..nx {
@@ -1501,12 +1582,7 @@ mod tests {
                 if y + 1 < ny {
                     edges.push((idx(x, y), idx(x, y + 1)));
                 }
-                if x + 2 < nx {
-                    bending.push((idx(x, y), idx(x + 2, y)));
-                }
-                if y + 2 < ny {
-                    bending.push((idx(x, y), idx(x, y + 2)));
-                }
+
                 if x + 1 < nx && y + 1 < ny {
                     tris.push((idx(x, y), idx(x + 1, y), idx(x + 1, y + 1)));
                     tris.push((idx(x, y), idx(x + 1, y + 1), idx(x, y + 1)));
@@ -1514,6 +1590,7 @@ mod tests {
             }
         }
 
+        let bending = crate::bending::quads_from_triangles(&tris);
         let pinned = (0..nx).map(|x| idx(x, ny - 1)).collect();
         (positions, edges, bending, tris, pinned)
     }

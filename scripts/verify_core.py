@@ -45,7 +45,10 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # ----------------------------------------------------------------- ヘルパー
 
 def build_grid(nx: int, ny: int, spacing: float = 0.1):
-    """平面グリッドの (positions, edges, bending, triangles, top_row) を返す。"""
+    """平面グリッドの (positions, edges, bending_quads, triangles, top_row) を返す。
+
+    曲げ制約の4頂点は三角形から導く(コア側の関数を使う)。
+    """
     def vid(x, y):
         return y * nx + x
 
@@ -54,22 +57,19 @@ def build_grid(nx: int, ny: int, spacing: float = 0.1):
         for x in range(nx):
             positions.extend((x * spacing, y * spacing, 0.0))
 
-    edges, bending, tris = [], [], []
+    edges, tris = [], []
     for y in range(ny):
         for x in range(nx):
             if x + 1 < nx:
                 edges.append((vid(x, y), vid(x + 1, y)))
             if y + 1 < ny:
                 edges.append((vid(x, y), vid(x, y + 1)))
-            if x + 2 < nx:
-                bending.append((vid(x, y), vid(x + 2, y)))
-            if y + 2 < ny:
-                bending.append((vid(x, y), vid(x, y + 2)))
             if x + 1 < nx and y + 1 < ny:
                 tris.append((vid(x, y), vid(x + 1, y), vid(x + 1, y + 1)))
                 tris.append((vid(x, y), vid(x + 1, y + 1), vid(x, y + 1)))
 
     top_row = [vid(x, ny - 1) for x in range(nx)]
+    bending = cloth_core.bending_quads_from_triangles(tris)
     return positions, edges, bending, tris, top_row
 
 
@@ -439,6 +439,48 @@ def test_timings():
           f"内訳 {parts:.4f} ms / 全体 {t['total']:.4f} ms")
 
 
+def test_bending_stiffness():
+    """曲げのコンプライアンスが剛性として効くことを、カンチレバー法で確認する
+
+    短冊の片端を固定して水平に突き出し、自重でどれだけ垂れるかを測る。
+    曲げ剛性は Substeps に強く依存するので、差が見える設定で試す。
+    """
+    nx, ny, edge, clamp = 41, 9, 0.005, 7
+    positions, edges, _bend, tris, _top = build_grid(nx, ny, edge)
+    quads = cloth_core.bending_quads_from_triangles(tris)
+    check("曲げの4頂点を導ける", len(quads) > 0, f"{len(quads)} 組")
+
+    def vid(x, y):
+        return y * nx + x
+
+    pinned = [vid(x, y) for y in range(ny) for x in range(clamp)]
+    tip = [vid(nx - 1, y) for y in range(ny)]
+    overhang = (nx - clamp) * edge
+
+    def droop(compliance):
+        sim = cloth_core.ClothSim(
+            list(positions), edges, quads, tris, pinned, 0.15, 0.0, compliance
+        )
+        for _ in range(300):
+            sim.step(1.0 / 60.0, -9.81, 20, 32, 0.6, (0.0, 0.0, 0.0),
+                     False, 0.0, 0.3, False, 0.0, 0.3, False, 0.0, 2, False)
+        if not sim.is_finite():
+            return None
+        p = sim.get_positions()
+        return -sum(p[i * 3 + 2] for i in tip) / len(tip) / overhang
+
+    stiff = droop(0.0)
+    soft = droop(0.3)
+    check("硬い設定で発散しない", stiff is not None)
+    check("柔らかい設定で発散しない", soft is not None)
+    if stiff is None or soft is None:
+        return
+
+    check("完全剛体なら垂れきらない", stiff < 0.85, f"突き出し長の {stiff * 100:.0f}%")
+    check("compliance が剛性として効く", soft > stiff + 0.1,
+          f"硬い {stiff:.3f} / 柔らかい {soft:.3f}")
+
+
 def test_seam_logic():
     """シームのチェーン抽出とペアリング(bpy 非依存の純粋ロジック)を検証する"""
     import seams  # addon/cloth_md/seams.py
@@ -680,6 +722,7 @@ def main():
     test_error_handling()
     test_post_collision_correction()
     test_broadphase_cache()
+    test_bending_stiffness()
     test_timings()
     test_seam_logic()
     test_cache_io()

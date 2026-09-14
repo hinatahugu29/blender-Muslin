@@ -3,6 +3,7 @@
 //! 物理本体は [`sim`] にあり pyo3 に依存しない。このファイルは Python 束縛のみ。
 //! `cargo test --no-default-features` で Python 抜きにコアだけを検証できる。
 
+pub mod bending;
 pub mod collision;
 pub mod hashing;
 pub mod math;
@@ -31,6 +32,24 @@ mod bindings {
     #[pyfunction]
     fn thread_count() -> usize {
         rayon::current_num_threads()
+    }
+
+    /// 三角形の集合から曲げ制約の4頂点を導く。
+    ///
+    /// ちょうど2つの三角形が共有する辺ごとに (辺の2点, 両側の対角頂点2点) を返す。
+    /// Blender のメッシュから直接辺を取れないとき(検証ハーネス等)に使う。
+    #[pyfunction]
+    fn bending_quads_from_triangles(
+        triangles: Vec<(u32, u32, u32)>,
+    ) -> Vec<(u32, u32, u32, u32)> {
+        let tris: Vec<(usize, usize, usize)> = triangles
+            .iter()
+            .map(|&(a, b, c)| (a as usize, b as usize, c as usize))
+            .collect();
+        crate::bending::quads_from_triangles(&tris)
+            .into_iter()
+            .map(|(a, b, c, d)| (a as u32, b as u32, c as u32, d as u32))
+            .collect()
     }
 
     /// ビルドされたコアのバージョン。アドオン側で .pyd の更新漏れを検出するのに使う。
@@ -75,7 +94,7 @@ mod bindings {
     impl ClothSim {
         /// positions: [x0,y0,z0, ...] のフラット配列(ワールド座標)
         /// edges: 伸び制約の頂点インデックスペア
-        /// bending_pairs: 曲げ制約のペア(隣接面の対角頂点同士)
+        /// bending_quads: 曲げ制約の4頂点 (共有辺の2点, その両側の対角頂点2点)
         /// triangles: 三角形インデックス。質量を面積×密度から算出するのに使う
         /// pinned: 固定頂点インデックス
         /// density: 面密度 kg/m^2。0 以下または triangles が空なら一様質量
@@ -83,7 +102,7 @@ mod bindings {
         #[pyo3(signature = (
             positions,
             edges,
-            bending_pairs,
+            bending_quads,
             triangles = vec![],
             pinned = vec![],
             density = 0.2,
@@ -94,7 +113,7 @@ mod bindings {
         fn new(
             positions: Vec<f64>,
             edges: Vec<(u32, u32)>,
-            bending_pairs: Vec<(u32, u32)>,
+            bending_quads: Vec<(u32, u32, u32, u32)>,
             triangles: Vec<(u32, u32, u32)>,
             pinned: Vec<u32>,
             density: f64,
@@ -107,12 +126,16 @@ mod bindings {
                 .map(|&(a, b, c)| (a as usize, b as usize, c as usize))
                 .collect();
             let pinned: Vec<usize> = pinned.iter().map(|&i| i as usize).collect();
+            let quads: Vec<(usize, usize, usize, usize)> = bending_quads
+                .iter()
+                .map(|&(a, b, c, d)| (a as usize, b as usize, c as usize, d as usize))
+                .collect();
 
             Ok(ClothSim {
                 inner: CoreSim::new(
                     pos,
                     &as_usize_pairs(&edges),
-                    &as_usize_pairs(&bending_pairs),
+                    &quads,
                     &tris,
                     &pinned,
                     density,
@@ -310,6 +333,7 @@ mod bindings {
         m.add_function(wrap_pyfunction!(add, m)?)?;
         m.add_function(wrap_pyfunction!(core_version, m)?)?;
         m.add_function(wrap_pyfunction!(thread_count, m)?)?;
+        m.add_function(wrap_pyfunction!(bending_quads_from_triangles, m)?)?;
         m.add_class::<ClothSim>()?;
         Ok(())
     }
