@@ -103,7 +103,7 @@ def effective_dt(scene, _props=None):
 
     時間の刻みはシーン全体で共通なので、布ごとではなくツール設定から取る。
     """
-    tools = scene.cloth_md_tools
+    tools = scene.muslin_tools
     if tools.use_scene_fps:
         fps = scene.render.fps / max(scene.render.fps_base, 1e-6)
         return 1.0 / max(fps, 1e-6)
@@ -125,7 +125,7 @@ def _update_animated_colliders(state, props):
             state["sim"].update_collider(index, positions)
         except ValueError as exc:
             # トポロジが変わった場合は追従できない(頂点数が変わるモディファイア等)
-            print(f"[cloth_md] コライダー '{name}' を更新できません: {exc}")
+            print(f"[muslin] コライダー '{name}' を更新できません: {exc}")
 
 
 def advance_one_frame(state, props, dt, target_frame):
@@ -222,13 +222,13 @@ def _playback_baked(scene):
     from . import bake_ops  # 循環 import を避けるため関数内で読み込む
 
     for obj in scene.objects:
-        if obj.type != 'MESH' or not obj.get("cloth_md_baked", False):
+        if obj.type != 'MESH' or not obj.get("muslin_baked", False):
             continue
         if obj_key(obj) in _running:
             continue  # ライブシミュレーション中はそちらを優先する
         if not bake_ops.apply_baked_frame(obj, scene.frame_current):
             # 読めないキャッシュを毎フレーム叩き続けないよう、ベイク状態を解除する
-            obj["cloth_md_baked"] = False
+            obj["muslin_baked"] = False
 
 
 @persistent
@@ -249,7 +249,7 @@ def _frame_change_handler(scene, depsgraph=None):
         state["name"] = obj.name  # リネームに追従する
         obj_name = obj.name
         # 設定は布ごとなので、オブジェクトから取る
-        props = obj.cloth_md
+        props = obj.muslin
 
         try:
             positions = _simulate_to(state, props, dt, frame)
@@ -257,10 +257,10 @@ def _frame_change_handler(scene, depsgraph=None):
             state["last_error"] = state["sim"].average_stretch_error()
             state["last_contacts"] = state["sim"].last_collision_count
             if not state["sim"].is_finite():
-                print(f"[cloth_md] '{obj_name}' のシミュレーションが発散しました。停止します。")
+                print(f"[muslin] '{obj_name}' のシミュレーションが発散しました。停止します。")
                 _running.pop(key, None)
         except Exception as exc:  # Rust 側の例外もここで受け止めて Blender を落とさない
-            print(f"[cloth_md] '{obj_name}' の更新中にエラー: {exc}")
+            print(f"[muslin] '{obj_name}' の更新中にエラー: {exc}")
             _running.pop(key, None)
 
 

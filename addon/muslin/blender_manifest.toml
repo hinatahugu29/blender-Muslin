@@ -4,10 +4,10 @@
 # 配布物は scripts/package_extension.ps1 で作る。
 schema_version = "1.0.0"
 
-id = "cloth_md"
+id = "muslin"
 version = "0.5.0"
-name = "Cloth MD"
-tagline = "Marvelous Designer のようにパターンを縫い合わせる布シミュレーション"
+name = "Muslin"
+tagline = "パターンを作って縫い合わせる衣服向け布シミュレーション"
 maintainer = "hinatahugu29"
 type = "add-on"
 
@@ -15,8 +15,8 @@ tags = ["Physics", "Modeling"]
 
 blender_version_min = "4.2.0"
 
-# TODO: 配布するライセンスを決めること。Blender アドオンは bpy との関係から
-# GPL 互換であることが求められるため、暫定で GPL-3.0-or-later にしてある。
+# Blender アドオンは bpy との関係から GPL 互換であることが求められる。
+# 全文はリポジトリ直下の LICENSE(GNU の正本)を参照。
 license = ["SPDX:GPL-3.0-or-later"]
 
 # Rust 製のネイティブモジュール。abi3-py311 でビルドしているので

@@ -3,13 +3,13 @@ import bpy
 from . import sim_state
 
 
-class _ClothMDPanelBase:
+class _MuslinPanelBase:
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Cloth MD"
+    bl_category = "Muslin"
 
 
-class _ClothSettingsPanel(_ClothMDPanelBase):
+class _MuslinSettingsPanel(_MuslinPanelBase):
     """布ごとの設定を出すパネルの共通部分。
 
     設定はオブジェクトが持つので、メッシュが選ばれていないときは
@@ -21,15 +21,15 @@ class _ClothSettingsPanel(_ClothMDPanelBase):
         if obj is None or obj.type != 'MESH':
             self.layout.label(text="メッシュを選択してください", icon='INFO')
             return
-        self.draw_cloth(context, self.layout, obj.cloth_md)
+        self.draw_cloth(context, self.layout, obj.muslin)
 
     def draw_cloth(self, context, layout, props):
         raise NotImplementedError
 
 
-class CLOTHMD_PT_main(_ClothMDPanelBase, bpy.types.Panel):
-    bl_label = "Cloth MD"
-    bl_idname = "CLOTHMD_PT_main"
+class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
+    bl_label = "Muslin"
+    bl_idname = "MUSLIN_PT_main"
 
     def draw(self, context):
         layout = self.layout
@@ -37,9 +37,9 @@ class CLOTHMD_PT_main(_ClothMDPanelBase, bpy.types.Panel):
 
         row = layout.row(align=True)
         if obj is not None and sim_state.is_running(obj):
-            row.operator("cloth_md.stop_sim", icon='PAUSE')
+            row.operator("muslin.stop_sim", icon='PAUSE')
         else:
-            row.operator("cloth_md.start_sim", icon='PLAY')
+            row.operator("muslin.start_sim", icon='PLAY')
 
         state = sim_state.get_state(obj)
         if state is not None:
@@ -58,13 +58,13 @@ class CLOTHMD_PT_main(_ClothMDPanelBase, bpy.types.Panel):
             col.label(text=f"Contacts: {state.get('last_contacts', 0)}")
 
 
-class CLOTHMD_PT_solver(_ClothSettingsPanel, bpy.types.Panel):
+class MUSLIN_PT_solver(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Solver"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
         # 1フレームが表す時間はシーン全体で共通
-        tools = context.scene.cloth_md_tools
+        tools = context.scene.muslin_tools
         col = layout.column(align=True)
         col.prop(tools, "use_scene_fps")
         sub = col.column(align=True)
@@ -79,9 +79,9 @@ class CLOTHMD_PT_solver(_ClothSettingsPanel, bpy.types.Panel):
         col.prop(props, "use_cache")
 
 
-class CLOTHMD_PT_material(_ClothSettingsPanel, bpy.types.Panel):
+class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Fabric"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
 
@@ -94,9 +94,9 @@ class CLOTHMD_PT_material(_ClothSettingsPanel, bpy.types.Panel):
         col.prop(props, "damping")
 
 
-class CLOTHMD_PT_forces(_ClothSettingsPanel, bpy.types.Panel):
+class MUSLIN_PT_forces(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Forces"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
 
@@ -105,13 +105,13 @@ class CLOTHMD_PT_forces(_ClothSettingsPanel, bpy.types.Panel):
         col.prop(props, "wind")
 
 
-class CLOTHMD_PT_collision(_ClothSettingsPanel, bpy.types.Panel):
+class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Collision"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
 
-        layout.operator("cloth_md.fit_thickness", icon='DRIVER_DISTANCE')
+        layout.operator("muslin.fit_thickness", icon='DRIVER_DISTANCE')
 
         col = layout.column(align=True)
         col.prop(props, "collision_enabled")
@@ -139,16 +139,16 @@ class CLOTHMD_PT_collision(_ClothSettingsPanel, bpy.types.Panel):
         sub.prop(props, "friction")
 
 
-class CLOTHMD_PT_pinning(_ClothSettingsPanel, bpy.types.Panel):
+class MUSLIN_PT_pinning(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Pinning"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
         layout.prop_search(props, "pin_vertex_group", context.active_object,
                            "vertex_groups")
 
 
-class CLOTHMD_UL_seams(bpy.types.UIList):
+class MUSLIN_UL_seams(bpy.types.UIList):
     """縫い目リスト"""
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index):
@@ -159,29 +159,29 @@ class CLOTHMD_UL_seams(bpy.types.UIList):
         row.prop(item, "flipped", text="", icon='ARROW_LEFTRIGHT')
 
 
-class CLOTHMD_PT_pattern(_ClothMDPanelBase, bpy.types.Panel):
+class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Pattern"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw(self, context):
         layout = self.layout
-        tools = context.scene.cloth_md_tools
+        tools = context.scene.muslin_tools
 
         col = layout.column(align=True)
         col.prop(tools, "pattern_width")
         col.prop(tools, "pattern_height")
         col.prop(tools, "pattern_resolution")
 
-        layout.operator("cloth_md.add_pattern_piece", icon='MESH_GRID')
-        layout.operator("cloth_md.fill_outline", icon='MOD_TRIANGULATE')
+        layout.operator("muslin.add_pattern_piece", icon='MESH_GRID')
+        layout.operator("muslin.fill_outline", icon='MOD_TRIANGULATE')
         layout.separator()
-        layout.operator("cloth_md.join_pieces", icon='AUTOMERGE_ON')
+        layout.operator("muslin.join_pieces", icon='AUTOMERGE_ON')
         layout.label(text="縫うピースは事前に統合が必要", icon='INFO')
 
 
-class CLOTHMD_PT_sewing(_ClothMDPanelBase, bpy.types.Panel):
+class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw(self, context):
         layout = self.layout
@@ -190,22 +190,22 @@ class CLOTHMD_PT_sewing(_ClothMDPanelBase, bpy.types.Panel):
         if obj is None or obj.type != 'MESH':
             layout.label(text="メッシュを選択してください", icon='INFO')
             return
-        props = obj.cloth_md
-        tools = context.scene.cloth_md_tools
+        props = obj.muslin
+        tools = context.scene.muslin_tools
 
         layout.label(text="編集モードで2本の縫い代エッジを選択:")
-        layout.operator("cloth_md.add_seam", icon='ADD')
+        layout.operator("muslin.add_seam", icon='ADD')
 
         row = layout.row()
         row.template_list(
-            "CLOTHMD_UL_seams", "", obj, "cloth_md_seams", obj, "cloth_md_seam_active", rows=3
+            "MUSLIN_UL_seams", "", obj, "muslin_seams", obj, "muslin_seam_active", rows=3
         )
         col = row.column(align=True)
-        col.operator("cloth_md.remove_seam", text="", icon='REMOVE')
-        col.operator("cloth_md.clear_seams", text="", icon='TRASH')
-        col.operator("cloth_md.select_seam", text="", icon='RESTRICT_SELECT_OFF')
+        col.operator("muslin.remove_seam", text="", icon='REMOVE')
+        col.operator("muslin.clear_seams", text="", icon='TRASH')
+        col.operator("muslin.select_seam", text="", icon='RESTRICT_SELECT_OFF')
 
-        layout.operator("cloth_md.validate_seams", icon='CHECKMARK')
+        layout.operator("muslin.validate_seams", icon='CHECKMARK')
 
         col = layout.column(align=True)
         col.prop(tools, "show_seams")
@@ -213,9 +213,9 @@ class CLOTHMD_PT_sewing(_ClothMDPanelBase, bpy.types.Panel):
         col.prop(props, "seam_compliance")
 
 
-class CLOTHMD_PT_bake(_ClothMDPanelBase, bpy.types.Panel):
+class MUSLIN_PT_bake(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Bake"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
 
     def draw(self, context):
         from . import bake_ops
@@ -234,7 +234,7 @@ class CLOTHMD_PT_bake(_ClothMDPanelBase, bpy.types.Panel):
 
         if bake_ops.is_baked(obj):
             start, end = bake_ops.baked_range(obj)
-            directory = obj.get("cloth_md_cache_dir", "")
+            directory = obj.get("muslin_cache_dir", "")
             size_mb = cache_io.cache_size_bytes(directory) / (1024 * 1024)
 
             box = layout.box()
@@ -242,43 +242,43 @@ class CLOTHMD_PT_bake(_ClothMDPanelBase, bpy.types.Panel):
             box_col.label(text=f"ベイク済み: {start} - {end}", icon='CHECKMARK')
             box_col.label(text=f"サイズ: {size_mb:.1f} MB")
 
-            layout.operator("cloth_md.bake", text="Re-bake", icon='FILE_REFRESH')
-            layout.operator("cloth_md.free_bake", icon='TRASH')
+            layout.operator("muslin.bake", text="Re-bake", icon='FILE_REFRESH')
+            layout.operator("muslin.free_bake", icon='TRASH')
             layout.separator()
-            layout.operator("cloth_md.bake_to_shape_keys", icon='SHAPEKEY_DATA')
+            layout.operator("muslin.bake_to_shape_keys", icon='SHAPEKEY_DATA')
         else:
-            layout.operator("cloth_md.bake", icon='PHYSICS')
-            if obj.get("cloth_md_cache_dir", ""):
+            layout.operator("muslin.bake", icon='PHYSICS')
+            if obj.get("muslin_cache_dir", ""):
                 # シェイプキー変換後など、再生は止めたがキャッシュは残っている状態
-                layout.operator("cloth_md.free_bake", icon='TRASH')
+                layout.operator("muslin.free_bake", icon='TRASH')
             if not bpy.data.filepath:
                 layout.label(text=".blend 未保存 → 一時領域に保存", icon='ERROR')
 
 
-class CLOTHMD_PT_debug(_ClothMDPanelBase, bpy.types.Panel):
+class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Debug"
-    bl_parent_id = "CLOTHMD_PT_main"
+    bl_parent_id = "MUSLIN_PT_main"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("cloth_md.test_rust", icon='CONSOLE')
-        layout.operator("cloth_md.self_test", icon='CHECKMARK')
-        layout.operator("cloth_md.print_timings", icon='TIME')
+        layout.operator("muslin.test_rust", icon='CONSOLE')
+        layout.operator("muslin.self_test", icon='CHECKMARK')
+        layout.operator("muslin.print_timings", icon='TIME')
 
 
 _classes = (
-    CLOTHMD_UL_seams,
-    CLOTHMD_PT_main,
-    CLOTHMD_PT_solver,
-    CLOTHMD_PT_material,
-    CLOTHMD_PT_forces,
-    CLOTHMD_PT_collision,
-    CLOTHMD_PT_pinning,
-    CLOTHMD_PT_pattern,
-    CLOTHMD_PT_sewing,
-    CLOTHMD_PT_bake,
-    CLOTHMD_PT_debug,
+    MUSLIN_UL_seams,
+    MUSLIN_PT_main,
+    MUSLIN_PT_solver,
+    MUSLIN_PT_material,
+    MUSLIN_PT_forces,
+    MUSLIN_PT_collision,
+    MUSLIN_PT_pinning,
+    MUSLIN_PT_pattern,
+    MUSLIN_PT_sewing,
+    MUSLIN_PT_bake,
+    MUSLIN_PT_debug,
 )
 
 

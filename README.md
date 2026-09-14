@@ -1,9 +1,12 @@
-# Cloth MD
+# Muslin
 
 Blender 用のクロスシミュレーションアドオン。Marvelous Designer のような
 **パターンを作って縫い合わせる**衣服制作ワークフローを目指しています。
 
 物理コアは Rust (XPBD) で実装し、PyO3 経由で Blender の Python から呼び出します。
+
+> **Muslin(モスリン)**とは、本番の生地を裁つ前にパターンを縫って形を確かめる
+> 仮縫いの試作のこと。このアドオンがやっていることそのものなので名前にしました。
 
 ## 現在できること
 
@@ -24,16 +27,16 @@ Blender 用のクロスシミュレーションアドオン。Marvelous Designer
 Extensions 形式で配布します。Rust 製のモジュールは Python wheel として
 同梱されるので、`.pyd` がロックされて更新できない問題が起きません。
 
-1. `dist/cloth_md-0.5.0.zip` を用意する(無ければ下記のビルド手順で作る)
+1. `dist/muslin-0.5.0.zip` を用意する(無ければ下記のビルド手順で作る)
 2. Preferences > Get Extensions > 右上の ∨ > **Install from Disk** から選ぶ
-3. 3Dビューの N パネルに "Cloth MD" タブが出る
+3. 3Dビューの N パネルに "Muslin" タブが出る
 
 ### Blender 4.2 より前
 
-従来形式の `dist/cloth_md.zip` を使います。
+従来形式の `dist/muslin.zip` を使います。
 
 1. Preferences > Add-ons > Install... から zip を選ぶ
-2. "Cloth MD" を有効化する
+2. "Muslin" を有効化する
 
 ### 更新するときの注意(Windows)
 
@@ -65,7 +68,7 @@ Windows はロード中の DLL を削除できません。Blender を起動し�
 |---|---|
 | `01_drape.blend` | 球に布を被せる。最も基本的な使い方 |
 | `02_flag.blend` | 風になびく旗。Substeps を上げて揺れを持続させた例 |
-| `03_sewing.blend` | 2枚のパターンを左右で縫って筒にする。MD らしさの核心 |
+| `03_sewing.blend` | 2枚のパターンを左右で縫って筒にする。パターンを縫い合わせるワークフローの核心 |
 
 手で作った .blend ではなくスクリプトから生成しているので、
 アドオンが変わったら作り直せます。
@@ -128,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
 
 Rust の単体テストを実行し、`maturin build` で wheel を作り、
-`cloth_core.pyd` を `addon/cloth_md/` に配置します。
+`cloth_core.pyd` を `addon/muslin/` に配置します。
 
 配布物を作る:
 
@@ -174,7 +177,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 シミュレーションの実行、ピン留め、モディファイア適用後のコライダー、リネーム追従、
 **ベイクした .blend を閉じて開き直しても再生できるか**、パターンと縫い目の作成、
-入力バリデーションを確認します(42項目)。
+入力バリデーションを確認します(項目の一覧は [CHECKPOINTS.md](CHECKPOINTS.md) を参照)。
 
 ビューポートへの縫い線描画と操作感だけは、この方法では確認できません。
 [CHECKPOINTS.md](CHECKPOINTS.md) の手動項目として残しています。
@@ -364,3 +367,11 @@ Iterations を 1〜2 に下げてください。** 着せ替えのように最�
 - ベースメッシュの頂点を直接書き換えるため、モディファイアスタックとの相性に制約があります
 - 曲げ剛性が solver の反復数に依存します。既定の `Substeps 4` では生地の違いが
   ほとんど出ません(PBD 系に共通の性質)
+
+## ライセンス
+
+GNU General Public License v3.0 or later ([LICENSE](LICENSE))。
+
+Blender アドオンは `bpy` を介して Blender 本体と結びつくため、GPL 互換である
+ことが求められます。Rust 製の物理コア(`rust/cloth_core`)も同じ配布物に
+含まれるので、同じ条件で配布します。

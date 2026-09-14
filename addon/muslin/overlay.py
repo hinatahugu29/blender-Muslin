@@ -1,6 +1,6 @@
 """ビューポートへの縫い目表示。
 
-縫い合わせる頂点ペアを線で描く。MD で縫い線が見えるのと同じ役割で、
+縫い合わせる頂点ペアを線で描く。Marvelous Designer で縫い線が見えるのと同じ役割で、
 「どこがどこに縫われるのか」「向きが反転していないか」を目視確認できる。
 """
 
@@ -37,7 +37,7 @@ def _seam_signature(obj):
                 s.flipped,
                 s.enabled,
             )
-            for s in obj.cloth_md_seams
+            for s in obj.muslin_seams
         ),
     )
 
@@ -57,7 +57,7 @@ def _get_pairs(obj):
     positions = mesh_io.get_world_positions(obj)
     vertex_count = len(obj.data.vertices)
     per_seam = []
-    for seam in obj.cloth_md_seams:
+    for seam in obj.muslin_seams:
         chain_a, chain_b = mesh_io.seam_chains(seam)
         if not seam.enabled or any(i >= vertex_count for i in chain_a + chain_b):
             per_seam.append([])
@@ -83,13 +83,13 @@ def invalidate_cache(obj=None):
 def _draw():
     context = bpy.context
     scene = context.scene
-    tools = getattr(scene, "cloth_md_tools", None)
+    tools = getattr(scene, "muslin_tools", None)
     if tools is None or not tools.show_seams:
         return
 
     objects = [
         obj for obj in context.view_layer.objects
-        if obj.type == 'MESH' and obj.visible_get() and len(getattr(obj, "cloth_md_seams", [])) > 0
+        if obj.type == 'MESH' and obj.visible_get() and len(getattr(obj, "muslin_seams", [])) > 0
     ]
     if not objects:
         return
@@ -109,7 +109,7 @@ def _draw():
             # 全頂点を走査すると密なメッシュで再描画が重くなる。
             matrix = obj.matrix_world
             vertices = obj.data.vertices
-            active_index = obj.cloth_md_seam_active
+            active_index = obj.muslin_seam_active
             is_active_object = obj == context.active_object
 
             for seam_index, pairs in enumerate(per_seam):

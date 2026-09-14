@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1 -Bench
 
 ### A-2-1. シームロジック(M3・bpy非依存)
 
-縫い目の中核ロジックは [addon/cloth_md/seams.py](addon/cloth_md/seams.py) に
+縫い目の中核ロジックは [addon/muslin/seams.py](addon/muslin/seams.py) に
 bpy 非依存で切り出してあるため、Blender 抜きで検証できる:
 
 - 選択エッジ集合を連結成分に分解し、端点から順序付けたチェーンにする
@@ -117,22 +117,22 @@ CPU シングルスレッド / iterations=10, substeps=4 / Ryzen 環境:
 ## B. 手動チェック(Blender必須) — **未実施**
 
 準備: `powershell -ExecutionPolicy Bypass -File scripts/package_zip.ps1` を実行し、
-Blender の Preferences > Add-ons > Install... から `dist/cloth_md.zip` を入れる。
+Blender の Preferences > Add-ons > Install... から `dist/muslin.zip` を入れる。
 既に古いバージョンが入っている場合は**先に削除してから**入れ直すこと
 (`.pyd` が置き換わらないことがあるため)。
 
 ### CP-B1. アドオンが読み込める
-- [ ] Preferences > Add-ons に "Cloth MD" v0.5.0 が出て、有効化してもエラーが出ない
-- [ ] 3Dビューの N パネルに "Cloth MD" タブがあり、Solver / Fabric / Forces / Collision /
+- [ ] Preferences > Add-ons に "Muslin" v0.5.0 が出て、有効化してもエラーが出ない
+- [ ] 3Dビューの N パネルに "Muslin" タブがあり、Solver / Fabric / Forces / Collision /
       Pinning / Pattern / Sewing / Bake / Debug のサブパネルが並ぶ
 - [ ] 無効化 → 再有効化してもビューポートの縫い線描画が二重にならない
 
 ### CP-B2. Rust コアが繋がっている
 - [ ] Debug > `Test Rust Core` を押す → コンソールに以下が出る
   ```
-  [cloth_md] Hello from Rust (cloth_core)!
-  [cloth_md] add(1, 2) = 3.0
-  [cloth_md] core_version = 0.3.0
+  [muslin] Hello from Rust (cloth_core)!
+  [muslin] add(1, 2) = 3.0
+  [muslin] core_version = 0.3.0
   ```
 - [ ] `core_version` が **0.3.0** であること(それ以前なら古い `.pyd` が読まれている)
 
@@ -220,7 +220,7 @@ Blender の Preferences > Add-ons > Install... から `dist/cloth_md.zip` を入
 1. シーンのフレーム範囲を設定し、布の設定を済ませる
 2. Bake パネルの `Bake to Disk`
 - [ ] プログレスが進み、完了後に「N フレーム / X MB」と保存先が報告される
-- [ ] `.blend` を保存した状態なら、その隣に `blendcache_cloth_md/` が作られる
+- [ ] `.blend` を保存した状態なら、その隣に `blendcache_muslin/` が作られる
       （未保存なら一時領域。パネルに警告が出る）
 - [ ] 再生・スクラブが**即座に**追従する（再計算が走らない）
 - [ ] `.blend` を保存 → Blender を再起動 → 開いてもベイク結果が残っている
@@ -276,7 +276,7 @@ Blender の Preferences > Add-ons > Install... から `dist/cloth_md.zip` を入
 | 自己衝突の精度 | 頂点同士の反発のみ。頂点-三角形の貫通は完全には防げない(厚みを十分取れば実用可) | M4 |
 | 高速移動時の貫通 | 連続衝突判定(CCD)なし。布やコライダーが1サブステップで厚み以上動くと抜ける | M4 |
 | 動くコライダー + スクラブ | 飛ばしたフレームの追いつき計算中、コライダー形状が現在フレームで固定される | M6 |
-| 曲げ制約 | 距離制約による近似(Provot方式)。折り目の再現は本来の二面角制約に劣る | M5 |
+| 曲げ剛性の反復数依存 | 平均曲率の一次形式に作り直し済み(M5)。ただし PBD 系の性質として**剛性が solver の反復数に依存**し、既定の Substeps 4 では生地ごとの差がほとんど出ない | 将来 |
 | パターンの2D編集画面 | 専用の2Dビューは無く、3Dビューの編集モードで作る | 将来 |
 | ピース間の縫製 | 別オブジェクト同士は縫えない(事前に統合が必要) | 将来 |
 | メッシュ編集後の縫い目 | 頂点番号が変わると縫い目が壊れる(`Validate Seams` で検出可) | M6 |

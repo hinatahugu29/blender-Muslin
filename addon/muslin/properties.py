@@ -37,18 +37,18 @@ def _apply_fabric_preset(self, context):
     self.damping = values["damping"]
 
 
-class CLOTHMD_PG_vertex_index(bpy.types.PropertyGroup):
+class MUSLIN_PG_vertex_index(bpy.types.PropertyGroup):
     """シームのチェーンを構成する頂点インデックス(順序を保持する)。"""
 
     index: bpy.props.IntProperty(name="Vertex Index", default=0, min=0)
 
 
-class CLOTHMD_PG_seam(bpy.types.PropertyGroup):
+class MUSLIN_PG_seam(bpy.types.PropertyGroup):
     """1本の縫い目。2本の頂点チェーンを弧長で対応付けて縫い合わせる。"""
 
     name: bpy.props.StringProperty(name="Name", default="Seam")
-    chain_a: bpy.props.CollectionProperty(type=CLOTHMD_PG_vertex_index)
-    chain_b: bpy.props.CollectionProperty(type=CLOTHMD_PG_vertex_index)
+    chain_a: bpy.props.CollectionProperty(type=MUSLIN_PG_vertex_index)
+    chain_b: bpy.props.CollectionProperty(type=MUSLIN_PG_vertex_index)
     flipped: bpy.props.BoolProperty(
         name="Flip",
         description="縫い合わせる向きを反転する(縫い目がねじれている場合に切り替える)",
@@ -61,7 +61,7 @@ class CLOTHMD_PG_seam(bpy.types.PropertyGroup):
     )
 
 
-class CLOTHMD_PG_tools(bpy.types.PropertyGroup):
+class MUSLIN_PG_tools(bpy.types.PropertyGroup):
     """シーン単位の設定。ツールと表示に関わるものだけ。"""
 
     # --- 時間 ---
@@ -114,7 +114,7 @@ class CLOTHMD_PG_tools(bpy.types.PropertyGroup):
     )
 
 
-class CLOTHMD_PG_cloth(bpy.types.PropertyGroup):
+class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
     """オブジェクト単位のシミュレーション設定。
 
     Blender 標準の Cloth モディファイアと同じく、布ごとに持つ。
@@ -340,10 +340,10 @@ class CLOTHMD_PG_cloth(bpy.types.PropertyGroup):
 
 
 _classes = (
-    CLOTHMD_PG_vertex_index,
-    CLOTHMD_PG_seam,
-    CLOTHMD_PG_tools,
-    CLOTHMD_PG_cloth,
+    MUSLIN_PG_vertex_index,
+    MUSLIN_PG_seam,
+    MUSLIN_PG_tools,
+    MUSLIN_PG_cloth,
 )
 
 
@@ -352,17 +352,17 @@ def register():
         bpy.utils.register_class(cls)
     # シミュレーション設定は布ごとの性質なのでオブジェクトに持たせる。
     # シーンに残すのはツールと表示の設定だけ。
-    bpy.types.Object.cloth_md = bpy.props.PointerProperty(type=CLOTHMD_PG_cloth)
-    bpy.types.Scene.cloth_md_tools = bpy.props.PointerProperty(type=CLOTHMD_PG_tools)
+    bpy.types.Object.muslin = bpy.props.PointerProperty(type=MUSLIN_PG_cloth)
+    bpy.types.Scene.muslin_tools = bpy.props.PointerProperty(type=MUSLIN_PG_tools)
     # シームは「どのメッシュに属するか」が本質なのでオブジェクトに持たせる
-    bpy.types.Object.cloth_md_seams = bpy.props.CollectionProperty(type=CLOTHMD_PG_seam)
-    bpy.types.Object.cloth_md_seam_active = bpy.props.IntProperty(default=0)
+    bpy.types.Object.muslin_seams = bpy.props.CollectionProperty(type=MUSLIN_PG_seam)
+    bpy.types.Object.muslin_seam_active = bpy.props.IntProperty(default=0)
 
 
 def unregister():
-    del bpy.types.Object.cloth_md_seam_active
-    del bpy.types.Object.cloth_md_seams
-    del bpy.types.Scene.cloth_md_tools
-    del bpy.types.Object.cloth_md
+    del bpy.types.Object.muslin_seam_active
+    del bpy.types.Object.muslin_seams
+    del bpy.types.Scene.muslin_tools
+    del bpy.types.Object.muslin
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

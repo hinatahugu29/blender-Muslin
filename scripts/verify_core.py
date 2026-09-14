@@ -4,7 +4,7 @@
     python scripts/verify_core.py            # 検証のみ
     python scripts/verify_core.py --bench    # 性能計測も実行
 
-addon/cloth_md/cloth_core.pyd を直接 import するので、
+addon/muslin/cloth_core.pyd を直接 import するので、
 Blender に入れる前にコアが正しいかをここで確認できる。
 アドオンの Python モジュールについては構文チェック(compile)のみ行う
 (bpy が無い環境では import できないため)。
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ADDON_DIR = REPO_ROOT / "addon" / "cloth_md"
+ADDON_DIR = REPO_ROOT / "addon" / "muslin"
 
 sys.path.insert(0, str(ADDON_DIR))
 
@@ -483,7 +483,7 @@ def test_bending_stiffness():
 
 def test_seam_logic():
     """シームのチェーン抽出とペアリング(bpy 非依存の純粋ロジック)を検証する"""
-    import seams  # addon/cloth_md/seams.py
+    import seams  # addon/muslin/seams.py
 
     # --- チェーン分割 ---
     # 2本の独立した直線チェーン: 0-1-2-3 と 10-11-12
@@ -555,7 +555,7 @@ def test_seam_logic():
 
 def test_transform():
     """ローカル<->ワールドの座標変換(bpy 非依存)を検証する"""
-    import transform  # addon/cloth_md/transform.py
+    import transform  # addon/muslin/transform.py
 
     def reference(flat, m):
         """numpy 化する前の素の Python 実装(これと一致すれば等価)"""
@@ -611,9 +611,9 @@ def test_cache_io():
     import shutil
     import tempfile
 
-    import cache_io  # addon/cloth_md/cache_io.py
+    import cache_io  # addon/muslin/cache_io.py
 
-    directory = os.path.join(tempfile.mkdtemp(prefix="cloth_md_test_"), "cache")
+    directory = os.path.join(tempfile.mkdtemp(prefix="muslin_test_"), "cache")
     try:
         positions = [0.5, -1.25, 3.0, 10.0, 20.0, 30.0]
 

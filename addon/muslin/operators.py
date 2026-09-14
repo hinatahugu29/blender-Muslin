@@ -7,10 +7,10 @@ from . import mesh_io
 from . import sim_state
 
 
-class CLOTHMD_OT_test_rust(bpy.types.Operator):
+class MUSLIN_OT_test_rust(bpy.types.Operator):
     """Rustコアの拡張モジュールが正しく呼べるか確認する"""
 
-    bl_idname = "cloth_md.test_rust"
+    bl_idname = "muslin.test_rust"
     bl_label = "Test Rust Core"
 
     def execute(self, context):
@@ -18,18 +18,18 @@ class CLOTHMD_OT_test_rust(bpy.types.Operator):
         result = cloth_core.add(1.0, 2.0)
         version = cloth_core.core_version()
 
-        print(f"[cloth_md] {message}")
-        print(f"[cloth_md] add(1, 2) = {result}")
-        print(f"[cloth_md] core_version = {version}")
+        print(f"[muslin] {message}")
+        print(f"[muslin] add(1, 2) = {result}")
+        print(f"[muslin] core_version = {version}")
 
         self.report({'INFO'}, f"cloth_core {version} OK / add(1,2)={result}")
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_self_test(bpy.types.Operator):
+class MUSLIN_OT_self_test(bpy.types.Operator):
     """Blender内でコアの物理挙動を自己診断する(シーンを一切変更しない)"""
 
-    bl_idname = "cloth_md.self_test"
+    bl_idname = "muslin.self_test"
     bl_label = "Run Self Test"
 
     def execute(self, context):
@@ -144,9 +144,9 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
         results.append(("sphere collision", ok,
                         f"接触={touched}, 中心からの最小距離={deepest:.4f} (半径 {radius})"))
 
-        print("[cloth_md] ---- self test ----")
+        print("[muslin] ---- self test ----")
         for name, ok, detail in results:
-            print(f"[cloth_md]  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
+            print(f"[muslin]  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
 
         failed = [name for name, ok, _ in results if not ok]
         if failed:
@@ -156,10 +156,10 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_print_timings(bpy.types.Operator):
+class MUSLIN_OT_print_timings(bpy.types.Operator):
     """実行中のシミュレーションの時間内訳をコンソールに出す"""
 
-    bl_idname = "cloth_md.print_timings"
+    bl_idname = "muslin.print_timings"
     bl_label = "Print Timings"
 
     # 表示順と日本語ラベル。合計に対する割合で、どこが重いかを見る
@@ -190,23 +190,23 @@ class CLOTHMD_OT_print_timings(bpy.types.Operator):
             return {'CANCELLED'}
 
         threads = cloth_core.thread_count()
-        print(f"[cloth_md] ---- '{obj.name}' 直近フレームの内訳 "
+        print(f"[muslin] ---- '{obj.name}' 直近フレームの内訳 "
               f"(コリジョンは最大 {threads} スレッド) ----")
         for key, label in self._ROWS:
             value = timings.get(key, 0.0)
             if value < 1e-4:
                 continue
-            print(f"[cloth_md]  {label:<22}{value:8.3f} ms  {value / total * 100:5.1f}%")
-        print(f"[cloth_md]  {'合計':<22}{total:8.3f} ms")
+            print(f"[muslin]  {label:<22}{value:8.3f} ms  {value / total * 100:5.1f}%")
+        print(f"[muslin]  {'合計':<22}{total:8.3f} ms")
 
         self.report({'INFO'}, f"内訳をコンソールに出力しました(合計 {total:.2f} ms)")
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_fit_thickness(bpy.types.Operator):
+class MUSLIN_OT_fit_thickness(bpy.types.Operator):
     """厚みをメッシュの細かさに合わせて設定する"""
 
-    bl_idname = "cloth_md.fit_thickness"
+    bl_idname = "muslin.fit_thickness"
     bl_label = "Fit Thickness to Mesh"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -217,7 +217,7 @@ class CLOTHMD_OT_fit_thickness(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = obj.cloth_md
+        props = obj.muslin
 
         suggestion = mesh_io.suggest_thickness(obj)
         if suggestion is None:
@@ -237,10 +237,10 @@ class CLOTHMD_OT_fit_thickness(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_start_sim(bpy.types.Operator):
+class MUSLIN_OT_start_sim(bpy.types.Operator):
     """選択中のメッシュオブジェクトでクロスシミュレーションを開始する"""
 
-    bl_idname = "cloth_md.start_sim"
+    bl_idname = "muslin.start_sim"
     bl_label = "Start Simulation"
 
     @classmethod
@@ -250,7 +250,7 @@ class CLOTHMD_OT_start_sim(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = obj.cloth_md
+        props = obj.muslin
 
         try:
             info = sim_state.start_simulation(obj, props)
@@ -261,9 +261,9 @@ class CLOTHMD_OT_start_sim(bpy.types.Operator):
             self.report({'ERROR'}, f"シミュレーション開始に失敗: {exc}")
             return {'CANCELLED'}
 
-        print(f"[cloth_md] start '{obj.name}': {info}")
+        print(f"[muslin] start '{obj.name}': {info}")
         for warning in info.get("warnings", []):
-            print(f"[cloth_md]  ! {warning}")
+            print(f"[muslin]  ! {warning}")
             self.report({'WARNING'}, warning)
         self.report(
             {'INFO'},
@@ -275,10 +275,10 @@ class CLOTHMD_OT_start_sim(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_stop_sim(bpy.types.Operator):
+class MUSLIN_OT_stop_sim(bpy.types.Operator):
     """選択中のメッシュオブジェクトのクロスシミュレーションを停止する"""
 
-    bl_idname = "cloth_md.stop_sim"
+    bl_idname = "muslin.stop_sim"
     bl_label = "Stop Simulation"
 
     @classmethod
@@ -293,12 +293,12 @@ class CLOTHMD_OT_stop_sim(bpy.types.Operator):
 
 
 _classes = (
-    CLOTHMD_OT_test_rust,
-    CLOTHMD_OT_self_test,
-    CLOTHMD_OT_print_timings,
-    CLOTHMD_OT_fit_thickness,
-    CLOTHMD_OT_start_sim,
-    CLOTHMD_OT_stop_sim,
+    MUSLIN_OT_test_rust,
+    MUSLIN_OT_self_test,
+    MUSLIN_OT_print_timings,
+    MUSLIN_OT_fit_thickness,
+    MUSLIN_OT_start_sim,
+    MUSLIN_OT_stop_sim,
 )
 
 

@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Cloth MD",
+    "name": "Muslin",
     "author": "",
     "version": (0, 5, 0),
     "blender": (4, 2, 0),
-    "location": "View3D > Sidebar > Cloth MD",
-    "description": "Marvelous Designer-like cloth simulation (Rust core, WIP)",
+    "location": "View3D > Sidebar > Muslin",
+    "description": "Pattern-sewing cloth simulation for garments (Rust core, WIP)",
     "category": "Object",
 }
 

@@ -3,7 +3,7 @@
 bpy に依存しないので `scripts/verify_core.py` から検証できる。
 
 フォーマット(1フレーム1ファイル):
-    magic   4 bytes  b"CMDC"
+    magic   4 bytes  b"MSLN"
     version uint32   現在 1
     count   uint32   頂点数
     data    float32 * 3 * count  (ローカル座標 x,y,z の並び)
@@ -18,7 +18,7 @@ import os
 import struct
 from array import array
 
-MAGIC = b"CMDC"
+MAGIC = b"MSLN"
 VERSION = 1
 HEADER_FORMAT = "<4sII"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)

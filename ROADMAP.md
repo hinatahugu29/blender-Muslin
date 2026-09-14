@@ -15,14 +15,14 @@
 - [x] maturin導入、Blender同梱Pythonのバージョン確認 — maturin 1.12.6。**実機のBlenderは5.1、同梱PythonはCPython 3.13**(`%APPDATA%\Blender Foundation\Blender\5.1\scripts\addons\rust_gpu_sdf_addon\__pycache__\*.cpython-313.pyc` から確認)。今回のビルドはabi3-py311(Stable ABI、3.11以降で前方互換)なので3.13でも再ビルドなしで動作する想定
 - [x] PyO3で最小Rust拡張モジュール作成(例: ベクトル加算関数) — [rust/cloth_core](rust/cloth_core) に `hello()` / `add()` を実装、abi3-py311でビルド
 - [x] ビルド・配布方法の暫定方針決定(dev用ローカルビルド vs 事前コンパイル済みバイナリ同梱) — Blender配布版は`python.exe`を同梱しないため`maturin develop`は不採用。`maturin build`でwheel化し`.pyd`をアドオンフォルダに同梱する方式に決定。[scripts/build.ps1](scripts/build.ps1)で自動化
-- [x] Blenderアドオンの骨格作成(bl_info, register/unregister) — [addon/cloth_md/__init__.py](addon/cloth_md/__init__.py)
-- [x] Operatorクラス作成、ボタン押下でRust関数呼び出し — [addon/cloth_md/operators.py](addon/cloth_md/operators.py)
-- [x] Panel(UI)にボタン配置し、Rustからの戻り値をコンソール出力 — [addon/cloth_md/panels.py](addon/cloth_md/panels.py)
-- [x] アドオンを実アドオンフォルダに配置 — `dist\cloth_md.zip`(scripts/package_zip.ps1生成)をBlenderの Install から導入する運用に統一
+- [x] Blenderアドオンの骨格作成(bl_info, register/unregister) — [addon/muslin/__init__.py](addon/muslin/__init__.py)
+- [x] Operatorクラス作成、ボタン押下でRust関数呼び出し — [addon/muslin/operators.py](addon/muslin/operators.py)
+- [x] Panel(UI)にボタン配置し、Rustからの戻り値をコンソール出力 — [addon/muslin/panels.py](addon/muslin/panels.py)
+- [x] アドオンを実アドオンフォルダに配置 — `dist\muslin.zip`(scripts/package_zip.ps1生成)をBlenderの Install から導入する運用に統一
 - [x] Blender 5.1(Python 3.13)実機で動作確認済み(2026-07-17) — Nパネルのボタン押下でコンソールに以下が出力されることを確認:
   ```
-  [cloth_md] Hello from Rust (cloth_core)!
-  [cloth_md] add(1, 2) = 3.0
+  [muslin] Hello from Rust (cloth_core)!
+  [muslin] add(1, 2) = 3.0
   ```
   abi3-py311ビルドのままPython 3.13でも再ビルド不要で動作することを実証
 
@@ -34,10 +34,10 @@
 **Exit条件**: Blender内で平面メッシュを布のように垂らして落下させられる
 
 - [x] シミュレーション用データ構造設計(頂点位置・速度・質量、エッジ制約リスト) — [rust/cloth_core/src/sim.rs](rust/cloth_core/src/sim.rs)。物理コアは pyo3 非依存にして `cargo test` で検証可能にした
-- [x] BlenderメッシュデータをRustに渡すI/F実装(頂点座標配列の受け渡し) — [addon/cloth_md/mesh_io.py](addon/cloth_md/mesh_io.py)。`foreach_get`/`foreach_set` 使用
+- [x] BlenderメッシュデータをRustに渡すI/F実装(頂点座標配列の受け渡し) — [addon/muslin/mesh_io.py](addon/muslin/mesh_io.py)。`foreach_get`/`foreach_set` 使用
 - [x] 重力積分(semi-implicit Euler等)実装 — 自由落下が解析解と一致することをテストで確認
 - [x] 伸び制約(distance constraint)実装 — XPBD方式。λをサブステップ内で累積する正式なXPBD
-- [x] 曲げ制約(bending constraint)実装 — Provot方式(隣接面の対角頂点を距離制約で結ぶ)
+- [x] 曲げ制約(bending constraint)実装 — 当初は Provot方式(隣接面の対角頂点を距離制約で結ぶ)。**剛性の制御として機能しないことが分かり、M5 で平均曲率の一次形式に作り直した**(M5 の「曲げ制約の作り直し」を参照)
 - [x] 固定頂点(ピン留め)機能実装 — 頂点グループ指定。inv_mass=0
 - [x] フレームごとの更新頂点座標をBlenderメッシュに反映するコールバック実装 — `frame_change_post` ハンドラ
 - [x] タイムライン再生・Bake再生との連携確認 — フレーム番号基準の決定的再生 + メモリキャッシュでスクラブ対応。**実機確認は CP-B5**
@@ -74,7 +74,7 @@
 
 - [x] 2Dパターンピース表現方法の決定(平面メッシュ or カーブベース) — **平面メッシュ**を採用。Blenderの編集ツールをそのまま使え、シミュレーション対象と同一表現で済むため
 - [x] パターン編集モード(専用Operator/モーダル)の実装 — `Add Pattern Piece`(サイズ・解像度指定の長方形)と `Fill Outline as Pattern`(閉じた輪郭を三角形分割し目標エッジ長まで細分化)。モーダルな独立モードは作らず、Blenderの編集モードを活かす方針
-- [x] シーム(縫い目)指定ツール — エッジ選択でペア登録するUI — `Add Seam From Selection`。選択エッジを連結成分に分解し、ちょうど2本のチェーンをシームとして登録。オブジェクトに永続保存され、UIListで管理(有効/無効・反転切替・削除)。[addon/cloth_md/seams.py](addon/cloth_md/seams.py) の中核ロジックは bpy 非依存でテスト済み
+- [x] シーム(縫い目)指定ツール — エッジ選択でペア登録するUI — `Add Seam From Selection`。選択エッジを連結成分に分解し、ちょうど2本のチェーンをシームとして登録。オブジェクトに永続保存され、UIListで管理(有効/無効・反転切替・削除)。[addon/muslin/seams.py](addon/muslin/seams.py) の中核ロジックは bpy 非依存でテスト済み
 - [x] シーム制約をXPBD制約として追加(縫い目の頂点を引き寄せる) — rest_length を initial→0 に補間して徐々に閉じる方式。**弧長で対応付ける**ので頂点数が違うチェーン同士も縫える
 - [x] 複数パターンピース間の初期配置(3D空間への展開配置)機能 — ピースは通常のオブジェクトとして自由に配置し、`Join Pattern Pieces` で統合してから縫う運用
 - [x] 縫製シミュレーション(徐々に閉じていくアニメーション)実装 — `Seam Close Frames` フレームかけて閉じる
@@ -99,13 +99,13 @@
 
 ## M5: マテリアル物性・品質向上
 
-- [x] 物性パラメータのデータモデル — シーン単位の `cloth_md_props`
+- [x] 物性パラメータのデータモデル — シーン単位の `muslin_props`
   (密度・伸び・曲げ・減衰・摩擦)。マテリアル単位の管理は未対応
 - [x] 生地プリセット — Chiffon / Silk / Knit / Cotton / Wool / Denim / Leather。
   密度は実際の目付(g/m^2)にもとづく。曲げの値はカンチレバー法で較正した
 - [x] **曲げ制約を作り直した**(下記)
 - [x] パラメータをオブジェクト単位で持てるようにした —
-  `Object.cloth_md` に移した。シーンに残したのは時間・縫い線表示・
+  `Object.muslin` に移した。シーンに残したのは時間・縫い線表示・
   パターン作成の道具設定だけ。これで1シーンに複数の生地を置ける
 - [ ] さらにマテリアル単位(1オブジェクト内で部位ごとに生地を変える)まで進めるか検討
 - [x] 風力・外力エフェクトの実装 — 一様風のみ(N/m²の面圧として実装)。乱流・Force Field連携は未対応
@@ -156,7 +156,7 @@ iter200/subs32 で 0.11 と変わる。ここでもサブステップのほう�
 
 ## M6: UX仕上げ・安定化・ドキュメント
 
-- [x] シミュレーションキャッシュ/ベイク機能実装(ディスク書き出し) — `Bake to Disk`。1フレーム1ファイルのバイナリ形式(float32)。ヘッダに頂点数を持ち、メッシュ編集後の食い違いを検出する。[addon/cloth_md/cache_io.py](addon/cloth_md/cache_io.py) は bpy 非依存でテスト済み
+- [x] シミュレーションキャッシュ/ベイク機能実装(ディスク書き出し) — `Bake to Disk`。1フレーム1ファイルのバイナリ形式(float32)。ヘッダに頂点数を持ち、メッシュ編集後の食い違いを検出する。[addon/muslin/cache_io.py](addon/muslin/cache_io.py) は bpy 非依存でテスト済み
 - [x] ベイク済みアニメーションの再生・編集フロー確認 — フレーム変更時にキャッシュから復元。`Convert to Shape Keys` でアドオン非依存の形にも変換可能。**ベイク中は各フレームで `frame_set` するため、動くコライダーが正しく追従する**(ライブ再生時の追いつき計算にある制約が無い)
 - [x] Rust側パニック時のフォールバック・エラーメッセージ表示実装 — ハンドラで例外を捕捉し、発散検知したら自動停止
 - [x] 異常入力(非多様体メッシュ等)に対するバリデーション追加 — 頂点/エッジ無し、孤立頂点、非多様体エッジ、極小エッジ、非一様スケールを検査。致命的なものは開始を中止し、それ以外は警告表示
@@ -178,9 +178,10 @@ iter200/subs32 で 0.11 と変わる。ここでもサブステップのほう�
   BOM無しUTF-8をANSIとして読むため、日本語コメントが文字化けして構文エラーになる。
 - 現状(2026-09-14): M1・M2・M3 完了、M6 も大半を実装。自動テスト(Rust 20 + Python 55項目)通過。
   Blender実機確認のみ未実施([CHECKPOINTS.md](CHECKPOINTS.md) の CP-B1〜B13)。
-  **MDらしさの核心(パターン作成 → 縫い目指定 → 縫製シミュレーション → ベイク)が一通り繋がった状態**。
+  **パターンを縫い合わせるワークフローの核心(パターン作成 → 縫い目指定 → 縫製シミュレーション → ベイク)が一通り繋がった状態**。
 - **テスト網羅(2026-09-15 更新)**: `scripts/blender_selftest.py` で Blender を
-  ヘッドレス起動し、アドオン層を42項目検証するようにした。これで
+  ヘッドレス起動し、アドオン層を検証するようにした(項目数と内訳は
+  [CHECKPOINTS.md](CHECKPOINTS.md) を出典とする)。これで
   `operators.py` / `sim_state.py` / `mesh_io.py` / `bake_ops.py` / `sewing_ops.py` /
   `properties.py` が実際に動かされる。**残る未検証は `overlay.py`(ビューポート描画)と
   `panels.py` の見た目だけ**。
@@ -306,5 +307,5 @@ Jacobi 的に補正を溜めてから適用するかの検討が要る。ペア�
   M6 の残件はサンプルシーン作成と Extensions Platform 対応。
 - 性能の目安: 6561頂点でコリジョンなし 8.3ms/f、球コライダー付き 10.4ms/f、
   自己衝突を入れると 26ms/f。**自己衝突が最大のコスト** = M4(GPU化)の第一目標。
-- 優先順位: M1→M2完了で最低限「製品として意味を持つ」状態。M3(縫製)がMDらしさの核心。M4(GPU化)は機能完成後の性能最適化フェーズ。
+- 優先順位: M1→M2完了で最低限「製品として意味を持つ」状態。M3(縫製)がパターンを縫い合わせるワークフローの核心。M4(GPU化)は機能完成後の性能最適化フェーズ。
 - 各マイルストーンの見積もりはM0: 1〜2週間 / M1: 3〜4週間 / M2: 4〜6週間 / M3: 4〜6週間 / M4: 6〜8週間 / M5: 3〜4週間 / M6: 3〜4週間(目安、要調整)。

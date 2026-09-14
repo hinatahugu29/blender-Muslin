@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CrateDir = Join-Path $RepoRoot "rust\cloth_core"
-$AddonDir = Join-Path $RepoRoot "addon\cloth_md"
+$AddonDir = Join-Path $RepoRoot "addon\muslin"
 $WheelDir = Join-Path $CrateDir "target\wheels"
 
 # --- Python インタプリタの解決 -------------------------------------------------

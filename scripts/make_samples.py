@@ -3,7 +3,7 @@
 使い方:
     blender --background --factory-startup --python scripts/make_samples.py
 
-`samples/` に .blend を書き出す。どれも **Cloth MD を有効にして開き、
+`samples/` に .blend を書き出す。どれも **Muslin を有効にして開き、
 `Start Simulation` を押して再生するだけ**で結果が見られる状態にしてある。
 
 手で作った .blend を置くのではなくスクリプトで生成するのは、
@@ -86,7 +86,7 @@ def smooth(obj):
 
 def mark_as_cloth(obj):
     """どれが布なのかを明示する。検証スクリプトがこれを見て対象を選ぶ。"""
-    obj["cloth_md_sample"] = True
+    obj["muslin_sample"] = True
     return obj
 
 
@@ -116,15 +116,15 @@ def sample_drape():
     smooth(cloth)
     mark_as_cloth(cloth)
 
-    props = cloth.cloth_md             # 設定は布ごとに持つ
+    props = cloth.muslin             # 設定は布ごとに持つ
     props.fabric_preset = 'COTTON'     # 物性はプリセットから
     props.collider_object = sphere
     props.collision_enabled = True
     props.self_collision_enabled = True
     props.damping = 0.08               # 揺れを落ち着かせて最終形を見せる
-    bpy.ops.cloth_md.fit_thickness()   # 厚みはメッシュの細かさに合わせる
+    bpy.ops.muslin.fit_thickness()   # 厚みはメッシュの細かさに合わせる
 
-    add_note("Cloth MD: Start Simulation を押して再生",
+    add_note("Muslin: Start Simulation を押して再生",
              location=(0.0, 0.0, 1.45))
     add_camera_and_light((0.0, 0.0, 0.2))
     save("01_drape.blend")
@@ -153,7 +153,7 @@ def sample_flag():
                                         location=(-0.6, 0.0, 0.6))
     bpy.context.active_object.name = "Pole"
 
-    props = cloth.cloth_md
+    props = cloth.muslin
     props.fabric_preset = 'SILK'   # 軽くなめらかになびく
     props.pin_vertex_group = "Pin"
     props.collision_enabled = False
@@ -174,22 +174,22 @@ def sample_flag():
 # ------------------------------------------------------------------ 3. 縫製
 
 def sample_sewing():
-    """2枚のピースを縫い合わせて筒にする。MD らしさの核心。"""
+    """2枚のピースを縫い合わせて筒にする。パターンを縫い合わせるワークフローの核心。"""
     print("03_sewing: 2枚を縫って筒にする", flush=True)
     scene = fresh_scene(frame_end=180)
 
-    tools = scene.cloth_md_tools   # パターンの寸法はシーンの道具設定
+    tools = scene.muslin_tools   # パターンの寸法はシーンの道具設定
     tools.pattern_width = 0.45
     tools.pattern_height = 0.7
     tools.pattern_resolution = 0.025
 
     # 前身頃と後ろ身頃を向かい合わせに置く
-    bpy.ops.cloth_md.add_pattern_piece()
+    bpy.ops.muslin.add_pattern_piece()
     front = bpy.context.active_object
     front.name = "Front"
     front.location = (0.0, -0.18, 1.0)
 
-    bpy.ops.cloth_md.add_pattern_piece()
+    bpy.ops.muslin.add_pattern_piece()
     back = bpy.context.active_object
     back.name = "Back"
     back.location = (0.0, 0.18, 1.0)
@@ -200,7 +200,7 @@ def sample_sewing():
     front.select_set(True)
     back.select_set(True)
     bpy.context.view_layer.objects.active = front
-    bpy.ops.cloth_md.join_pieces()
+    bpy.ops.muslin.join_pieces()
     piece = bpy.context.active_object
     piece.name = "Garment"
     smooth(piece)
@@ -237,12 +237,12 @@ def sample_sewing():
                 piece.data.vertices[e.vertices[0]].select = True
                 piece.data.vertices[e.vertices[1]].select = True
         bpy.ops.object.mode_set(mode='EDIT')
-        if bpy.ops.cloth_md.add_seam() == {'FINISHED'}:
+        if bpy.ops.muslin.add_seam() == {'FINISHED'}:
             made += 1
         bpy.ops.object.mode_set(mode='OBJECT')
     print(f"  シーム {made} 本", flush=True)
 
-    props = piece.cloth_md
+    props = piece.muslin
     props.fabric_preset = 'COTTON'
     props.pin_vertex_group = "Shoulder"
     props.collision_enabled = False
@@ -251,7 +251,7 @@ def sample_sewing():
     props.damping = 0.06
     props.show_seams = True
     props.substeps = 16            # 生地の曲げが効く設定にしておく
-    bpy.ops.cloth_md.fit_thickness()
+    bpy.ops.muslin.fit_thickness()
 
     add_note("2枚のピースを左右で縫う / 再生すると 40 フレームかけて閉じる",
              location=(0.0, 0.0, 1.62), size=0.08)
@@ -260,9 +260,9 @@ def sample_sewing():
 
 
 if __name__ == "__main__":
-    import cloth_md
+    import muslin
 
-    cloth_md.register()
+    muslin.register()
     print(f"サンプルを生成します -> {OUT_DIR}", flush=True)
     sample_drape()
     sample_flag()

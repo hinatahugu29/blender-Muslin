@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AddonDir = Join-Path $RepoRoot "addon\cloth_md"
+$AddonDir = Join-Path $RepoRoot "addon\muslin"
 $WheelDir = Join-Path $AddonDir "wheels"
 $DistDir = Join-Path $RepoRoot "dist"
 
@@ -79,9 +79,9 @@ finally {
 
 # --- 出来上がったパッケージを一時領域に入れて動作を確かめる ---
 # ユーザーの Blender 設定を汚さないよう BLENDER_USER_EXTENSIONS を差し替える
-$Built = Get-ChildItem $DistDir -Filter "cloth_md-*.zip" |
+$Built = Get-ChildItem $DistDir -Filter "muslin-*.zip" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$TestDir = Join-Path $env:TEMP "cloth_md_ext_verify"
+$TestDir = Join-Path $env:TEMP "muslin_ext_verify"
 if (Test-Path $TestDir) { Remove-Item $TestDir -Recurse -Force }
 New-Item -ItemType Directory -Path $TestDir | Out-Null
 
@@ -95,7 +95,7 @@ try {
 import sys
 import bpy
 
-mod = "bl_ext.user_default.cloth_md"
+mod = "bl_ext.user_default.muslin"
 bpy.ops.preferences.addon_enable(module=mod)
 core = sys.modules[mod].cloth_core
 print("VERIFY core_version", core.core_version())
@@ -103,17 +103,17 @@ print("VERIFY core_version", core.core_version())
 bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=20, size=1.0)
 obj = bpy.context.active_object
 obj.location = (0.0, 0.0, 1.0)
-obj.cloth_md.collision_enabled = False   # 設定は布ごとに持つ
+obj.muslin.collision_enabled = False   # 設定は布ごとに持つ
 before = obj.data.vertices[0].co.z
-assert bpy.ops.cloth_md.start_sim() == {"FINISHED"}, "開始できない"
+assert bpy.ops.muslin.start_sim() == {"FINISHED"}, "開始できない"
 for f in range(1, 13):
     bpy.context.scene.frame_set(f)
 after = obj.data.vertices[0].co.z
 assert before - after > 0.05, f"布が落下していない: {before} -> {after}"
-assert hasattr(bpy.types, "CLOTHMD_PT_main"), "パネルが登録されていない"
+assert hasattr(bpy.types, "MUSLIN_PT_main"), "パネルが登録されていない"
 print("VERIFY ok")
 '@
-    $ProbePath = Join-Path $env:TEMP "cloth_md_ext_probe.py"
+    $ProbePath = Join-Path $env:TEMP "muslin_ext_probe.py"
     [System.IO.File]::WriteAllText($ProbePath, $Probe, $Utf8NoBom)
     & $Blender --factory-startup --background --python-expr "import sys; exec(open(r'$ProbePath', encoding='utf-8').read())"
     if ($LASTEXITCODE -ne 0) { throw "拡張として動作しませんでした" }

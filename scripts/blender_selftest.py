@@ -74,16 +74,16 @@ def advance(frames, start=1):
 # ================================================================= 本体
 
 def main():
-    import cloth_md
-    from cloth_md import bake_ops, cache_io, mesh_io, sim_state
+    import muslin
+    from muslin import bake_ops, cache_io, mesh_io, sim_state
 
     section("登録と解除")
-    cloth_md.register()
+    muslin.register()
     check("register() が通る", True, f"Blender {bpy.app.version_string}")
 
     handler_count = len(bpy.app.handlers.frame_change_post)
-    cloth_md.unregister()
-    cloth_md.register()
+    muslin.unregister()
+    muslin.register()
     check(
         "再登録してもハンドラが二重にならない",
         len(bpy.app.handlers.frame_change_post) == handler_count,
@@ -145,11 +145,11 @@ def main():
     section("シミュレーションの実行")
     clear_scene()
     obj = make_grid("Cloth", side=11, z=1.0)
-    props = obj.cloth_md      # 設定は布ごとに持つ
+    props = obj.muslin      # 設定は布ごとに持つ
     props.collision_enabled = False
 
     rest = positions_of(obj)
-    res = bpy.ops.cloth_md.start_sim()
+    res = bpy.ops.muslin.start_sim()
     check("Start Simulation が通る", res == {'FINISHED'}, str(res))
     check("状態が登録される", sim_state.is_running(obj))
 
@@ -175,7 +175,7 @@ def main():
         sim_state.get_state(obj)["current_frame"] == 18,
         f"frame {sim_state.get_state(obj)['current_frame']}",
     )
-    bpy.ops.cloth_md.stop_sim()
+    bpy.ops.muslin.stop_sim()
     check("Stop Simulation が通る", not sim_state.is_running(obj))
 
     # ----------------------------------------------------------------
@@ -185,12 +185,12 @@ def main():
     group = obj.vertex_groups.new(name="Pin")
     top = [i for i, v in enumerate(obj.data.vertices) if v.co.y > 0.99]
     group.add(top, 1.0, 'REPLACE')
-    props = obj.cloth_md
+    props = obj.muslin
     props.pin_vertex_group = "Pin"
     props.collision_enabled = False
 
     rest = positions_of(obj)
-    bpy.ops.cloth_md.start_sim()
+    bpy.ops.muslin.start_sim()
     check(
         "ピン留めした頂点が検出される",
         sim_state.get_state(obj)["info"]["pinned"] == len(top),
@@ -205,7 +205,7 @@ def main():
     free_move = max(abs(now[i][2] - rest[i][2]) for i in free)
     check("ピン留め頂点が動かない", pin_move < 1e-6, f"最大 {pin_move:.2e} m")
     check("自由な頂点は落ちる", free_move > 0.01, f"{free_move:.4f} m")
-    bpy.ops.cloth_md.stop_sim()
+    bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
     section("コリジョン (モディファイア評価済みメッシュ)")
@@ -216,13 +216,13 @@ def main():
     sphere.modifiers.new(name="Subsurf", type='SUBSURF')
 
     obj = make_grid("Drape", side=15, z=0.8)
-    props = obj.cloth_md
+    props = obj.muslin
     props.pin_vertex_group = ""
     props.collision_enabled = True
     props.collider_object = sphere
     props.collision_thickness = 0.02
 
-    bpy.ops.cloth_md.start_sim()
+    bpy.ops.muslin.start_sim()
     info = sim_state.get_state(obj)["info"]
     raw_tris = len(sphere.data.polygons) * 2
     check(
@@ -243,7 +243,7 @@ def main():
     center = sphere.matrix_world.translation
     deepest = min((obj.matrix_world @ v.co - center).length for v in obj.data.vertices)
     check("球を貫通していない", deepest > 0.4 - 1e-2, f"最小距離 {deepest:.4f} (半径 0.4)")
-    bpy.ops.cloth_md.stop_sim()
+    bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
     section("入力バリデーション")
@@ -252,7 +252,7 @@ def main():
     bpy.context.collection.objects.link(empty)
     bpy.context.view_layer.objects.active = empty
     try:
-        res = bpy.ops.cloth_md.start_sim()
+        res = bpy.ops.muslin.start_sim()
         check("頂点0のメッシュで中止される", res == {'CANCELLED'}, str(res))
     except RuntimeError as exc:
         check("頂点0のメッシュで中止される", True, f"例外で拒否: {type(exc).__name__}")
@@ -275,18 +275,18 @@ def main():
     denim = make_grid("Denim", side=11, z=1.0)
     denim.location = (2.0, 0.0, 0.0)
 
-    silk.cloth_md.fabric_preset = 'CHIFFON'
-    denim.cloth_md.fabric_preset = 'LEATHER'
+    silk.muslin.fabric_preset = 'CHIFFON'
+    denim.muslin.fabric_preset = 'LEATHER'
     check(
         "同じシーンで別々の生地を設定できる",
-        silk.cloth_md.density != denim.cloth_md.density,
-        f"{silk.cloth_md.density:.2f} kg/m2 vs {denim.cloth_md.density:.2f} kg/m2",
+        silk.muslin.density != denim.muslin.density,
+        f"{silk.muslin.density:.2f} kg/m2 vs {denim.muslin.density:.2f} kg/m2",
     )
 
     for obj in (silk, denim):
-        obj.cloth_md.collision_enabled = False
+        obj.muslin.collision_enabled = False
         bpy.context.view_layer.objects.active = obj
-        bpy.ops.cloth_md.start_sim()
+        bpy.ops.muslin.start_sim()
     check("2枚とも同時に走らせられる",
           sim_state.is_running(silk) and sim_state.is_running(denim))
 
@@ -295,12 +295,12 @@ def main():
     check("それぞれの状態が独立している", infos[0] is not infos[1])
     check(
         "設定を変えても互いに影響しない",
-        silk.cloth_md.density != denim.cloth_md.density,
+        silk.muslin.density != denim.muslin.density,
         "開始後も別々のまま",
     )
     for obj in (silk, denim):
         bpy.context.view_layer.objects.active = obj
-        bpy.ops.cloth_md.stop_sim()
+        bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
     section("厚みの自動設定")
@@ -321,7 +321,7 @@ def main():
 
     obj.scale = (1.0, 1.0, 1.0)
     bpy.context.view_layer.update()
-    props = obj.cloth_md
+    props = obj.muslin
     props.self_collision_enabled = True
     props.self_collision_thickness = 0.5   # エッジ長 0.05 に対して明らかに過大
     props.collision_enabled = False
@@ -332,7 +332,7 @@ def main():
         f"{len(warns)} 件",
     )
 
-    res = bpy.ops.cloth_md.fit_thickness()
+    res = bpy.ops.muslin.fit_thickness()
     check("Fit Thickness to Mesh が通る", res == {'FINISHED'}, str(res))
     check(
         "提案値がエッジ長より小さい",
@@ -348,21 +348,21 @@ def main():
     # ----------------------------------------------------------------
     section("ベイクと .blend をまたいだ再生 (CP-B14)")
     clear_scene()
-    blend_dir = tempfile.mkdtemp(prefix="cloth_md_selftest_")
+    blend_dir = tempfile.mkdtemp(prefix="muslin_selftest_")
     blend_path = os.path.join(blend_dir, "baked.blend")
 
     obj = make_grid("Baked", side=9, z=1.0)
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, 15
-    props = obj.cloth_md
+    props = obj.muslin
     props.collision_enabled = False
     props.pin_vertex_group = ""
 
-    res = bpy.ops.cloth_md.bake()
+    res = bpy.ops.muslin.bake()
     check("Bake to Disk が通る", res == {'FINISHED'}, str(res))
     check("ベイク済みの印がつく", bake_ops.is_baked(obj))
 
-    cache_dir = obj.get("cloth_md_cache_dir", "")
+    cache_dir = obj.get("muslin_cache_dir", "")
     check("キャッシュが書き出されている", cache_io.cache_size_bytes(cache_dir) > 0,
           f"{cache_io.cache_size_bytes(cache_dir)} bytes")
 
@@ -396,14 +396,14 @@ def main():
         f"差 {max(diff_15, diff_1):.2e} m",
     )
 
-    bpy.ops.cloth_md.free_bake()
+    bpy.ops.muslin.free_bake()
     check("Free Bake でキャッシュが消える",
           cache_io.cache_size_bytes(cache_dir) == 0)
 
     # ----------------------------------------------------------------
     section("パターンと縫製")
     clear_scene()
-    res = bpy.ops.cloth_md.add_pattern_piece()
+    res = bpy.ops.muslin.add_pattern_piece()
     check("Add Pattern Piece が通る", res == {'FINISHED'}, str(res))
     piece = bpy.context.active_object
     check("パターンに面がある", len(piece.data.polygons) > 0,
@@ -423,16 +423,16 @@ def main():
         elif abs(a.x - right) < 1e-5 and abs(b.x - right) < 1e-5:
             e.select = True
     bpy.ops.object.mode_set(mode='EDIT')
-    res = bpy.ops.cloth_md.add_seam()
+    res = bpy.ops.muslin.add_seam()
     bpy.ops.object.mode_set(mode='OBJECT')
     check("Add Seam From Selection が通る", res == {'FINISHED'}, str(res))
-    check("シームが登録される", len(piece.cloth_md_seams) == 1,
-          f"{len(piece.cloth_md_seams)} 本")
+    check("シームが登録される", len(piece.muslin_seams) == 1,
+          f"{len(piece.muslin_seams)} 本")
 
     pairs = mesh_io.build_seam_pairs(piece)
     check("縫い合わせるペアが作られる", len(pairs) > 0, f"{len(pairs)} 組")
 
-    res = bpy.ops.cloth_md.validate_seams()
+    res = bpy.ops.muslin.validate_seams()
     check("Validate Seams が通る", res == {'FINISHED'}, str(res))
 
     # メッシュを編集して頂点番号がずれたら、黙って無視せず警告すること
@@ -448,14 +448,14 @@ def main():
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)
-    obj.cloth_md.collision_enabled = False
-    bpy.ops.cloth_md.start_sim()
+    obj.muslin.collision_enabled = False
+    bpy.ops.muslin.start_sim()
     advance(5, start=1)
-    res = bpy.ops.cloth_md.print_timings()
+    res = bpy.ops.muslin.print_timings()
     check("Print Timings が通る", res == {'FINISHED'}, str(res))
     t = sim_state.get_state(obj)["sim"].timings()
     check("内訳の合計が正", t["total"] > 0.0, f"{t['total']:.3f} ms")
-    bpy.ops.cloth_md.stop_sim()
+    bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
     section("サンプルシーン")
@@ -468,7 +468,7 @@ def main():
 
         # サンプル側で布に印をつけてある。頂点数で選ぶと球を拾ってしまう
         cloth = next(
-            (o for o in scene.objects if o.get("cloth_md_sample", False)), None
+            (o for o in scene.objects if o.get("muslin_sample", False)), None
         )
         if cloth is None:
             check(f"{path.name}: 布がある", False)
@@ -476,7 +476,7 @@ def main():
 
         bpy.context.view_layer.objects.active = cloth
         rest = positions_of(cloth)
-        res = bpy.ops.cloth_md.start_sim()
+        res = bpy.ops.muslin.start_sim()
         if res != {'FINISHED'}:
             check(f"{path.name}: 開始できる", False, str(res))
             continue
@@ -496,12 +496,12 @@ def main():
         )
         check(
             f"{path.name}: 厚みの設定が妥当",
-            not mesh_io.check_thickness(cloth, cloth.cloth_md),
+            not mesh_io.check_thickness(cloth, cloth.muslin),
         )
-        bpy.ops.cloth_md.stop_sim()
+        bpy.ops.muslin.stop_sim()
 
     section("片付け")
-    cloth_md.unregister()
+    muslin.unregister()
     check(
         "unregister でハンドラが外れる",
         sim_state._frame_change_handler not in bpy.app.handlers.frame_change_post

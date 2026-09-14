@@ -3,8 +3,10 @@
 /addon/**/*.pyd
 /addon/**/*.so
 /dist/
-/addon/cloth_md.zip
+/addon/muslin.zip
 .claude/settings.local.json
 *.blend1
 *.blend2
-/addon/cloth_md/wheels/
+/addon/muslin/wheels/
+/addon/**/*.pyc
+/addon/**/*.pyc.tmp.*

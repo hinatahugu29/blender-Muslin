@@ -22,25 +22,25 @@ from . import sim_state
 def cache_directory(obj):
     """オブジェクト用のキャッシュ保存先を返す。
 
-    .blend が保存済みならその隣の `blendcache_cloth_md/` に、
+    .blend が保存済みならその隣の `blendcache_muslin/` に、
     未保存なら一時ディレクトリに置く(Blender の点キャッシュと同じ考え方)。
     """
     blend_path = bpy.data.filepath
     if blend_path:
-        base = os.path.join(os.path.dirname(blend_path), "blendcache_cloth_md")
+        base = os.path.join(os.path.dirname(blend_path), "blendcache_muslin")
     else:
-        base = os.path.join(bpy.app.tempdir, "blendcache_cloth_md")
+        base = os.path.join(bpy.app.tempdir, "blendcache_muslin")
     # オブジェクト名にファイル名として使えない文字が含まれても壊れないようにする
     safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in obj.name)
     return os.path.join(base, safe_name)
 
 
 def is_baked(obj):
-    return bool(obj is not None and obj.get("cloth_md_baked", False))
+    return bool(obj is not None and obj.get("muslin_baked", False))
 
 
 def baked_range(obj):
-    return int(obj.get("cloth_md_bake_start", 0)), int(obj.get("cloth_md_bake_end", 0))
+    return int(obj.get("muslin_bake_start", 0)), int(obj.get("muslin_bake_end", 0))
 
 
 def apply_baked_frame(obj, frame):
@@ -48,7 +48,7 @@ def apply_baked_frame(obj, frame):
 
     戻り値: 適用できたら True
     """
-    directory = obj.get("cloth_md_cache_dir", "")
+    directory = obj.get("muslin_cache_dir", "")
     if not directory:
         return False
 
@@ -58,7 +58,7 @@ def apply_baked_frame(obj, frame):
     try:
         positions = cache_io.read_frame(directory, clamped, len(obj.data.vertices))
     except cache_io.CacheError as exc:
-        print(f"[cloth_md] ベイク再生に失敗: {exc}")
+        print(f"[muslin] ベイク再生に失敗: {exc}")
         return False
 
     obj.data.vertices.foreach_set("co", positions)
@@ -66,10 +66,10 @@ def apply_baked_frame(obj, frame):
     return True
 
 
-class CLOTHMD_OT_bake(bpy.types.Operator):
+class MUSLIN_OT_bake(bpy.types.Operator):
     """シーンのフレーム範囲でシミュレーションを実行し、結果をディスクに保存する"""
 
-    bl_idname = "cloth_md.bake"
+    bl_idname = "muslin.bake"
     bl_label = "Bake to Disk"
     bl_options = {'REGISTER'}
 
@@ -81,7 +81,7 @@ class CLOTHMD_OT_bake(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         obj = context.active_object
-        props = obj.cloth_md
+        props = obj.muslin
 
         start = scene.frame_start
         end = scene.frame_end
@@ -143,7 +143,7 @@ class CLOTHMD_OT_bake(bpy.types.Operator):
             window_manager.progress_end()
 
         if was_running:
-            print("[cloth_md] ベイクしたのでライブシミュレーションは停止しました")
+            print("[muslin] ベイクしたのでライブシミュレーションは停止しました")
 
         baked_frames = sum(
             1 for f in range(start, end + 1) if cache_io.has_frame(directory, f)
@@ -158,10 +158,10 @@ class CLOTHMD_OT_bake(bpy.types.Operator):
             "blender": bpy.app.version_string,
         })
 
-        obj["cloth_md_baked"] = True
-        obj["cloth_md_bake_start"] = start
-        obj["cloth_md_bake_end"] = actual_end
-        obj["cloth_md_cache_dir"] = directory
+        obj["muslin_baked"] = True
+        obj["muslin_bake_start"] = start
+        obj["muslin_bake_end"] = actual_end
+        obj["muslin_cache_dir"] = directory
 
         scene.frame_set(original_frame)
         apply_baked_frame(obj, original_frame)
@@ -174,10 +174,10 @@ class CLOTHMD_OT_bake(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_free_bake(bpy.types.Operator):
+class MUSLIN_OT_free_bake(bpy.types.Operator):
     """ベイク済みキャッシュを削除して元のメッシュ形状に戻す"""
 
-    bl_idname = "cloth_md.free_bake"
+    bl_idname = "muslin.free_bake"
     bl_label = "Free Bake"
     bl_options = {'REGISTER'}
 
@@ -185,15 +185,15 @@ class CLOTHMD_OT_free_bake(bpy.types.Operator):
     def poll(cls, context):
         obj = context.active_object
         # 再生を停止した(シェイプキー変換後の)状態でも、キャッシュは削除できるようにする
-        return obj is not None and bool(obj.get("cloth_md_cache_dir", ""))
+        return obj is not None and bool(obj.get("muslin_cache_dir", ""))
 
     def execute(self, context):
         obj = context.active_object
-        directory = obj.get("cloth_md_cache_dir", "")
+        directory = obj.get("muslin_cache_dir", "")
         removed = cache_io.clear_cache(directory) if directory else 0
 
-        for key in ("cloth_md_baked", "cloth_md_bake_start",
-                    "cloth_md_bake_end", "cloth_md_cache_dir"):
+        for key in ("muslin_baked", "muslin_bake_start",
+                    "muslin_bake_end", "muslin_cache_dir"):
             if key in obj:
                 del obj[key]
 
@@ -201,13 +201,13 @@ class CLOTHMD_OT_free_bake(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_bake_to_shape_keys(bpy.types.Operator):
+class MUSLIN_OT_bake_to_shape_keys(bpy.types.Operator):
     """ベイク済みキャッシュをシェイプキー + キーフレームに変換する
 
     アドオン無しで再生でき、他ソフトへのエクスポートにも使える形になる。
     """
 
-    bl_idname = "cloth_md.bake_to_shape_keys"
+    bl_idname = "muslin.bake_to_shape_keys"
     bl_label = "Convert to Shape Keys"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -217,7 +217,7 @@ class CLOTHMD_OT_bake_to_shape_keys(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        directory = obj.get("cloth_md_cache_dir", "")
+        directory = obj.get("muslin_cache_dir", "")
         start, end = baked_range(obj)
         frame_count = end - start + 1
 
@@ -243,7 +243,7 @@ class CLOTHMD_OT_bake_to_shape_keys(bpy.types.Operator):
                 self.report({'ERROR'}, str(exc))
                 return {'CANCELLED'}
 
-            key = obj.shape_key_add(name=f"cloth_md_{frame:04d}", from_mix=False)
+            key = obj.shape_key_add(name=f"muslin_{frame:04d}", from_mix=False)
             key.data.foreach_set("co", positions)
 
             # 該当フレームだけ 1.0 になるようキーフレームを打つ
@@ -264,7 +264,7 @@ class CLOTHMD_OT_bake_to_shape_keys(bpy.types.Operator):
 
         # シェイプキーは Basis からの相対変位なので、ベイク再生がベースメッシュを
         # 書き換え続けると二重に変形してしまう。変換後は再生を止める。
-        obj["cloth_md_baked"] = False
+        obj["muslin_baked"] = False
 
         self.report(
             {'INFO'},
@@ -274,9 +274,9 @@ class CLOTHMD_OT_bake_to_shape_keys(bpy.types.Operator):
 
 
 _classes = (
-    CLOTHMD_OT_bake,
-    CLOTHMD_OT_free_bake,
-    CLOTHMD_OT_bake_to_shape_keys,
+    MUSLIN_OT_bake,
+    MUSLIN_OT_free_bake,
+    MUSLIN_OT_bake_to_shape_keys,
 )
 
 

@@ -6,9 +6,9 @@
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AddonSrcDir = Join-Path $RepoRoot "addon\cloth_md"
+$AddonSrcDir = Join-Path $RepoRoot "addon\muslin"
 $DistDir = Join-Path $RepoRoot "dist"
-$ZipPath = Join-Path $DistDir "cloth_md.zip"
+$ZipPath = Join-Path $DistDir "muslin.zip"
 
 Write-Host "==> Building Rust extension first"
 & (Join-Path $PSScriptRoot "build.ps1")
@@ -16,14 +16,14 @@ Write-Host "==> Building Rust extension first"
 if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir | Out-Null }
 if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
 
-# Stage into a temp dir so the zip's top-level entry is exactly "cloth_md/"
+# Stage into a temp dir so the zip's top-level entry is exactly "muslin/"
 # (Blender's zip installer requires the module folder at the zip root).
-$StageDir = Join-Path $env:TEMP "cloth_md_zip_stage"
+$StageDir = Join-Path $env:TEMP "muslin_zip_stage"
 if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
 New-Item -ItemType Directory -Path $StageDir | Out-Null
 
-Copy-Item -Path $AddonSrcDir -Destination (Join-Path $StageDir "cloth_md") -Recurse
-$Staged = Join-Path $StageDir "cloth_md"
+Copy-Item -Path $AddonSrcDir -Destination (Join-Path $StageDir "muslin") -Recurse
+$Staged = Join-Path $StageDir "muslin"
 Get-ChildItem -Path $Staged -Recurse -Directory -Filter "__pycache__" |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
 
@@ -37,7 +37,7 @@ foreach ($name in $ExtensionOnly) {
 }
 
 Write-Host "==> Zipping to $ZipPath"
-Compress-Archive -Path (Join-Path $StageDir "cloth_md") -DestinationPath $ZipPath -Force
+Compress-Archive -Path (Join-Path $StageDir "muslin") -DestinationPath $ZipPath -Force
 
 Remove-Item -Recurse -Force $StageDir
 

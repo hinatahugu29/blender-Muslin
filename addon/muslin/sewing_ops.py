@@ -31,15 +31,15 @@ def _store_chain(collection, indices):
 
 # ------------------------------------------------------ パターンピース作成
 
-class CLOTHMD_OT_add_pattern_piece(bpy.types.Operator):
+class MUSLIN_OT_add_pattern_piece(bpy.types.Operator):
     """指定サイズの長方形パターンピースを作成する(3Dカーソル位置、正面向き)"""
 
-    bl_idname = "cloth_md.add_pattern_piece"
+    bl_idname = "muslin.add_pattern_piece"
     bl_label = "Add Pattern Piece"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        props = context.scene.cloth_md_tools
+        props = context.scene.muslin_tools
         width = props.pattern_width
         height = props.pattern_height
         resolution = max(props.pattern_resolution, 1e-4)
@@ -85,10 +85,10 @@ class CLOTHMD_OT_add_pattern_piece(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_fill_outline(bpy.types.Operator):
+class MUSLIN_OT_fill_outline(bpy.types.Operator):
     """選択した閉じたエッジループの内側を三角形で埋め、パターンピースにする"""
 
-    bl_idname = "cloth_md.fill_outline"
+    bl_idname = "muslin.fill_outline"
     bl_label = "Fill Outline as Pattern"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -99,7 +99,7 @@ class CLOTHMD_OT_fill_outline(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        props = context.scene.cloth_md_tools
+        props = context.scene.muslin_tools
         target_length = max(props.pattern_resolution, 1e-4)
 
         bm = bmesh.from_edit_mesh(obj.data)
@@ -137,14 +137,14 @@ class CLOTHMD_OT_fill_outline(bpy.types.Operator):
 
 # -------------------------------------------------------------- シーム編集
 
-class CLOTHMD_OT_join_pieces(bpy.types.Operator):
+class MUSLIN_OT_join_pieces(bpy.types.Operator):
     """選択したパターンピースを1つのオブジェクトに統合する
 
     縫い目は同一メッシュ内の頂点インデックスで定義されるため、
     縫い合わせたいピースは事前に統合しておく必要がある。
     """
 
-    bl_idname = "cloth_md.join_pieces"
+    bl_idname = "muslin.join_pieces"
     bl_label = "Join Pattern Pieces"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -157,7 +157,7 @@ class CLOTHMD_OT_join_pieces(bpy.types.Operator):
         meshes = [o for o in context.selected_objects if o.type == 'MESH']
 
         # 統合すると頂点インデックスがずれるので、既存の縫い目は無効になる
-        existing = sum(len(getattr(o, "cloth_md_seams", [])) for o in meshes)
+        existing = sum(len(getattr(o, "muslin_seams", [])) for o in meshes)
 
         active = context.view_layer.objects.active
         if active not in meshes:
@@ -167,7 +167,7 @@ class CLOTHMD_OT_join_pieces(bpy.types.Operator):
         bpy.ops.object.join()
 
         if existing:
-            active.cloth_md_seams.clear()
+            active.muslin_seams.clear()
             self.report(
                 {'WARNING'},
                 f"{len(meshes)} ピースを統合しました。"
@@ -178,10 +178,10 @@ class CLOTHMD_OT_join_pieces(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_add_seam(bpy.types.Operator):
+class MUSLIN_OT_add_seam(bpy.types.Operator):
     """編集モードで選択した2本のエッジ列を1本の縫い目として登録する"""
 
-    bl_idname = "cloth_md.add_seam"
+    bl_idname = "muslin.add_seam"
     bl_label = "Add Seam From Selection"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -214,19 +214,19 @@ class CLOTHMD_OT_add_seam(bpy.types.Operator):
         chain_a, chain_b = chains
         flipped = seams.should_flip(chain_a, chain_b, positions)
 
-        seam = obj.cloth_md_seams.add()
-        seam.name = f"Seam {len(obj.cloth_md_seams)}"
+        seam = obj.muslin_seams.add()
+        seam.name = f"Seam {len(obj.muslin_seams)}"
         _store_chain(seam.chain_a, chain_a)
         _store_chain(seam.chain_b, chain_b)
         seam.flipped = flipped
-        obj.cloth_md_seam_active = len(obj.cloth_md_seams) - 1
+        obj.muslin_seam_active = len(obj.muslin_seams) - 1
 
         length_a = seams.seam_length(chain_a, positions)
         length_b = seams.seam_length(chain_b, positions)
         pairs = seams.pair_chains(chain_a, chain_b, positions, flipped)
 
         print(
-            f"[cloth_md] シーム追加: {len(chain_a)}頂点({length_a:.3f}m) <-> "
+            f"[muslin] シーム追加: {len(chain_a)}頂点({length_a:.3f}m) <-> "
             f"{len(chain_b)}頂点({length_b:.3f}m), ペア {len(pairs)}, flipped={flipped}"
         )
         self.report(
@@ -237,50 +237,50 @@ class CLOTHMD_OT_add_seam(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_remove_seam(bpy.types.Operator):
+class MUSLIN_OT_remove_seam(bpy.types.Operator):
     """選択中の縫い目を削除する"""
 
-    bl_idname = "cloth_md.remove_seam"
+    bl_idname = "muslin.remove_seam"
     bl_label = "Remove Seam"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj is not None and len(getattr(obj, "cloth_md_seams", [])) > 0
+        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
 
     def execute(self, context):
         obj = context.active_object
-        index = obj.cloth_md_seam_active
-        if 0 <= index < len(obj.cloth_md_seams):
-            obj.cloth_md_seams.remove(index)
-            obj.cloth_md_seam_active = max(0, index - 1)
+        index = obj.muslin_seam_active
+        if 0 <= index < len(obj.muslin_seams):
+            obj.muslin_seams.remove(index)
+            obj.muslin_seam_active = max(0, index - 1)
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_clear_seams(bpy.types.Operator):
+class MUSLIN_OT_clear_seams(bpy.types.Operator):
     """このオブジェクトの縫い目をすべて削除する"""
 
-    bl_idname = "cloth_md.clear_seams"
+    bl_idname = "muslin.clear_seams"
     bl_label = "Clear All Seams"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj is not None and len(getattr(obj, "cloth_md_seams", [])) > 0
+        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
 
     def execute(self, context):
-        count = len(context.active_object.cloth_md_seams)
-        context.active_object.cloth_md_seams.clear()
+        count = len(context.active_object.muslin_seams)
+        context.active_object.muslin_seams.clear()
         self.report({'INFO'}, f"{count} 本の縫い目を削除しました")
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_select_seam(bpy.types.Operator):
+class MUSLIN_OT_select_seam(bpy.types.Operator):
     """選択中の縫い目に含まれる頂点を、編集モードで選択する"""
 
-    bl_idname = "cloth_md.select_seam"
+    bl_idname = "muslin.select_seam"
     bl_label = "Select Seam Vertices"
 
     @classmethod
@@ -289,16 +289,16 @@ class CLOTHMD_OT_select_seam(bpy.types.Operator):
         return (
             obj is not None
             and obj.mode == 'EDIT'
-            and len(getattr(obj, "cloth_md_seams", [])) > 0
+            and len(getattr(obj, "muslin_seams", [])) > 0
         )
 
     def execute(self, context):
         obj = context.active_object
-        index = obj.cloth_md_seam_active
-        if not (0 <= index < len(obj.cloth_md_seams)):
+        index = obj.muslin_seam_active
+        if not (0 <= index < len(obj.muslin_seams)):
             return {'CANCELLED'}
 
-        seam = obj.cloth_md_seams[index]
+        seam = obj.muslin_seams[index]
         chain_a, chain_b = mesh_io.seam_chains(seam)
         wanted = set(chain_a) | set(chain_b)
 
@@ -313,16 +313,16 @@ class CLOTHMD_OT_select_seam(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class CLOTHMD_OT_validate_seams(bpy.types.Operator):
+class MUSLIN_OT_validate_seams(bpy.types.Operator):
     """全シームの状態(ペア数・縫い目長・長さの食い違い)を検査して報告する"""
 
-    bl_idname = "cloth_md.validate_seams"
+    bl_idname = "muslin.validate_seams"
     bl_label = "Validate Seams"
 
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj is not None and len(getattr(obj, "cloth_md_seams", [])) > 0
+        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
 
     def execute(self, context):
         obj = context.active_object
@@ -332,8 +332,8 @@ class CLOTHMD_OT_validate_seams(bpy.types.Operator):
         problems = []
         total_pairs = 0
 
-        print("[cloth_md] ---- seam validation ----")
-        for seam in obj.cloth_md_seams:
+        print("[muslin] ---- seam validation ----")
+        for seam in obj.muslin_seams:
             chain_a, chain_b = mesh_io.seam_chains(seam)
 
             if any(i >= vertex_count for i in chain_a + chain_b):
@@ -352,30 +352,30 @@ class CLOTHMD_OT_validate_seams(bpy.types.Operator):
                 problems.append(f"{seam.name}: {status} ({length_a:.3f}m vs {length_b:.3f}m)")
 
             print(
-                f"[cloth_md]  {seam.name}: {len(chain_a)}v/{length_a:.3f}m <-> "
+                f"[muslin]  {seam.name}: {len(chain_a)}v/{length_a:.3f}m <-> "
                 f"{len(chain_b)}v/{length_b:.3f}m, ペア {len(pairs)}, "
                 f"flipped={seam.flipped}, enabled={seam.enabled} — {status}"
             )
 
         if problems:
             for p in problems:
-                print(f"[cloth_md]  ! {p}")
+                print(f"[muslin]  ! {p}")
             self.report({'WARNING'}, f"{len(problems)} 件の問題。詳細はコンソール")
             return {'FINISHED'}
 
-        self.report({'INFO'}, f"{len(obj.cloth_md_seams)} 本すべて正常 / 合計 {total_pairs} ペア")
+        self.report({'INFO'}, f"{len(obj.muslin_seams)} 本すべて正常 / 合計 {total_pairs} ペア")
         return {'FINISHED'}
 
 
 _classes = (
-    CLOTHMD_OT_add_pattern_piece,
-    CLOTHMD_OT_fill_outline,
-    CLOTHMD_OT_join_pieces,
-    CLOTHMD_OT_add_seam,
-    CLOTHMD_OT_remove_seam,
-    CLOTHMD_OT_clear_seams,
-    CLOTHMD_OT_select_seam,
-    CLOTHMD_OT_validate_seams,
+    MUSLIN_OT_add_pattern_piece,
+    MUSLIN_OT_fill_outline,
+    MUSLIN_OT_join_pieces,
+    MUSLIN_OT_add_seam,
+    MUSLIN_OT_remove_seam,
+    MUSLIN_OT_clear_seams,
+    MUSLIN_OT_select_seam,
+    MUSLIN_OT_validate_seams,
 )
 
 

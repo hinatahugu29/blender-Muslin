@@ -1,4 +1,4 @@
-//! cloth_core: Blenderアドオン `cloth_md` 用の物理コア。
+//! cloth_core: Blenderアドオン `muslin` 用の物理コア。
 //!
 //! 物理本体は [`sim`] にあり pyo3 に依存しない。このファイルは Python 束縛のみ。
 //! `cargo test --no-default-features` で Python 抜きにコアだけを検証できる。

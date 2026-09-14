@@ -116,7 +116,7 @@ def build_seam_pairs(obj, positions=None, report=None):
     メッシュを編集して頂点番号が変わると縫い目は壊れるが、黙って飛ばすと
     「縫ったはずなのに縫われない」が原因不明のまま起きる。
     """
-    if not getattr(obj, "cloth_md_seams", None):
+    if not getattr(obj, "muslin_seams", None):
         return []
 
     if positions is None:
@@ -126,7 +126,7 @@ def build_seam_pairs(obj, positions=None, report=None):
     pairs = []
     seen = set()
 
-    for seam in obj.cloth_md_seams:
+    for seam in obj.muslin_seams:
         if not seam.enabled:
             continue
         chain_a, chain_b = seam_chains(seam)
