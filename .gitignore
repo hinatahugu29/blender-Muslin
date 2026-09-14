@@ -5,3 +5,5 @@
 /dist/
 /addon/cloth_md.zip
 .claude/settings.local.json
+*.blend1
+*.blend2
