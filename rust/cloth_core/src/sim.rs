@@ -120,6 +120,11 @@ impl Default for SimParams {
 /// その1フレームだけ食い込むことがある(実測で最大 0.0149)。
 pub const MARGIN_SAFETY: f64 = 1.5;
 
+/// これ以上の頂点数なら並列化する。
+///
+/// 下回るとスレッド起動のコストが上回る(計測で決めた値)。
+pub const PARALLEL_MIN_VERTICES: usize = 4000;
+
 /// `Instant` からの経過をミリ秒で返す。
 fn ms_since(t: std::time::Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
@@ -722,23 +727,34 @@ impl ClothSim {
     }
 
     /// コリジョンオブジェクト表面から布を厚み分だけ押し出す。
+    ///
+    /// **頂点ごとに独立**(自分の位置しか書かず、コライダーは読むだけ)なので
+    /// 並列化しても結果が変わらない。距離制約と違って収束の性質にも影響しない。
     fn resolve_object_collisions(
         &mut self,
         params: &SimParams,
         contacts: &mut Vec<(usize, Vec3, f64)>,
     ) {
+        use rayon::prelude::*;
+
         let thickness = params.collision_thickness.max(0.0);
         // 深く潜り込んだ頂点も拾えるよう、探索半径は厚みより大きめに取る
         let search_radius = (thickness * 4.0).max(thickness + 0.02);
+        let friction = params.collision_friction;
+        let colliders = &self.colliders;
+        let inv_mass = &self.inv_mass;
 
-        for i in 0..self.positions.len() {
-            if self.inv_mass[i] == 0.0 {
-                continue;
+        // 小さいメッシュでは並列化のオーバーヘッドが上回るので、閾値を設ける
+        let parallel = self.positions.len() >= PARALLEL_MIN_VERTICES;
+
+        let solve = |i: usize, p: &mut Vec3| -> Option<(usize, Vec3, f64)> {
+            if inv_mass[i] == 0.0 {
+                return None;
             }
-            let p = self.positions[i];
-
-            for collider in &self.colliders {
-                let Some((closest, tri, dist)) = collider.closest_point(p, search_radius) else {
+            let mut hit = None;
+            for collider in colliders.iter() {
+                let Some((closest, tri, dist)) = collider.closest_point(*p, search_radius)
+                else {
                     continue;
                 };
                 let Some(face_normal) = collider.triangle_normal(tri) else {
@@ -765,11 +781,27 @@ impl ClothSim {
                 };
 
                 if penetration > 0.0 {
-                    self.positions[i] = closest.add(outward.scale(thickness));
-                    contacts.push((i, outward, params.collision_friction));
+                    *p = closest.add(outward.scale(thickness));
+                    hit = Some((i, outward, friction));
                 }
             }
-        }
+            hit
+        };
+
+        let hits: Vec<(usize, Vec3, f64)> = if parallel {
+            self.positions
+                .par_iter_mut()
+                .enumerate()
+                .filter_map(|(i, p)| solve(i, p))
+                .collect()
+        } else {
+            self.positions
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(i, p)| solve(i, p))
+                .collect()
+        };
+        contacts.extend(hits);
     }
 
     /// 自己衝突: 空間ハッシュで近接頂点対を見つけ、厚み分だけ押し離す。
@@ -1151,6 +1183,44 @@ mod tests {
             max_diff < 1e-6,
             "頂点位置が食い違う: 最大差 {max_diff} m"
         );
+    }
+
+    /// 並列化した衝突解決が決定的であること
+    ///
+    /// 頂点ごとに独立なので結果は変わらないはずだが、並列化は非決定性を
+    /// 持ち込みやすい。ベイクとスクラブは決定性の上に成り立っているので、
+    /// 並列の閾値を超える大きさで明示的に確かめる。
+    #[test]
+    fn parallel_collision_is_deterministic() {
+        let side = 71; // 5,041頂点。PARALLEL_MIN_VERTICES(4,000)を超える
+        assert!(side * side > PARALLEL_MIN_VERTICES, "閾値を超える大きさで試すこと");
+
+        let run = || {
+            let (positions, edges, bending, tris, _) = build_grid(side, side, 0.03);
+            let mut sim =
+                ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+            let center = Vec3::new(1.0, 1.0, -0.3);
+            let (sphere_pos, sphere_tris) = build_sphere(center, 0.35, 24, 16);
+            sim.add_collider(sphere_pos, sphere_tris);
+            let params = SimParams {
+                collision_enabled: true,
+                collision_thickness: 0.01,
+                ..Default::default()
+            };
+            for _ in 0..30 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            sim.positions.clone()
+        };
+
+        let a = run();
+        let b = run();
+        let max_diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| x.sub(*y).length())
+            .fold(0.0_f64, f64::max);
+        assert_eq!(max_diff, 0.0, "並列化で結果がぶれている: 最大差 {max_diff}");
     }
 
     /// 衝突後の伸び補正は、貫通を増やさずに伸び誤差を減らす

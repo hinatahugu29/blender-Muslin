@@ -26,6 +26,12 @@ mod bindings {
         Ok(a + b)
     }
 
+    /// rayon が実際に使っているスレッド数(並列化の効きを確かめる診断用)
+    #[pyfunction]
+    fn thread_count() -> usize {
+        rayon::current_num_threads()
+    }
+
     /// ビルドされたコアのバージョン。アドオン側で .pyd の更新漏れを検出するのに使う。
     #[pyfunction]
     fn core_version() -> &'static str {
@@ -302,6 +308,7 @@ mod bindings {
         m.add_function(wrap_pyfunction!(hello, m)?)?;
         m.add_function(wrap_pyfunction!(add, m)?)?;
         m.add_function(wrap_pyfunction!(core_version, m)?)?;
+        m.add_function(wrap_pyfunction!(thread_count, m)?)?;
         m.add_class::<ClothSim>()?;
         Ok(())
     }

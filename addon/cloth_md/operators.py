@@ -194,7 +194,9 @@ class CLOTHMD_OT_print_timings(bpy.types.Operator):
             self.report({'WARNING'}, "まだ1フレームも計算していません")
             return {'CANCELLED'}
 
-        print(f"[cloth_md] ---- '{obj.name}' 直近フレームの内訳 ----")
+        threads = cloth_core.thread_count()
+        print(f"[cloth_md] ---- '{obj.name}' 直近フレームの内訳 "
+              f"(コリジョンは最大 {threads} スレッド) ----")
         for key, label in self._ROWS:
             value = timings.get(key, 0.0)
             if value < 1e-4:
