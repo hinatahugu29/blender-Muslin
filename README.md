@@ -144,6 +144,10 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 なお**メッシュを細かくすると許容値はさらに小さくなります**(エッジ長が縮むため)。
 自己衝突が破綻したときに細分化するのは逆効果です。
 
+Collision パネルの **`Fit Thickness to Mesh`** を押すと、メッシュのエッジ長
+(中央値・スケール適用後)から `Thickness` と `Self Thickness` を自動で決めます。
+過大なまま `Start Simulation` した場合も警告が出ます。
+
 ### 収束は Iterations より Substeps
 
 **衝突の解決はサブステップごとに1回**で、制約反復ループの外側にあります。

@@ -98,6 +98,8 @@ class CLOTHMD_PT_collision(_ClothMDPanelBase, bpy.types.Panel):
         layout = self.layout
         props = context.scene.cloth_md_props
 
+        layout.operator("cloth_md.fit_thickness", icon='DRIVER_DISTANCE')
+
         col = layout.column(align=True)
         col.prop(props, "collision_enabled")
         sub = col.column(align=True)

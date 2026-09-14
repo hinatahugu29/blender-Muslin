@@ -268,6 +268,49 @@ def main():
     )
 
     # ----------------------------------------------------------------
+    section("厚みの自動設定")
+    clear_scene()
+    obj = make_grid("Fine", side=21, size=1.0)  # エッジ長 0.05
+    edge = mesh_io.median_edge_length(obj.data)
+    check("エッジ長の中央値を取れる", abs(edge - 0.05) < 1e-4, f"{edge:.5f} m")
+
+    obj.scale = (2.0, 2.0, 2.0)
+    bpy.context.view_layer.update()
+    scaled = mesh_io.median_edge_length(obj.data)
+    hint = mesh_io.suggest_thickness(obj)
+    check(
+        "スケールを掛けた実寸で厚みを提案する",
+        abs(hint[1] - scaled * 2.0 * 0.4) < 1e-4,
+        f"自己衝突 {hint[1]:.5f} (ワールドのエッジ長 {scaled * 2.0:.5f})",
+    )
+
+    obj.scale = (1.0, 1.0, 1.0)
+    bpy.context.view_layer.update()
+    props = bpy.context.scene.cloth_md_props
+    props.self_collision_enabled = True
+    props.self_collision_thickness = 0.5   # エッジ長 0.05 に対して明らかに過大
+    props.collision_enabled = False
+    warns = mesh_io.check_thickness(obj, props)
+    check(
+        "過大な Self Thickness を警告する",
+        any("Self Thickness" in w for w in warns),
+        f"{len(warns)} 件",
+    )
+
+    res = bpy.ops.cloth_md.fit_thickness()
+    check("Fit Thickness to Mesh が通る", res == {'FINISHED'}, str(res))
+    check(
+        "提案値がエッジ長より小さい",
+        props.self_collision_thickness < edge,
+        f"{props.self_collision_thickness:.5f} < エッジ長 {edge:.5f}",
+    )
+    check(
+        "設定し直すと警告が消える",
+        not mesh_io.check_thickness(obj, props),
+    )
+    props.self_collision_enabled = False
+
+    # ----------------------------------------------------------------
     section("ベイクと .blend をまたいだ再生 (CP-B14)")
     clear_scene()
     blend_dir = tempfile.mkdtemp(prefix="cloth_md_selftest_")

@@ -186,6 +186,47 @@ def build_collider_mesh(obj, depsgraph=None, positions_only=False):
     return positions, triangles
 
 
+def median_edge_length(mesh):
+    """エッジ長の中央値。厚みの妥当な上限を決めるのに使う。
+
+    平均ではなく中央値を使うのは、細分化の不均一なメッシュで極端に長い/短い
+    エッジに引きずられないようにするため。エッジが無ければ None。
+    """
+    count = len(mesh.edges)
+    if count == 0:
+        return None
+
+    flat = np.empty(count * 2, dtype=np.int32)
+    mesh.edges.foreach_get("vertices", flat)
+    coords = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", coords)
+    coords = coords.reshape(-1, 3).astype(np.float64)
+
+    pairs = flat.reshape(-1, 2)
+    lengths = np.linalg.norm(coords[pairs[:, 0]] - coords[pairs[:, 1]], axis=1)
+    return float(np.median(lengths))
+
+
+def suggest_thickness(obj):
+    """このメッシュに合う (collision_thickness, self_collision_thickness) を返す。
+
+    自己衝突は、制約で結ばれていない最も近い頂点対(四角形グリッドなら斜め方向、
+    エッジ長の約1.41倍)より小さくないと、平らな状態で頂点対が押し合って座屈する。
+    エッジ長の 0.4 倍を目安にすると、三角形メッシュでも余裕がある。
+
+    エッジが無い場合は None を返す。
+    """
+    edge = median_edge_length(obj.data)
+    if edge is None or edge <= 0.0:
+        return None
+
+    # オブジェクトのスケールはワールド長に効くので掛けておく
+    scale = obj.matrix_world.to_scale()
+    edge *= (abs(scale.x) + abs(scale.y) + abs(scale.z)) / 3.0
+
+    return edge * 0.25, edge * 0.4
+
+
 # ---------------------------------------------------------------- 検証
 
 class MeshValidationError(Exception):
@@ -251,13 +292,38 @@ def validate_mesh(obj):
 
 # ------------------------------------------------------------------ 構築
 
+def check_thickness(obj, props):
+    """厚みの設定がメッシュの細かさに対して妥当かを調べ、警告文を返す。"""
+    suggestion = suggest_thickness(obj)
+    if suggestion is None:
+        return []
+
+    collision_hint, self_hint = suggestion
+    warnings = []
+
+    if props.self_collision_enabled and props.self_collision_thickness > self_hint * 1.5:
+        warnings.append(
+            f"Self Thickness ({props.self_collision_thickness:.4f}) が"
+            f"メッシュの細かさに対して大きすぎます。"
+            f"{self_hint:.4f} 以下を推奨(Fit Thickness to Mesh で設定できます)"
+        )
+
+    if props.collision_enabled and props.collision_thickness > collision_hint * 2.0:
+        warnings.append(
+            f"Thickness ({props.collision_thickness:.4f}) が大きすぎて"
+            f"布がコライダーから浮きます。{collision_hint:.4f} 前後を推奨"
+        )
+
+    return warnings
+
+
 def build_cloth_sim(obj, props):
     """obj(メッシュオブジェクト)から ClothSim を構築する。座標はワールド座標系。
 
     戻り値: (sim, info) info には頂点数・制約数などの診断情報が入る。
     """
     mesh = obj.data
-    warnings = validate_mesh(obj)
+    warnings = validate_mesh(obj) + check_thickness(obj, props)
     positions = get_world_positions(obj)
     edges, bending_pairs, triangles = _collect_topology(mesh)
     pinned = find_vertex_group_indices(obj, props.pin_vertex_group)

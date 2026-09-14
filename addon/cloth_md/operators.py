@@ -208,6 +208,40 @@ class CLOTHMD_OT_print_timings(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CLOTHMD_OT_fit_thickness(bpy.types.Operator):
+    """厚みをメッシュの細かさに合わせて設定する"""
+
+    bl_idname = "cloth_md.fit_thickness"
+    bl_label = "Fit Thickness to Mesh"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH'
+
+    def execute(self, context):
+        obj = context.active_object
+        props = context.scene.cloth_md_props
+
+        suggestion = mesh_io.suggest_thickness(obj)
+        if suggestion is None:
+            self.report({'ERROR'}, "エッジが無いため厚みを決められません")
+            return {'CANCELLED'}
+
+        collision, self_collision = suggestion
+        props.collision_thickness = collision
+        props.self_collision_thickness = self_collision
+
+        edge = mesh_io.median_edge_length(obj.data)
+        self.report(
+            {'INFO'},
+            f"エッジ長 {edge:.4f} に合わせました: "
+            f"Thickness {collision:.4f} / Self {self_collision:.4f}",
+        )
+        return {'FINISHED'}
+
+
 class CLOTHMD_OT_start_sim(bpy.types.Operator):
     """選択中のメッシュオブジェクトでクロスシミュレーションを開始する"""
 
@@ -267,6 +301,7 @@ _classes = (
     CLOTHMD_OT_test_rust,
     CLOTHMD_OT_self_test,
     CLOTHMD_OT_print_timings,
+    CLOTHMD_OT_fit_thickness,
     CLOTHMD_OT_start_sim,
     CLOTHMD_OT_stop_sim,
 )
