@@ -107,10 +107,14 @@ def seam_chains(seam):
     )
 
 
-def build_seam_pairs(obj, positions=None):
+def build_seam_pairs(obj, positions=None, report=None):
     """オブジェクトに登録された全シームから、縫い合わせる頂点ペアを作る。
 
     各シームは2本の頂点チェーンを弧長で対応付ける(頂点数が違ってもよい)。
+
+    `report` にリストを渡すと、壊れて使えなかった縫い目の名前が入る。
+    メッシュを編集して頂点番号が変わると縫い目は壊れるが、黙って飛ばすと
+    「縫ったはずなのに縫われない」が原因不明のまま起きる。
     """
     if not getattr(obj, "cloth_md_seams", None):
         return []
@@ -128,6 +132,8 @@ def build_seam_pairs(obj, positions=None):
         chain_a, chain_b = seam_chains(seam)
         # メッシュ編集で頂点が減っている可能性があるので範囲を確認する
         if any(i >= vertex_count for i in chain_a + chain_b):
+            if report is not None:
+                report.append(seam.name)
             continue
         for ia, ib in seams.pair_chains(chain_a, chain_b, positions, seam.flipped):
             key = (ia, ib) if ia < ib else (ib, ia)
@@ -340,7 +346,15 @@ def build_cloth_sim(obj, props):
         props.bending_compliance,
     )
 
-    seam_pairs = build_seam_pairs(obj, positions)
+    broken_seams = []
+    seam_pairs = build_seam_pairs(obj, positions, report=broken_seams)
+    if broken_seams:
+        warnings.append(
+            f"頂点番号が合わない縫い目が {len(broken_seams)} 本あります"
+            f"({', '.join(broken_seams[:3])}"
+            f"{' ほか' if len(broken_seams) > 3 else ''})。"
+            "メッシュを編集した後は縫い直してください"
+        )
     if seam_pairs:
         sim.set_seams(seam_pairs, props.seam_compliance)
         sim.set_seam_closure(0.0)

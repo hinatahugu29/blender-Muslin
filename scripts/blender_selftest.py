@@ -435,6 +435,15 @@ def main():
     res = bpy.ops.cloth_md.validate_seams()
     check("Validate Seams が通る", res == {'FINISHED'}, str(res))
 
+    # メッシュを編集して頂点番号がずれたら、黙って無視せず警告すること
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.delete(type='VERT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    broken = []
+    mesh_io.build_seam_pairs(piece, report=broken)
+    check("壊れた縫い目を報告する", len(broken) == 1, f"{broken}")
+
     # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()
