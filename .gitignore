@@ -10,3 +10,4 @@
 /addon/muslin/wheels/
 /addon/**/*.pyc
 /addon/**/*.pyc.tmp.*
+/dist-ci/

@@ -160,6 +160,10 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1 -Bench
 ビルド済みの `.pyd` を Python から直接叩き、自由落下が解析解に一致するか、
 布が球を貫通しないか、縫い目が閉じるか等を検査します(`--bench` で性能計測も)。
 
+**このハーネスには numpy が要ります**(`python -m pip install numpy`)。
+Blender には同梱されていますが、ここは素の Python で動くため別途必要です。
+無い場合は座標変換の項目が `[SKIP]` になり、集計にも残ります。
+
 Rust 側の単体テストのみを走らせる場合:
 
 ```bash

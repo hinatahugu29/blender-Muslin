@@ -1,0 +1,69 @@
+# Blender を必要としない検証を自動で回す。
+#
+# この repo の検証は3層ある:
+#   1. cargo test            — 物理コア(pyo3 非依存)          → CI で回せる
+#   2. verify_core.py        — ビルドした拡張モジュール + bpy 非依存部分 → CI で回せる
+#   3. blender_selftest.py   — アドオン層(bpy 必須)           → CI では回せない
+#
+# 3 は Blender の実行が要るのでローカル専用。README の手順を参照。
+#
+# clippy はゲートにしていない。`-D warnings` にすると Vec3::sub / add の命名や
+# 引数の個数など、意図してそうしている箇所に当たるため。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core-tests:
+    name: 物理コアの単体テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/cloth_core
+
+      # --no-default-features で pyo3 を外せるので Python 抜きで検証できる。
+      # 物理コアを pyo3 非依存に保っている理由がここで効く。
+      - name: cargo test
+        run: cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo.toml
+
+  verify-core:
+    name: コア検証ハーネス
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/cloth_core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # numpy は transform.py が使う。無いと座標変換の項目が SKIP になる
+      - name: 依存を入れる
+        run: python -m pip install --upgrade pip maturin numpy
+
+      # 配布は abi3-py311 の wheel なので、CI でも同じ作り方で通す
+      - name: 拡張モジュールをビルドして入れる
+        run: |
+          maturin build --release --manifest-path rust/cloth_core/Cargo.toml --out dist-ci
+          python -m pip install --no-index --find-links dist-ci cloth_core
+
+      - name: verify_core.py
+        run: python scripts/verify_core.py

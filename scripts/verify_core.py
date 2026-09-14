@@ -34,12 +34,35 @@ except ImportError as exc:  # pragma: no cover
 
 
 results: list[tuple[str, bool, str]] = []
+skipped: list[tuple[str, str]] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, ok, detail))
     mark = "PASS" if ok else "FAIL"
     print(f"[{mark}] {name}" + (f"  —  {detail}" if detail else ""))
+
+
+def skip(name: str, reason: str) -> None:
+    """検証できなかった項目を記録する。
+
+    黙って飛ばすと「通った」と区別がつかないので、最後の集計にも出す。
+    """
+    skipped.append((name, reason))
+    print(f"[SKIP] {name}  —  {reason}")
+
+
+def has_numpy() -> bool:
+    """numpy が使えるか。
+
+    Blender には同梱されているが、このハーネスは素の Python で動くので
+    入っているとは限らない。numpy を使う項目だけを切り分けるために見る。
+    """
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 # ----------------------------------------------------------------- ヘルパー
@@ -555,6 +578,16 @@ def test_seam_logic():
 
 def test_transform():
     """ローカル<->ワールドの座標変換(bpy 非依存)を検証する"""
+    if not has_numpy():
+        # transform.py は numpy 実装なので、無い環境では検証しようがない。
+        # Blender 内では同梱の numpy が使われるため、この経路は
+        # blender_selftest.py の「mesh_io の座標往復」でも押さえてある。
+        skip(
+            "座標変換 (transform.py)",
+            "numpy が無い。python -m pip install numpy で入れてください",
+        )
+        return
+
     import transform  # addon/muslin/transform.py
 
     def reference(flat, m):
@@ -733,7 +766,12 @@ def main():
         benchmark()
 
     failed = [name for name, ok, _ in results if not ok]
-    print(f"\n==== {len(results) - len(failed)}/{len(results)} passed ====")
+    summary = f"\n==== {len(results) - len(failed)}/{len(results)} passed"
+    if skipped:
+        summary += f", {len(skipped)} skipped"
+    print(summary + " ====")
+    for name, reason in skipped:
+        print(f"SKIPPED: {name} ({reason})")
     if failed:
         print("FAILED: " + ", ".join(failed))
         return 1
