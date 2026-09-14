@@ -106,6 +106,22 @@ Rust 側の単体テストのみを走らせる場合:
 cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo.toml
 ```
 
+### アドオン層(bpy 依存部分)の検証
+
+上記2つは物理コアと bpy 非依存モジュールしか見ません。オペレータやハンドラ、
+ベイク、Blender との座標受け渡しは、**Blender をヘッドレスで起動して**検証します。
+
+```bash
+blender --background --factory-startup --python scripts/blender_selftest.py
+```
+
+シミュレーションの実行、ピン留め、モディファイア適用後のコライダー、リネーム追従、
+**ベイクした .blend を閉じて開き直しても再生できるか**、パターンと縫い目の作成、
+入力バリデーションを確認します(42項目)。
+
+ビューポートへの縫い線描画と操作感だけは、この方法では確認できません。
+[CHECKPOINTS.md](CHECKPOINTS.md) の手動項目として残しています。
+
 ## パラメータの決め方
 
 4,225頂点(65x65、エッジ長 0.031m)を球に被せた実測にもとづく指針です。

@@ -127,11 +127,12 @@
 - 現状(2026-09-14): M1・M2・M3 完了、M6 も大半を実装。自動テスト(Rust 20 + Python 55項目)通過。
   Blender実機確認のみ未実施([CHECKPOINTS.md](CHECKPOINTS.md) の CP-B1〜B13)。
   **MDらしさの核心(パターン作成 → 縫い目指定 → 縫製シミュレーション → ベイク)が一通り繋がった状態**。
-- **テスト網羅の偏りに注意**: 検証が効いているのは Rust コアと、bpy 非依存に切り出した
-  `seams.py` / `cache_io.py` / `transform.py` のみ。残る Blender 依存モジュール
-  (`operators.py`, `panels.py`, `sim_state.py`, `bake_ops.py`, `mesh_io.py`,
-  `sewing_ops.py`, `overlay.py`, `properties.py`)は **構文チェックしか通っていない**。
-  ロジックを足すときは、可能な限り bpy 非依存モジュールへ切り出してテストすること。
+- **テスト網羅(2026-09-15 更新)**: `scripts/blender_selftest.py` で Blender を
+  ヘッドレス起動し、アドオン層を42項目検証するようにした。これで
+  `operators.py` / `sim_state.py` / `mesh_io.py` / `bake_ops.py` / `sewing_ops.py` /
+  `properties.py` が実際に動かされる。**残る未検証は `overlay.py`(ビューポート描画)と
+  `panels.py` の見た目だけ**。
+  なお bpy 非依存に切り出せるロジックは今後も切り出すこと(こちらのほうが速く回る)。
 - コードレビューで見つけて修正した問題(2026-09-14):
   - `frame_change_post` ハンドラに `@persistent` が無く、**.blend を読み込むと
     ベイク再生が黙って止まっていた**。`load_post` で状態を捨てる処理も追加。
