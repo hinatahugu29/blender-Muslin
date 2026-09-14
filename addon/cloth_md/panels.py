@@ -57,6 +57,7 @@ class CLOTHMD_PT_solver(_ClothMDPanelBase, bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(props, "iterations")
         col.prop(props, "substeps")
+        col.prop(props, "post_collision_iterations")
         col.prop(props, "use_cache")
 
 

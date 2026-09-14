@@ -50,10 +50,23 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
     )
     substeps: bpy.props.IntProperty(
         name="Substeps",
-        description="1フレームを分割するサブステップ数。多いほど安定するが重くなる",
+        description=(
+            "1フレームを分割するサブステップ数。"
+            "伸び誤差を減らすには Iterations より効率が良い(実測で約3倍)"
+        ),
         default=4,
         min=1,
         soft_max=20,
+    )
+    post_collision_iterations: bpy.props.IntProperty(
+        name="Post-Collision",
+        description=(
+            "衝突の押し出しで壊れた伸びを解き直す回数。"
+            "厚みを大きく取ったときの布の膨張を抑える(0で無効)"
+        ),
+        default=2,
+        min=0,
+        soft_max=16,
     )
 
     # --- 外力 ---
@@ -66,10 +79,13 @@ class CLOTHMD_PG_properties(bpy.types.PropertyGroup):
     )
     wind: bpy.props.FloatVectorProperty(
         name="Wind",
-        description="一様な風の加速度ベクトル(m/s^2)",
+        description=(
+            "一様な風。加速度ではなく面に働く圧力(N/m^2)として扱うので、"
+            "同じ風でも Density が高い生地ほどなびきにくい"
+        ),
         default=(0.0, 0.0, 0.0),
         size=3,
-        subtype='ACCELERATION',
+        subtype='XYZ',
     )
     damping: bpy.props.FloatProperty(
         name="Damping",

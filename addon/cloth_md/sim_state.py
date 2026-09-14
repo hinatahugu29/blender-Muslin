@@ -151,6 +151,7 @@ def advance_one_frame(state, props, dt, target_frame):
         props.collision_friction,
         props.self_collision_enabled,
         props.self_collision_thickness,
+        props.post_collision_iterations,
     )
 
 

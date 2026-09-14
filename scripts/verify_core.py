@@ -356,6 +356,37 @@ def benchmark():
     timed("両方", True, True)
 
 
+def test_post_collision_correction():
+    """衝突後の伸び補正が、貫通を増やさずに伸び誤差を減らすことを確認する"""
+    center, radius = 0.5, 0.3
+    sphere_center = (center, center, -0.35)
+    sphere_pos, sphere_tris = build_sphere(sphere_center, radius)
+
+    n, spacing = 21, 0.05
+    positions, edges, bending, tris, _top = build_grid(n, n, spacing)
+
+    def drape(post):
+        sim = cloth_core.ClothSim(list(positions), edges, bending, tris, [], 0.2, 0.0, 1e-4)
+        sim.add_collider(sphere_pos, sphere_tris)
+        for _ in range(150):
+            sim.step(1.0 / 60.0, -9.81, 10, 4, 0.01, (0.0, 0.0, 0.0),
+                     False, 0.0, 0.3, True, 0.01, 0.3, True, 0.02, post)
+        p = sim.get_positions()
+        deepest = min(
+            math.dist(p[k * 3:k * 3 + 3], sphere_center) for k in range(len(p) // 3)
+        )
+        return sim.average_stretch_error(), deepest, sim.is_finite()
+
+    err_off, deepest_off, finite_off = drape(0)
+    err_on, deepest_on, finite_on = drape(4)
+
+    check("衝突後補正を渡せる(pyo3 の引数)", finite_off and finite_on)
+    check("衝突後補正で伸び誤差が減る", err_on < err_off,
+          f"{err_off:.5f} -> {err_on:.5f}")
+    check("衝突後補正で球に潜り込まない", deepest_on > radius - 1e-3,
+          f"最小距離 {deepest_on:.5f} (補正なし {deepest_off:.5f} / 半径 {radius})")
+
+
 def test_seam_logic():
     """シームのチェーン抽出とペアリング(bpy 非依存の純粋ロジック)を検証する"""
     import seams  # addon/cloth_md/seams.py
@@ -595,6 +626,7 @@ def main():
     test_seam_closure()
     test_rewind_determinism()
     test_error_handling()
+    test_post_collision_correction()
     test_seam_logic()
     test_cache_io()
     test_transform()

@@ -131,6 +131,7 @@ mod bindings {
             collision_friction = 0.3,
             self_collision_enabled = false,
             self_collision_thickness = 0.01,
+            post_collision_iterations = 2,
         ))]
         #[allow(clippy::too_many_arguments)]
         fn step(
@@ -149,6 +150,7 @@ mod bindings {
             collision_friction: f64,
             self_collision_enabled: bool,
             self_collision_thickness: f64,
+            post_collision_iterations: u32,
         ) {
             let params = SimParams {
                 gravity: Vec3::new(0.0, 0.0, gravity),
@@ -164,6 +166,7 @@ mod bindings {
                 collision_friction,
                 self_collision_enabled,
                 self_collision_thickness,
+                post_collision_iterations,
             };
             self.inner.step(dt, &params);
         }

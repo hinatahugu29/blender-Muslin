@@ -69,6 +69,15 @@ pub struct SimParams {
     pub self_collision_enabled: bool,
     /// 自己衝突時に保つ頂点間距離。
     pub self_collision_thickness: f64,
+
+    // --- 衝突後の補正 ---
+    /// 衝突解決の「後」に伸び制約を解き直す回数。
+    ///
+    /// 衝突の押し出しはサブステップ内の制約ループの外側で走るため、
+    /// 押し広げられた分を伸び制約が回収する機会がない。
+    /// ここで数回だけ解き直すと、押し出しを保ったまま伸びを戻せる。
+    /// 0 で従来どおり(補正なし)。
+    pub post_collision_iterations: u32,
 }
 
 impl Default for SimParams {
@@ -87,6 +96,7 @@ impl Default for SimParams {
             collision_friction: 0.3,
             self_collision_enabled: false,
             self_collision_thickness: 0.01,
+            post_collision_iterations: 2,
         }
     }
 }
@@ -420,6 +430,18 @@ impl ClothSim {
 
         // 衝突解決(位置の押し出し)。接触した頂点と法線・摩擦を記録する。
         let contacts = self.resolve_collisions(params);
+
+        // 押し出しで壊れた伸びを同じサブステップ内で回収する。
+        // λ はリセットせず継続させる(サブステップ内での XPBD の一貫性を保つ)。
+        for _ in 0..params.post_collision_iterations {
+            solve_distance(
+                &mut self.positions,
+                &self.inv_mass,
+                &self.stretch_constraints,
+                &mut self.lambda_stretch,
+                inv_dt2,
+            );
+        }
 
         // 位置差から速度を更新(押し出し分も速度に反映される)
         for i in 0..n {
@@ -836,6 +858,48 @@ mod tests {
         assert!(
             light > heavy + 1e-3,
             "軽い生地の方が風で流されるはず: light={light}, heavy={heavy}"
+        );
+    }
+
+    /// 衝突後の伸び補正は、貫通を増やさずに伸び誤差を減らす
+    #[test]
+    fn post_collision_pass_reduces_stretch_without_penetration() {
+        let drape = |post: u32| {
+            let (positions, edges, bending, tris, _) = build_grid(21, 21, 0.05);
+            let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+            let (sphere_pos, sphere_tris) = build_sphere(Vec3::new(0.5, 0.5, -0.35), 0.3, 16, 12);
+            sim.add_collider(sphere_pos, sphere_tris);
+            let params = SimParams {
+                collision_enabled: true,
+                collision_thickness: 0.01,
+                self_collision_enabled: true,
+                self_collision_thickness: 0.02,
+                post_collision_iterations: post,
+                ..Default::default()
+            };
+            for _ in 0..150 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            let deepest = sim
+                .positions
+                .iter()
+                .map(|p| p.sub(Vec3::new(0.5, 0.5, -0.35)).length())
+                .fold(f64::INFINITY, f64::min);
+            (sim.average_stretch_error(), deepest, sim.is_finite())
+        };
+
+        let (err_off, deepest_off, finite_off) = drape(0);
+        let (err_on, deepest_on, finite_on) = drape(4);
+
+        assert!(finite_off && finite_on, "発散した");
+        assert!(
+            err_on < err_off,
+            "伸び補正が効いていない: {err_off} -> {err_on}"
+        );
+        // 補正を入れたことで球に潜り込んでいないこと(半径 0.3 を割らない)
+        assert!(
+            deepest_on > 0.3 - 1e-3,
+            "補正で貫通した: 中心からの最小距離 {deepest_on} (補正なしでは {deepest_off})"
         );
     }
 
