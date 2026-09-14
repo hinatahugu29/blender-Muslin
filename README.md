@@ -22,11 +22,25 @@ Blender 用のクロスシミュレーションアドオン。Marvelous Designer
 3. "Cloth MD" を有効化する
 4. 3Dビューの N パネルに "Cloth MD" タブが出る
 
-**更新するとき**は、先に古いバージョンを削除してからインストールし直してください。
-コンパイル済みモジュール(`.pyd`)が置き換わらないことがあります。
-Debug > `Test Rust Core` でコンソールに出る `core_version` で確認できます。
+### 更新するときの注意(Windows)
 
-動作確認環境: Blender 5.1 (Python 3.13) / Windows。
+**必ず Blender を終了してから、古いバージョンを削除してください。**
+
+Windows はロード中の DLL を削除できません。Blender を起動したまま削除・再インストール
+すると `cloth_core.pyd` だけが消せず、Blender はアドオンフォルダを
+`.~stale~0001` にリネームして退避します。**結果として `.py` だけが消え、
+アドオンが壊れた状態になります**(UI に Debug パネルの残骸だけが出る等)。
+
+そうなった場合の復旧:
+
+1. Blender を完全に終了する
+2. `%APPDATA%\Blender Foundation\Blender\<版>\scriptsddons\.~stale~*` を削除する
+3. Blender を起動して zip を入れ直し、有効化したらもう一度再起動する
+
+`.pyd` が新しくなったかは Debug > `Test Rust Core` のコンソール出力
+(`core_version`)で確認できます。
+
+動作確認環境: Blender 5.2 LTS / Windows。
 拡張モジュールは abi3-py311 でビルドしているため Python 3.11 以降で動きます。
 
 ## 使い方
