@@ -1,0 +1,7 @@
+/rust/**/target/
+/addon/**/__pycache__/
+/addon/**/*.pyd
+/addon/**/*.so
+/dist/
+/addon/cloth_md.zip
+.claude/settings.local.json
