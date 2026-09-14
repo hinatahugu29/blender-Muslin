@@ -1,0 +1,28 @@
+# Blender 4.2 以降の Extensions Platform 向けマニフェスト。
+# 従来形式(bl_info を見る方式)と同居できるので、__init__.py の bl_info は残してある。
+#
+# 配布物は scripts/package_extension.ps1 で作る。
+schema_version = "1.0.0"
+
+id = "cloth_md"
+version = "0.5.0"
+name = "Cloth MD"
+tagline = "Marvelous Designer のようにパターンを縫い合わせる布シミュレーション"
+maintainer = "hinatahugu29"
+type = "add-on"
+
+tags = ["Physics", "Modeling"]
+
+blender_version_min = "4.2.0"
+
+# TODO: 配布するライセンスを決めること。Blender アドオンは bpy との関係から
+# GPL 互換であることが求められるため、暫定で GPL-3.0-or-later にしてある。
+license = ["SPDX:GPL-3.0-or-later"]
+
+# Rust 製のネイティブモジュール。abi3-py311 でビルドしているので
+# Python 3.11 以降で共通に使える。現状 Windows x64 のみ。
+platforms = ["windows-x64"]
+wheels = ["./wheels/cloth_core-0.3.0-cp311-abi3-win_amd64.whl"]
+
+[permissions]
+files = "ベイクしたシミュレーション結果をディスクに読み書きします"

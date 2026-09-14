@@ -7,3 +7,4 @@
 .claude/settings.local.json
 *.blend1
 *.blend2
+/addon/cloth_md/wheels/

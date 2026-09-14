@@ -17,10 +17,21 @@ Blender 用のクロスシミュレーションアドオン。Marvelous Designer
 
 ## インストール
 
-1. `dist/cloth_md.zip` を用意する(無ければ下記のビルド手順で作る)
-2. Blender の Preferences > Add-ons > Install... から zip を選ぶ
-3. "Cloth MD" を有効化する
-4. 3Dビューの N パネルに "Cloth MD" タブが出る
+### Blender 4.2 以降(推奨)
+
+Extensions 形式で配布します。Rust 製のモジュールは Python wheel として
+同梱されるので、`.pyd` がロックされて更新できない問題が起きません。
+
+1. `dist/cloth_md-0.5.0.zip` を用意する(無ければ下記のビルド手順で作る)
+2. Preferences > Get Extensions > 右上の ∨ > **Install from Disk** から選ぶ
+3. 3Dビューの N パネルに "Cloth MD" タブが出る
+
+### Blender 4.2 より前
+
+従来形式の `dist/cloth_md.zip` を使います。
+
+1. Preferences > Add-ons > Install... から zip を選ぶ
+2. "Cloth MD" を有効化する
 
 ### 更新するときの注意(Windows)
 
@@ -101,7 +112,17 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1
 Rust の単体テストを実行し、`maturin build` で wheel を作り、
 `cloth_core.pyd` を `addon/cloth_md/` に配置します。
 
-配布用 zip を作る:
+配布物を作る:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/package_extension.ps1
+```
+
+Extensions 形式(Blender 4.2 以降)のパッケージを作ります。マニフェストを
+Blender 自身に検証させ、**一時領域にインストールして実際に布が落ちるところまで
+確かめて**から完成とします(ユーザーの Blender 設定は触りません)。
+
+従来形式が要る場合:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/package_zip.ps1

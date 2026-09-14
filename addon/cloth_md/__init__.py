@@ -8,6 +8,22 @@ bl_info = {
     "category": "Object",
 }
 
+# --- cloth_core (Rust 拡張モジュール) の解決 ---
+#
+# 従来形式のアドオン zip では cloth_core.pyd をこのパッケージに同梱するので
+# `from . import cloth_core` で読める。一方 Extensions 形式では wheel から
+# 入るためトップレベルのモジュールになる。どちらでも他のモジュールが
+# `from . import cloth_core` と書けるよう、ここで解決して名前空間に入れる。
+import sys as _sys
+
+try:
+    from . import cloth_core as _cloth_core   # 従来形式(.pyd を同梱)
+except ImportError:                            # pragma: no cover
+    import cloth_core as _cloth_core           # Extensions 形式(wheel から)
+    _sys.modules[__name__ + ".cloth_core"] = _cloth_core
+
+cloth_core = _cloth_core
+
 from . import properties
 from . import sim_state
 from . import operators

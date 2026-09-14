@@ -264,6 +264,6 @@ Blender の Preferences > Add-ons > Install... から `dist/cloth_md.zip` を入
 | ピース間の縫製 | 別オブジェクト同士は縫えない(事前に統合が必要) | 将来 |
 | メッシュ編集後の縫い目 | 頂点番号が変わると縫い目が壊れる(`Validate Seams` で検出可) | M6 |
 | サンプルシーン | `samples/` に3つ。自動生成・自動検証 | 完了 |
-| Extensions Platform | 従来形式のアドオンzipのみ対応 | M6 |
+| Extensions Platform | 対応済み。従来形式の zip も併せて作れる | 完了 |
 | GPU化 | 未着手。CPUで約1.5万頂点まで実用 | M4 |
 | モディファイア対応 | ベースメッシュの頂点を直接書き換えている | M6 |

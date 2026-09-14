@@ -117,7 +117,10 @@
   [scripts/make_samples.py](scripts/make_samples.py) で生成し、
   ヘッドレステストで「開いて再生すると動く」ことを毎回確認している
 - [x] README / インストール手順整備 — [README.md](README.md)
-- [ ] Blender Extensions Platform向けパッケージング対応
+- [x] Blender Extensions Platform向けパッケージング対応 —
+  `blender_manifest.toml` と [scripts/package_extension.ps1](scripts/package_extension.ps1)。
+  ネイティブモジュールは wheel として宣言する。`blender --command extension validate`
+  で検証し、一時領域にインストールして動作まで確認する
 
 ---
 

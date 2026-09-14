@@ -1,5 +1,6 @@
-# Builds the Rust extension and packages the addon as a zip ready for
-# Blender's "Install from Disk" (Preferences > Add-ons > Install...).
+﻿# 従来形式(bl_info を見る方式)のアドオン zip を作る。
+# Blender 4.2 より前向け。4.2 以降は scripts\package_extension.ps1 の
+# Extensions 形式を推奨する。
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\package_zip.ps1
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +23,18 @@ if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
 New-Item -ItemType Directory -Path $StageDir | Out-Null
 
 Copy-Item -Path $AddonSrcDir -Destination (Join-Path $StageDir "cloth_md") -Recurse
-Get-ChildItem -Path (Join-Path $StageDir "cloth_md") -Recurse -Directory -Filter "__pycache__" |
+$Staged = Join-Path $StageDir "cloth_md"
+Get-ChildItem -Path $Staged -Recurse -Directory -Filter "__pycache__" |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
+
+# Extensions 形式でしか使わないものは、従来形式の zip からは外す。
+# 残すと .pyd と wheel が二重に入り、Blender 4.2 以降では拡張として
+# 解釈されてしまって紛らわしい。
+$ExtensionOnly = @("blender_manifest.toml", "wheels")
+foreach ($name in $ExtensionOnly) {
+    $path = Join-Path $Staged $name
+    if (Test-Path $path) { Remove-Item -Recurse -Force $path }
+}
 
 Write-Host "==> Zipping to $ZipPath"
 Compress-Archive -Path (Join-Path $StageDir "cloth_md") -DestinationPath $ZipPath -Force
