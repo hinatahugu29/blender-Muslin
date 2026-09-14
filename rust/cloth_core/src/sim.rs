@@ -121,6 +121,11 @@ impl Default for SimParams {
 /// その1フレームだけ食い込むことがある(実測で最大 0.0149)。
 pub const MARGIN_SAFETY: f64 = 1.5;
 
+/// 自己衝突の近傍列挙を並列に回すときの、1タスクが受け持つ頂点数。
+///
+/// 自分で区切ることで結合順を固定し、結果を決定的に保つ。
+const SELF_COLLISION_CHUNK: usize = 512;
+
 /// これ以上の頂点数なら並列化する。
 ///
 /// 下回るとスレッド起動のコストが上回る(計測で決めた値)。
@@ -201,6 +206,8 @@ pub struct ClothSim {
     hash: SpatialHash,
     /// 自己衝突の近傍列挙に使う作業領域。毎サブステップ確保し直さず使い回す。
     neighbor_scratch: Vec<usize>,
+    /// 自己衝突で押し離す頂点対。列挙の結果をここに貯めてから逐次で解く。
+    self_pairs: Vec<(u32, u32)>,
     /// 直近サブステップで接触した頂点数(デバッグ表示用)
     last_collision_count: usize,
     /// 直近フレームで作った衝突候補の数(キャッシュの効き具合を見るため)
@@ -294,6 +301,7 @@ impl ClothSim {
             colliders: Vec::new(),
             hash: SpatialHash::new(0.01),
             neighbor_scratch: Vec::new(),
+            self_pairs: Vec::new(),
             last_collision_count: 0,
             last_candidate_counts: (0, 0),
             timings: StepTimings::default(),
@@ -838,60 +846,110 @@ impl ClothSim {
             return;
         }
 
-        // hash と近傍バッファを一時的に取り出す。
-        // self.positions を書き換えながら使うため、借用を分ける必要がある。
-        // あわせて、毎サブステップ・毎頂点での Vec 確保も避けられる。
+        use rayon::prelude::*;
+
+        // hash と作業領域を一時的に取り出す。self.positions を書き換えながら
+        // 使うため、借用を分ける必要がある。
         let mut hash = std::mem::take(&mut self.hash);
         let mut neighbors = std::mem::take(&mut self.neighbor_scratch);
+        let mut pairs = std::mem::take(&mut self.self_pairs);
 
         let t_hash = std::time::Instant::now();
         hash.rebuild_with(thickness, &self.positions);
         self.timings.hash_rebuild += ms_since(t_hash);
 
         let n = self.positions.len();
-        for i in 0..n {
-            neighbors.clear();
-            hash.for_each_neighbor(self.positions[i], |j| {
+
+        // --- 近傍の列挙。読み取りだけなので並列にできる ---
+        //
+        // 従来は押し出しながら距離を見ていた(Gauss-Seidel)。分けたことで
+        // 距離判定はこのフェーズ開始時の位置で行われる。押し出しの結果として
+        // 新たに近づいた対は次のサブステップで拾う。
+        let positions = &self.positions;
+        let inv_mass = &self.inv_mass;
+        let constrained = &self.constrained_pairs;
+
+        let collect_for = |i: usize, out: &mut Vec<(u32, u32)>, buf: &mut Vec<usize>| {
+            buf.clear();
+            hash.for_each_neighbor(positions[i], |j| {
                 if j > i {
-                    neighbors.push(j);
+                    buf.push(j);
                 }
             });
-
-            for &j in neighbors.iter() {
+            for &j in buf.iter() {
                 // 制約で直接結ばれている頂点対は自己衝突から除外する
-                if self.constrained_pairs.contains(&(i as u32, j as u32)) {
+                if constrained.contains(&(i as u32, j as u32)) {
                     continue;
                 }
-
-                let w0 = self.inv_mass[i];
-                let w1 = self.inv_mass[j];
-                let w_sum = w0 + w1;
-                if w_sum == 0.0 {
+                if inv_mass[i] + inv_mass[j] == 0.0 {
                     continue;
                 }
-
-                let delta = self.positions[i].sub(self.positions[j]);
-                let dist = delta.length();
-                if dist >= thickness {
-                    continue;
+                if positions[i].sub(positions[j]).length() < thickness {
+                    out.push((i as u32, j as u32));
                 }
-
-                // 完全に重なっている場合は決定的な方向へずらす
-                let dir = delta
-                    .normalized()
-                    .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-                let correction = (thickness - dist) / w_sum;
-
-                self.positions[i] = self.positions[i].add(dir.scale(correction * w0));
-                self.positions[j] = self.positions[j].sub(dir.scale(correction * w1));
-
-                contacts.push((i, dir, params.collision_friction));
-                contacts.push((j, dir.scale(-1.0), params.collision_friction));
             }
+        };
+
+        pairs.clear();
+        if n >= PARALLEL_MIN_VERTICES {
+            // 区切り方を自分で決めて順序を固定する。
+            // rayon の fold/reduce に任せると分割位置が実行時の事情で変わりうるため、
+            // 結合順(= Gauss-Seidel の順序)が揺れて結果が非決定的になりかねない。
+            // ベイクとスクラブは決定性が前提なので、そこは譲れない。
+            let starts: Vec<usize> = (0..n).step_by(SELF_COLLISION_CHUNK).collect();
+            let chunks: Vec<Vec<(u32, u32)>> = starts
+                .into_par_iter()
+                .map(|start| {
+                    let end = (start + SELF_COLLISION_CHUNK).min(n);
+                    let mut out = Vec::new();
+                    let mut buf = Vec::new();
+                    for i in start..end {
+                        collect_for(i, &mut out, &mut buf);
+                    }
+                    out
+                })
+                .collect();
+            for chunk in chunks {
+                pairs.extend(chunk);
+            }
+        } else {
+            for i in 0..n {
+                collect_for(i, &mut pairs, &mut neighbors);
+            }
+        }
+
+        // --- 押し出し。頂点対が互いに書き込むので逐次で解く ---
+        for idx in 0..pairs.len() {
+            let (i, j) = pairs[idx];
+            let (i, j) = (i as usize, j as usize);
+
+            let w0 = self.inv_mass[i];
+            let w1 = self.inv_mass[j];
+            let w_sum = w0 + w1;
+            if w_sum == 0.0 {
+                continue;
+            }
+
+            let delta = self.positions[i].sub(self.positions[j]);
+            let dist = delta.length();
+            if dist >= thickness {
+                continue;
+            }
+
+            // 完全に重なっている場合は決定的な方向へずらす
+            let dir = delta.normalized().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+            let correction = (thickness - dist) / w_sum;
+
+            self.positions[i] = self.positions[i].add(dir.scale(correction * w0));
+            self.positions[j] = self.positions[j].sub(dir.scale(correction * w1));
+
+            contacts.push((i, dir, params.collision_friction));
+            contacts.push((j, dir.scale(-1.0), params.collision_friction));
         }
 
         self.hash = hash;
         self.neighbor_scratch = neighbors;
+        self.self_pairs = pairs;
     }
 
     /// 位置を強制設定し、速度をリセットする(巻き戻し用)。
@@ -1263,6 +1321,46 @@ mod tests {
             max_diff < 1e-6,
             "頂点位置が食い違う: 最大差 {max_diff} m"
         );
+    }
+
+    /// 自己衝突の並列列挙が決定的であること
+    ///
+    /// 近傍の列挙は並列に回すが、押し出しの順序(= Gauss-Seidel の順序)が
+    /// 実行ごとに変わると結果がぶれる。ベイクとスクラブは決定性が前提なので、
+    /// 区切り方を固定してある。それが効いているかを確かめる。
+    #[test]
+    fn parallel_self_collision_is_deterministic() {
+        let side = 71; // 5,041頂点。PARALLEL_MIN_VERTICES と区切り幅の両方を超える
+        assert!(side * side > PARALLEL_MIN_VERTICES);
+        assert!(side * side > SELF_COLLISION_CHUNK * 2, "区切りが複数になる大きさで試す");
+
+        let run = || {
+            let (positions, edges, bending, tris, _) = build_grid(side, side, 0.02);
+            let mut sim =
+                ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 0.02);
+            let params = SimParams {
+                collision_enabled: false,
+                self_collision_enabled: true,
+                self_collision_thickness: 0.008,
+                floor_enabled: true,
+                floor_z: 0.0,
+                wind: Vec3::new(0.4, 0.2, 0.0),
+                ..Default::default()
+            };
+            for _ in 0..40 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            sim.positions.clone()
+        };
+
+        let a = run();
+        let b = run();
+        let max_diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| x.sub(*y).length())
+            .fold(0.0_f64, f64::max);
+        assert_eq!(max_diff, 0.0, "自己衝突の並列化で結果がぶれている: 最大差 {max_diff}");
     }
 
     /// 並列化した衝突解決が決定的であること
