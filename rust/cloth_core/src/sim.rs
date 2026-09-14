@@ -263,7 +263,6 @@ impl ClothSim {
                 BendingConstraint::new(&positions, a, b, c, d, bending_compliance)
             })
             .collect();
-
         // ピン留め前の逆質量(ピンの解除時に元の質量分布へ戻せるようにする)
         let base_inv_mass: Vec<f64> = inv_mass
             .iter()
