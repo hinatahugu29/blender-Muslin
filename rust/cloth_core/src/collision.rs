@@ -361,51 +361,7 @@ impl TriangleBvh {
 // --------------------------------------------------------------- 空間ハッシュ
 
 /// 自己衝突検出用の一様グリッド空間ハッシュ。
-/// 格子キー `(i64, i64, i64)` 用の軽量ハッシャ。
-///
-/// 標準の SipHash は暗号強度を持つぶん重く、毎サブステップ全頂点をハッシュする
-/// 用途では無視できないコストになる。ここでは乗算とシフトだけの混合で済ませる。
-#[derive(Default, Clone, Copy)]
-pub struct GridHasher {
-    state: u64,
-}
-
-impl std::hash::Hasher for GridHasher {
-    fn finish(&self) -> u64 {
-        // 最後に上位ビットを下位へ混ぜる(バケット選択は下位ビットを見るため)
-        let mut h = self.state;
-        h ^= h >> 33;
-        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-        h ^= h >> 29;
-        h
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(b as u64);
-        }
-    }
-
-    fn write_i64(&mut self, value: i64) {
-        self.write_u64(value as u64);
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.state = (self.state.rotate_left(5) ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-#[derive(Default, Clone, Copy)]
-pub struct GridHasherBuilder;
-
-impl std::hash::BuildHasher for GridHasherBuilder {
-    type Hasher = GridHasher;
-    fn build_hasher(&self) -> GridHasher {
-        GridHasher::default()
-    }
-}
-
-type GridMap = std::collections::HashMap<(i64, i64, i64), Vec<u32>, GridHasherBuilder>;
+type GridMap = crate::hashing::FastMap<(i64, i64, i64), Vec<u32>>;
 
 pub struct SpatialHash {
     cell_size: f64,

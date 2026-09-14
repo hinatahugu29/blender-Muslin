@@ -189,7 +189,9 @@ pub struct ClothSim {
 
     /// 制約で直接結ばれた頂点対。自己衝突の対象から除外するのに使う
     /// (伸び制約と自己衝突が綱引きして布が破裂するのを防ぐ)。
-    constrained_pairs: std::collections::HashSet<(u32, u32)>,
+    /// 標準の HashSet(SipHash)では候補ペアごとの参照が重い。
+    /// 自己衝突の内側ループで毎回引くので軽量ハッシャを使う。
+    constrained_pairs: crate::hashing::FastSet<(u32, u32)>,
     /// コリジョンオブジェクト(BVH付き三角形メッシュ)
     colliders: Vec<TriangleBvh>,
     /// 自己衝突用の空間ハッシュ(毎サブステップ再構築)
@@ -258,7 +260,7 @@ impl ClothSim {
             })
             .collect();
 
-        let mut constrained_pairs = std::collections::HashSet::new();
+        let mut constrained_pairs = crate::hashing::FastSet::default();
         for c in stretch_constraints.iter().chain(bending_constraints.iter()) {
             let (a, b) = (c.i0.min(c.i1) as u32, c.i0.max(c.i1) as u32);
             constrained_pairs.insert((a, b));

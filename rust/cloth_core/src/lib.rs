@@ -4,6 +4,7 @@
 //! `cargo test --no-default-features` で Python 抜きにコアだけを検証できる。
 
 pub mod collision;
+pub mod hashing;
 pub mod math;
 pub mod sim;
 
