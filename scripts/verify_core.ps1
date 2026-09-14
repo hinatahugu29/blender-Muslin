@@ -1,4 +1,4 @@
-# Runs the Blender-free verification harness against the built cloth_core.pyd.
+﻿# Runs the Blender-free verification harness against the built cloth_core.pyd.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_core.ps1 [-Bench]
 
 param(
@@ -20,6 +20,9 @@ if (-not $Python) {
     $Python = $Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $Python) { throw "Python 3.11+ not found. Set PYO3_PYTHON." }
+
+# 日本語出力が cp932 コンソールで落ちないよう UTF-8 を強制する
+$env:PYTHONIOENCODING = "utf-8"
 
 Write-Host "==> Using $Python"
 if ($Bench) {
