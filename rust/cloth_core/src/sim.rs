@@ -132,6 +132,8 @@ pub struct ClothSim {
     colliders: Vec<TriangleBvh>,
     /// 自己衝突用の空間ハッシュ(毎サブステップ再構築)
     hash: SpatialHash,
+    /// 自己衝突の近傍列挙に使う作業領域。毎サブステップ確保し直さず使い回す。
+    neighbor_scratch: Vec<usize>,
     /// 直近サブステップで接触した頂点数(デバッグ表示用)
     last_collision_count: usize,
 }
@@ -201,6 +203,7 @@ impl ClothSim {
             constrained_pairs,
             colliders: Vec::new(),
             hash: SpatialHash::new(0.01),
+            neighbor_scratch: Vec::new(),
             last_collision_count: 0,
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
@@ -558,19 +561,24 @@ impl ClothSim {
             return;
         }
 
-        self.hash = SpatialHash::new(thickness);
-        self.hash.rebuild(&self.positions);
+        // hash と近傍バッファを一時的に取り出す。
+        // self.positions を書き換えながら使うため、借用を分ける必要がある。
+        // あわせて、毎サブステップ・毎頂点での Vec 確保も避けられる。
+        let mut hash = std::mem::take(&mut self.hash);
+        let mut neighbors = std::mem::take(&mut self.neighbor_scratch);
+
+        hash.rebuild_with(thickness, &self.positions);
 
         let n = self.positions.len();
         for i in 0..n {
-            let mut neighbors = Vec::new();
-            self.hash.for_each_neighbor(self.positions[i], |j| {
+            neighbors.clear();
+            hash.for_each_neighbor(self.positions[i], |j| {
                 if j > i {
                     neighbors.push(j);
                 }
             });
 
-            for j in neighbors {
+            for &j in neighbors.iter() {
                 // 制約で直接結ばれている頂点対は自己衝突から除外する
                 if self.constrained_pairs.contains(&(i as u32, j as u32)) {
                     continue;
@@ -602,6 +610,9 @@ impl ClothSim {
                 contacts.push((j, dir.scale(-1.0), params.collision_friction));
             }
         }
+
+        self.hash = hash;
+        self.neighbor_scratch = neighbors;
     }
 
     /// 位置を強制設定し、速度をリセットする(巻き戻し用)。

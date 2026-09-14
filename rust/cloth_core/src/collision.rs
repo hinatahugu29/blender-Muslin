@@ -316,17 +316,72 @@ impl TriangleBvh {
 // --------------------------------------------------------------- 空間ハッシュ
 
 /// 自己衝突検出用の一様グリッド空間ハッシュ。
+/// 格子キー `(i64, i64, i64)` 用の軽量ハッシャ。
+///
+/// 標準の SipHash は暗号強度を持つぶん重く、毎サブステップ全頂点をハッシュする
+/// 用途では無視できないコストになる。ここでは乗算とシフトだけの混合で済ませる。
+#[derive(Default, Clone, Copy)]
+pub struct GridHasher {
+    state: u64,
+}
+
+impl std::hash::Hasher for GridHasher {
+    fn finish(&self) -> u64 {
+        // 最後に上位ビットを下位へ混ぜる(バケット選択は下位ビットを見るため)
+        let mut h = self.state;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 29;
+        h
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.state = (self.state.rotate_left(5) ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct GridHasherBuilder;
+
+impl std::hash::BuildHasher for GridHasherBuilder {
+    type Hasher = GridHasher;
+    fn build_hasher(&self) -> GridHasher {
+        GridHasher::default()
+    }
+}
+
+type GridMap = std::collections::HashMap<(i64, i64, i64), Vec<u32>, GridHasherBuilder>;
+
 pub struct SpatialHash {
     cell_size: f64,
     /// セルキー -> そのセルに入る頂点インデックス
-    buckets: std::collections::HashMap<(i64, i64, i64), Vec<u32>>,
+    ///
+    /// 毎サブステップ作り直すとバケットの `Vec` を都度確保することになるため、
+    /// エントリは残したまま中身だけ空にして確保済みメモリを使い回す。
+    buckets: GridMap,
+}
+
+impl Default for SpatialHash {
+    fn default() -> Self {
+        SpatialHash::new(1e-6)
+    }
 }
 
 impl SpatialHash {
     pub fn new(cell_size: f64) -> Self {
         SpatialHash {
             cell_size: cell_size.max(1e-6),
-            buckets: std::collections::HashMap::new(),
+            buckets: GridMap::default(),
         }
     }
 
@@ -336,6 +391,17 @@ impl SpatialHash {
             (p.y / self.cell_size).floor() as i64,
             (p.z / self.cell_size).floor() as i64,
         )
+    }
+
+    /// セルサイズを変えて作り直す。サイズが変わらなければ確保済みメモリを保つ。
+    pub fn rebuild_with(&mut self, cell_size: f64, positions: &[Vec3]) {
+        let cell_size = cell_size.max(1e-6);
+        if (cell_size - self.cell_size).abs() > f64::EPSILON * self.cell_size.max(1.0) {
+            // セルサイズが変わるとキーの意味が変わるので、ここだけは捨てる
+            self.cell_size = cell_size;
+            self.buckets.clear();
+        }
+        self.rebuild(positions);
     }
 
     pub fn rebuild(&mut self, positions: &[Vec3]) {
@@ -485,5 +551,30 @@ mod tests {
         hash.for_each_neighbor(positions[0], |i| found.push(i));
         assert!(found.contains(&0) && found.contains(&1));
         assert!(!found.contains(&2), "遠い頂点は列挙されないはず");
+    }
+
+    /// セルサイズを変えても、変えなくても、作り直した結果は正しい
+    #[test]
+    fn rebuild_with_handles_cell_size_change() {
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(0.05, 0.0, 0.0);
+        let mut hash = SpatialHash::new(0.1);
+        hash.rebuild_with(0.1, &[a, b]);
+
+        let collect = |h: &SpatialHash, p: Vec3| {
+            let mut v = Vec::new();
+            h.for_each_neighbor(p, |i| v.push(i));
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(collect(&hash, a), vec![0, 1]);
+
+        // セルサイズを小さくすると b は近傍から外れる
+        hash.rebuild_with(0.01, &[a, b]);
+        assert_eq!(collect(&hash, a), vec![0], "セルサイズ変更が反映されていない");
+
+        // 同じサイズで作り直しても、前回の頂点が残らない
+        hash.rebuild_with(0.01, &[a]);
+        assert_eq!(collect(&hash, a), vec![0], "前回のバケット内容が残っている");
     }
 }
