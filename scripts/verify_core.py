@@ -428,6 +428,59 @@ def test_seam_logic():
           isinstance(seams.pair_chains([0, 1], [1, 2], degenerate), list))
 
 
+def test_transform():
+    """ローカル<->ワールドの座標変換(bpy 非依存)を検証する"""
+    import transform  # addon/cloth_md/transform.py
+
+    def reference(flat, m):
+        """numpy 化する前の素の Python 実装(これと一致すれば等価)"""
+        out = []
+        for i in range(len(flat) // 3):
+            x, y, z = flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]
+            for r in range(3):
+                out.append(
+                    m[r][0] * x + m[r][1] * y + m[r][2] * z + m[r][3]
+                )
+        return out
+
+    identity = [[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0], [0, 0, 0, 1.0]]
+    points = [1.0, 2.0, 3.0, -4.0, 0.5, 0.0]
+
+    got = transform.transform_flat(points, identity)
+    check("単位行列で座標が変わらない", got == points, f"{got}")
+
+    # 平行移動 + 非一様スケール + せん断を含む一般の行列
+    matrix = [
+        [2.0, 0.1, 0.0, 5.0],
+        [0.0, 3.0, -0.2, -1.0],
+        [0.3, 0.0, 0.5, 2.5],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    got = transform.transform_flat(points, matrix)
+    want = reference(points, matrix)
+    max_diff = max(abs(a - b) for a, b in zip(got, want))
+    check("素の Python 実装と一致する", max_diff < 1e-12, f"最大差 {max_diff:.2e}")
+
+    check("頂点数が保たれる", len(got) == len(points), f"{len(got)} 要素")
+
+    # ワールド往復: 逆行列を掛けたら元に戻る(write_positions_to_mesh の経路)
+    import numpy as np
+
+    inverse = np.linalg.inv(np.array(matrix, dtype=np.float64)).tolist()
+    back = transform.transform_flat(got, inverse)
+    max_diff = max(abs(a - b) for a, b in zip(back, points))
+    check("逆行列で元の座標に戻る", max_diff < 1e-9, f"最大差 {max_diff:.2e}")
+
+    # 空メッシュでも落ちない
+    check("空の配列でもクラッシュしない", transform.transform_flat([], identity) == [])
+
+    # 行列の回転部と平行移動部を正しく分離できる
+    rotation, translation = transform.split_matrix(matrix)
+    check("平行移動成分を取り出せる",
+          list(translation) == [5.0, -1.0, 2.5], f"{list(translation)}")
+    check("回転成分は 3x3 になる", rotation.shape == (3, 3), f"{rotation.shape}")
+
+
 def test_cache_io():
     """ベイクキャッシュの読み書き(bpy 非依存)を検証する"""
     import shutil
@@ -544,6 +597,7 @@ def main():
     test_error_handling()
     test_seam_logic()
     test_cache_io()
+    test_transform()
     compile_addon_modules()
 
     if args.bench:

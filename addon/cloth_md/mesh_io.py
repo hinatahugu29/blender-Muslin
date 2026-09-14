@@ -1,14 +1,19 @@
 """Blenderメッシュ <-> cloth_core.ClothSim の橋渡し。
 
-パフォーマンス方針: 頂点座標の読み書きは Python ループではなく
-`foreach_get` / `foreach_set` を使う(数万頂点で桁違いに速い)。
+パフォーマンス方針: 頂点座標の読み書きは `foreach_get` / `foreach_set` で
+一括転送し、行列変換は [transform](transform.py) の numpy 実装に任せる。
+
+`co` は Blender 内部で単精度なので、foreach_get/set には float32 配列を渡す
+(dtype が合っていないと高速パスに乗らない)。
 """
 
 import bmesh
 import bpy
+import numpy as np
 
 from . import cloth_core
 from . import seams
+from .transform import transform as _transform
 
 
 # ---------------------------------------------------------------- トポロジ抽出
@@ -56,22 +61,10 @@ def get_world_positions(obj):
     """ワールド座標のフラット配列 [x0,y0,z0, ...] を返す。"""
     mesh = obj.data
     count = len(mesh.vertices)
-    local = [0.0] * (count * 3)
+    local = np.empty(count * 3, dtype=np.float32)
     mesh.vertices.foreach_get("co", local)
 
-    world = obj.matrix_world
-    # 4x4 行列を展開して Python 側で一括変換(Vector 生成のオーバーヘッドを避ける)
-    m = world
-    r0, r1, r2 = m[0], m[1], m[2]
-    out = [0.0] * (count * 3)
-    for i in range(count):
-        x = local[i * 3]
-        y = local[i * 3 + 1]
-        z = local[i * 3 + 2]
-        out[i * 3] = r0[0] * x + r0[1] * y + r0[2] * z + r0[3]
-        out[i * 3 + 1] = r1[0] * x + r1[1] * y + r1[2] * z + r1[3]
-        out[i * 3 + 2] = r2[0] * x + r2[1] * y + r2[2] * z + r2[3]
-    return out
+    return _transform(local, obj.matrix_world).ravel().tolist()
 
 
 def write_positions_to_mesh(obj, flat_world_positions):
@@ -81,18 +74,8 @@ def write_positions_to_mesh(obj, flat_world_positions):
     if count * 3 != len(flat_world_positions):
         return False
 
-    inv = obj.matrix_world.inverted()
-    r0, r1, r2 = inv[0], inv[1], inv[2]
-    local = [0.0] * (count * 3)
-    for i in range(count):
-        x = flat_world_positions[i * 3]
-        y = flat_world_positions[i * 3 + 1]
-        z = flat_world_positions[i * 3 + 2]
-        local[i * 3] = r0[0] * x + r0[1] * y + r0[2] * z + r0[3]
-        local[i * 3 + 1] = r1[0] * x + r1[1] * y + r1[2] * z + r1[3]
-        local[i * 3 + 2] = r2[0] * x + r2[1] * y + r2[2] * z + r2[3]
-
-    mesh.vertices.foreach_set("co", local)
+    local = _transform(flat_world_positions, obj.matrix_world.inverted())
+    mesh.vertices.foreach_set("co", local.ravel().astype(np.float32))
     mesh.update()
     return True
 
@@ -169,11 +152,14 @@ def collect_collider_objects(props):
     return objects
 
 
-def build_collider_mesh(obj, depsgraph=None):
+def build_collider_mesh(obj, depsgraph=None, positions_only=False):
     """コライダーの三角形メッシュを (world_positions, triangles) で返す。
 
     モディファイア・シェイプキー・アーマチュア変形を反映させるため、
     評価済みオブジェクト(depsgraph)から取り出す。
+
+    `positions_only` を立てると三角形の抽出を省く。動くコライダーの追従は
+    座標だけ更新すれば足り、これは毎フレーム走る経路なので効いてくる。
     """
     if depsgraph is None:
         depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -181,27 +167,19 @@ def build_collider_mesh(obj, depsgraph=None):
     eval_obj = obj.evaluated_get(depsgraph)
     mesh = eval_obj.to_mesh()
     try:
-        mesh.calc_loop_triangles()
-
         count = len(mesh.vertices)
-        local = [0.0] * (count * 3)
+        local = np.empty(count * 3, dtype=np.float32)
         mesh.vertices.foreach_get("co", local)
+        positions = _transform(local, eval_obj.matrix_world).ravel().tolist()
 
-        m = eval_obj.matrix_world
-        r0, r1, r2 = m[0], m[1], m[2]
-        positions = [0.0] * (count * 3)
-        for i in range(count):
-            x, y, z = local[i * 3], local[i * 3 + 1], local[i * 3 + 2]
-            positions[i * 3] = r0[0] * x + r0[1] * y + r0[2] * z + r0[3]
-            positions[i * 3 + 1] = r1[0] * x + r1[1] * y + r1[2] * z + r1[3]
-            positions[i * 3 + 2] = r2[0] * x + r2[1] * y + r2[2] * z + r2[3]
-
-        tri_count = len(mesh.loop_triangles)
-        flat = [0] * (tri_count * 3)
-        mesh.loop_triangles.foreach_get("vertices", flat)
-        triangles = [
-            (flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]) for i in range(tri_count)
-        ]
+        triangles = []
+        if not positions_only:
+            mesh.calc_loop_triangles()
+            tri_count = len(mesh.loop_triangles)
+            flat = np.empty(tri_count * 3, dtype=np.int32)
+            mesh.loop_triangles.foreach_get("vertices", flat)
+            # pyo3 側は Vec<(u32, u32, u32)> を期待するのでタプルに揃える
+            triangles = [tuple(t) for t in flat.reshape(-1, 3).tolist()]
     finally:
         eval_obj.to_mesh_clear()
 

@@ -8,10 +8,13 @@
 """
 
 import bpy
+from bpy.app.handlers import persistent
 
 from . import mesh_io
 
-# object名 -> state dict
+# オブジェクトキー(session_uid) -> state dict。
+# 名前をキーにするとリネーム・複製で状態が迷子になるため、
+# データブロック固有の session_uid を使う(セッション内で一意・リネームで不変)。
 _running = {}
 
 # 1回のスクラブで再計算を許容する最大フレーム数(これを超えたら諦めて現状維持)
@@ -23,14 +26,32 @@ MAX_RESIMULATE_FRAMES = 600
 MAX_CACHED_FRAMES = 500
 
 
+def obj_key(obj):
+    """オブジェクトを一意に指すキー。session_uid が無い環境では名前にフォールバックする。"""
+    uid = getattr(obj, "session_uid", 0)
+    return uid if uid else obj.name
+
+
+def _find_object(key, hint_name=""):
+    """キーからオブジェクトを引く。直近の名前をヒントに使って全走査を避ける。"""
+    if hint_name:
+        obj = bpy.data.objects.get(hint_name)
+        if obj is not None and obj_key(obj) == key:
+            return obj
+    for obj in bpy.data.objects:
+        if obj_key(obj) == key:
+            return obj
+    return None
+
+
 def is_running(obj):
-    return obj is not None and obj.name in _running
+    return obj is not None and obj_key(obj) in _running
 
 
 def get_state(obj):
     if obj is None:
         return None
-    return _running.get(obj.name)
+    return _running.get(obj_key(obj))
 
 
 def create_state(obj, props):
@@ -51,18 +72,20 @@ def create_state(obj, props):
         "info": info,
         "last_error": 0.0,
         "last_contacts": 0,
+        "name": obj.name,
     }
 
 
 def start_simulation(obj, props):
     """シミュレーションを開始し、フレーム変更ハンドラの管理下に置く。"""
     state = create_state(obj, props)
-    _running[obj.name] = state
+    _running[obj_key(obj)] = state
     return state["info"]
 
 
 def stop_simulation(obj):
-    _running.pop(obj.name, None)
+    if obj is not None:
+        _running.pop(obj_key(obj), None)
 
 
 def stop_all():
@@ -92,7 +115,7 @@ def _update_animated_colliders(state, props):
         obj = bpy.data.objects.get(name)
         if obj is None:
             continue
-        positions, _ = mesh_io.build_collider_mesh(obj, depsgraph)
+        positions, _ = mesh_io.build_collider_mesh(obj, depsgraph, positions_only=True)
         try:
             state["sim"].update_collider(index, positions)
         except ValueError as exc:
@@ -194,13 +217,14 @@ def _playback_baked(scene):
     for obj in scene.objects:
         if obj.type != 'MESH' or not obj.get("cloth_md_baked", False):
             continue
-        if obj.name in _running:
+        if obj_key(obj) in _running:
             continue  # ライブシミュレーション中はそちらを優先する
         if not bake_ops.apply_baked_frame(obj, scene.frame_current):
             # 読めないキャッシュを毎フレーム叩き続けないよう、ベイク状態を解除する
             obj["cloth_md_baked"] = False
 
 
+@persistent
 def _frame_change_handler(scene, depsgraph=None):
     _playback_baked(scene)
 
@@ -211,13 +235,14 @@ def _frame_change_handler(scene, depsgraph=None):
     dt = effective_dt(scene, props)
     frame = scene.frame_current
 
-    for obj_name in list(_running.keys()):
-        obj = bpy.data.objects.get(obj_name)
+    for key, state in list(_running.items()):
+        obj = _find_object(key, state.get("name", ""))
         if obj is None:
-            _running.pop(obj_name, None)
+            _running.pop(key, None)
             continue
+        state["name"] = obj.name  # リネームに追従する
+        obj_name = obj.name
 
-        state = _running[obj_name]
         try:
             positions = _simulate_to(state, props, dt, frame)
             mesh_io.write_positions_to_mesh(obj, positions)
@@ -225,18 +250,34 @@ def _frame_change_handler(scene, depsgraph=None):
             state["last_contacts"] = state["sim"].last_collision_count
             if not state["sim"].is_finite():
                 print(f"[cloth_md] '{obj_name}' のシミュレーションが発散しました。停止します。")
-                _running.pop(obj_name, None)
+                _running.pop(key, None)
         except Exception as exc:  # Rust 側の例外もここで受け止めて Blender を落とさない
             print(f"[cloth_md] '{obj_name}' の更新中にエラー: {exc}")
-            _running.pop(obj_name, None)
+            _running.pop(key, None)
+
+
+@persistent
+def _load_post_handler(_dummy=None):
+    """別の .blend を読み込んだら、前のファイルのシミュレーション状態を捨てる。
+
+    ハンドラ自体は @persistent で生き残るが、保持している ClothSim は
+    既に存在しないオブジェクトのものなので破棄する。
+    """
+    stop_all()
+    from . import overlay
+    overlay.invalidate_cache()
 
 
 def register():
     if _frame_change_handler not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(_frame_change_handler)
+    if _load_post_handler not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_load_post_handler)
 
 
 def unregister():
     stop_all()
     if _frame_change_handler in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(_frame_change_handler)
+    if _load_post_handler in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_load_post_handler)

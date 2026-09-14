@@ -124,9 +124,23 @@
   `scripts/build.ps1` が実体のある Python を探して `PYO3_PYTHON` に設定する。
 - **PowerShell スクリプトは UTF-8 BOM 付きで保存すること**。Windows PowerShell 5.1 は
   BOM無しUTF-8をANSIとして読むため、日本語コメントが文字化けして構文エラーになる。
-- 現状(2026-08-08): M1・M2・M3 完了、M6 も大半を実装。自動テスト(Rust 20 + Python 48項目)通過。
-  Blender実機確認のみ未実施([CHECKPOINTS.md](CHECKPOINTS.md) の CP-B1〜B12)。
+- 現状(2026-09-14): M1・M2・M3 完了、M6 も大半を実装。自動テスト(Rust 20 + Python 55項目)通過。
+  Blender実機確認のみ未実施([CHECKPOINTS.md](CHECKPOINTS.md) の CP-B1〜B13)。
   **MDらしさの核心(パターン作成 → 縫い目指定 → 縫製シミュレーション → ベイク)が一通り繋がった状態**。
+- **テスト網羅の偏りに注意**: 検証が効いているのは Rust コアと、bpy 非依存に切り出した
+  `seams.py` / `cache_io.py` / `transform.py` のみ。残る Blender 依存モジュール
+  (`operators.py`, `panels.py`, `sim_state.py`, `bake_ops.py`, `mesh_io.py`,
+  `sewing_ops.py`, `overlay.py`, `properties.py`)は **構文チェックしか通っていない**。
+  ロジックを足すときは、可能な限り bpy 非依存モジュールへ切り出してテストすること。
+- コードレビューで見つけて修正した問題(2026-09-14):
+  - `frame_change_post` ハンドラに `@persistent` が無く、**.blend を読み込むと
+    ベイク再生が黙って止まっていた**。`load_post` で状態を捨てる処理も追加。
+  - `overlay.invalidate_cache()` がどこからも呼ばれておらず、指紋もチェーン長しか
+    見ていなかったため、メッシュ編集後に古い頂点番号で描画して例外を出す状態だった。
+  - 実行中状態の dict がオブジェクト**名**キーで、リネーム・複製で迷子になっていた
+    (`session_uid` キーに変更)。
+  - ローカル<->ワールド変換が素の Python ループで、14,641頂点で往復約10ms
+    (Rust の step 18.7ms に対して +54%)。numpy 化して往復約2.8msに短縮。
 - 残る大物は **M4(GPU化)** と M5(物性プリセット・二面角の曲げ制約)。
   M6 の残件はサンプルシーン作成と Extensions Platform 対応。
 - 性能の目安: 6561頂点でコリジョンなし 8.3ms/f、球コライダー付き 10.4ms/f、

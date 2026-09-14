@@ -10,10 +10,11 @@ from gpu_extras.batch import batch_for_shader
 
 from . import mesh_io
 from . import seams
+from . import sim_state
 
 _draw_handle = None
 
-# オブジェクト名 -> (シグネチャ, ペアのリスト)。毎フレームのペア再計算を避けるキャッシュ
+# オブジェクトキー -> (シグネチャ, ペアのリスト)。毎フレームのペア再計算を避けるキャッシュ
 _pair_cache = {}
 
 SEAM_COLOR = (1.0, 0.35, 0.1, 0.9)
@@ -21,10 +22,23 @@ ACTIVE_SEAM_COLOR = (1.0, 0.9, 0.2, 1.0)
 
 
 def _seam_signature(obj):
-    """シームの構成が変わったことを検出するための軽量な指紋。"""
-    return tuple(
-        (len(s.chain_a), len(s.chain_b), s.flipped, s.enabled)
-        for s in obj.cloth_md_seams
+    """シームの構成が変わったことを検出するための指紋。
+
+    チェーンの頂点インデックスそのものと総頂点数を含める。
+    長さだけを見ていると、メッシュ編集で頂点番号がずれても指紋が変わらず、
+    古いインデックスで描画して IndexError を起こす。
+    """
+    return (
+        len(obj.data.vertices),
+        tuple(
+            (
+                tuple(v.index for v in s.chain_a),
+                tuple(v.index for v in s.chain_b),
+                s.flipped,
+                s.enabled,
+            )
+            for s in obj.cloth_md_seams
+        ),
     )
 
 
@@ -34,8 +48,9 @@ def _get_pairs(obj):
     ペアの計算には座標が要るが、シーム構成が変わらない限り結果は変わらないので
     キャッシュする。再描画のたびに全頂点を走査すると重すぎるため。
     """
+    key = sim_state.obj_key(obj)
     signature = _seam_signature(obj)
-    cached = _pair_cache.get(obj.name)
+    cached = _pair_cache.get(key)
     if cached is not None and cached[0] == signature:
         return cached[1]
 
@@ -49,15 +64,20 @@ def _get_pairs(obj):
             continue
         per_seam.append(seams.pair_chains(chain_a, chain_b, positions, seam.flipped))
 
-    _pair_cache[obj.name] = (signature, per_seam)
+    _pair_cache[key] = (signature, per_seam)
     return per_seam
 
 
-def invalidate_cache(obj_name=None):
-    if obj_name is None:
+def invalidate_cache(obj=None):
+    """ペアキャッシュを捨てる。obj を省略すると全件。
+
+    通常は `_seam_signature` が変化を検出するので不要だが、
+    ファイル読み込み時のように状態ごと捨てたい場面で使う。
+    """
+    if obj is None:
         _pair_cache.clear()
     else:
-        _pair_cache.pop(obj_name, None)
+        _pair_cache.pop(sim_state.obj_key(obj), None)
 
 
 def _draw():
@@ -96,10 +116,16 @@ def _draw():
                 if not pairs:
                     continue
 
+                vertex_count = len(vertices)
                 coords = []
                 for ia, ib in pairs:
+                    # キャッシュが古い場合に備えた保険(描画中の例外は毎再描画で出続ける)
+                    if ia >= vertex_count or ib >= vertex_count:
+                        continue
                     coords.append(matrix @ vertices[ia].co)
                     coords.append(matrix @ vertices[ib].co)
+                if not coords:
+                    continue
 
                 highlight = is_active_object and seam_index == active_index
                 shader.uniform_float(
