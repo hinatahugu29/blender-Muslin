@@ -58,6 +58,7 @@ class CLOTHMD_PT_solver(_ClothMDPanelBase, bpy.types.Panel):
         col.prop(props, "iterations")
         col.prop(props, "substeps")
         col.prop(props, "post_collision_iterations")
+        col.prop(props, "cache_broadphase")
         col.prop(props, "use_cache")
 
 
@@ -253,6 +254,7 @@ class CLOTHMD_PT_debug(_ClothMDPanelBase, bpy.types.Panel):
         layout = self.layout
         layout.operator("cloth_md.test_rust", icon='CONSOLE')
         layout.operator("cloth_md.self_test", icon='CHECKMARK')
+        layout.operator("cloth_md.print_timings", icon='TIME')
 
 
 _classes = (

@@ -387,6 +387,58 @@ def test_post_collision_correction():
           f"最小距離 {deepest_on:.5f} (補正なし {deepest_off:.5f} / 半径 {radius})")
 
 
+def test_broadphase_cache():
+    """広域探索のキャッシュが、結果を変えずに使えることを確認する"""
+    center = (0.5, 0.5, -0.35)
+    radius = 0.3
+    sphere_pos, sphere_tris = build_sphere(center, radius)
+    n, spacing = 21, 0.05
+    positions, edges, bending, tris, _top = build_grid(n, n, spacing)
+
+    def drape(cache):
+        sim = cloth_core.ClothSim(list(positions), edges, bending, tris, [], 0.2, 0.0, 1e-4)
+        sim.add_collider(sphere_pos, sphere_tris)
+        deepest = float("inf")
+        for _ in range(120):
+            sim.step(1.0 / 60.0, -9.81, 2, 8, 0.01, (0.0, 0.0, 0.0),
+                     False, 0.0, 0.3, True, 0.01, 0.3, False, 0.0, 2, cache)
+            p = sim.get_positions()
+            deepest = min(
+                deepest,
+                min(math.dist(p[k * 3:k * 3 + 3], center) for k in range(len(p) // 3)),
+            )
+        return sim.get_positions(), sim.average_stretch_error(), deepest
+
+    pos_a, err_a, deep_a = drape(False)
+    pos_b, err_b, deep_b = drape(True)
+
+    check("キャッシュ有無で伸び誤差が一致する", abs(err_a - err_b) < 1e-6,
+          f"{err_a:.6f} / {err_b:.6f}")
+    max_diff = max(abs(a - b) for a, b in zip(pos_a, pos_b))
+    check("キャッシュ有無で頂点位置が一致する", max_diff < 1e-6, f"最大差 {max_diff:.2e}")
+    check("キャッシュで球に食い込まない", deep_b > deep_a - 1e-3,
+          f"直接 {deep_a:.5f} / キャッシュ {deep_b:.5f}")
+
+
+def test_timings():
+    """時間内訳の計測が取れることを確認する"""
+    positions, edges, bending, tris, _top = build_grid(11, 11, 0.1)
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 0.0, 1e-4)
+    for _ in range(3):
+        sim.step(1.0 / 60.0, -9.81, 10, 4, 0.01)
+
+    t = sim.timings()
+    check("内訳を取得できる", isinstance(t, dict) and "total" in t,
+          f"{len(t)} 項目")
+    check("合計が正の値になる", t["total"] > 0.0, f"{t['total']:.4f} ms")
+
+    parts = sum(t[k] for k in
+                ("integrate", "stretch", "bending", "seam", "floor",
+                 "object_collision", "self_collision", "post_collision", "velocity"))
+    check("内訳の合計が全体を超えない", parts <= t["total"] * 1.05 + 1e-6,
+          f"内訳 {parts:.4f} ms / 全体 {t['total']:.4f} ms")
+
+
 def test_seam_logic():
     """シームのチェーン抽出とペアリング(bpy 非依存の純粋ロジック)を検証する"""
     import seams  # addon/cloth_md/seams.py
@@ -627,6 +679,8 @@ def main():
     test_rewind_determinism()
     test_error_handling()
     test_post_collision_correction()
+    test_broadphase_cache()
+    test_timings()
     test_seam_logic()
     test_cache_io()
     test_transform()

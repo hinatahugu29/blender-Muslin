@@ -302,7 +302,52 @@ impl TriangleBvh {
         best
     }
 
+    /// 三角形の3頂点を返す。広域探索を毎フレームに減らす際、
+    /// キャッシュした三角形に対して最近点を取り直すのに使う。
+    pub fn triangle(&self, tri: usize) -> Option<(Vec3, Vec3, Vec3)> {
+        let t = self.triangles.get(tri)?;
+        Some((self.vertices[t[0]], self.vertices[t[1]], self.vertices[t[2]]))
+    }
+
+    /// 点 p から `radius` 以内にある三角形を全て列挙する。
+    ///
+    /// `closest_point` は最近傍1個しか返さないが、フレーム先頭で候補を
+    /// 作り置きする用途では、途中で最近傍が入れ替わっても足りるよう
+    /// 半径内の三角形をまとめて拾っておく必要がある。
+    pub fn for_each_triangle_within<F: FnMut(usize)>(&self, p: Vec3, radius: f64, mut f: F) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        let radius_sq = radius * radius;
+        let mut stack = vec![0usize];
+        while let Some(index) = stack.pop() {
+            let node = &self.nodes[index];
+            if node.bounds.distance_squared_to(p) > radius_sq {
+                continue;
+            }
+            if node.is_leaf() {
+                for i in node.start..node.start + node.count {
+                    let tri = self.order[i];
+                    let t = self.triangles[tri];
+                    let q = closest_point_on_triangle(
+                        p,
+                        self.vertices[t[0]],
+                        self.vertices[t[1]],
+                        self.vertices[t[2]],
+                    );
+                    if q.sub(p).dot(q.sub(p)) <= radius_sq {
+                        f(tri);
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+    }
+
     /// 三角形の面法線(正規化済み)。縮退三角形では None。
+
     pub fn triangle_normal(&self, tri: usize) -> Option<Vec3> {
         let t = self.triangles[tri];
         let a = self.vertices[t[0]];

@@ -132,6 +132,7 @@ mod bindings {
             self_collision_enabled = false,
             self_collision_thickness = 0.01,
             post_collision_iterations = 2,
+            cache_broadphase = false,
         ))]
         #[allow(clippy::too_many_arguments)]
         fn step(
@@ -151,6 +152,7 @@ mod bindings {
             self_collision_enabled: bool,
             self_collision_thickness: f64,
             post_collision_iterations: u32,
+            cache_broadphase: bool,
         ) {
             let params = SimParams {
                 gravity: Vec3::new(0.0, 0.0, gravity),
@@ -167,6 +169,7 @@ mod bindings {
                 self_collision_enabled,
                 self_collision_thickness,
                 post_collision_iterations,
+                cache_broadphase,
             };
             self.inner.step(dt, &params);
         }
@@ -250,6 +253,13 @@ mod bindings {
             self.inner.collider_triangle_count()
         }
 
+        /// 直近フレームで作った衝突候補の数 (オブジェクト, 自己衝突ペア)。
+        /// cache_broadphase が有効なときだけ意味を持つ。
+        #[getter]
+        fn candidate_counts(&self) -> (usize, usize) {
+            self.inner.last_candidate_counts()
+        }
+
         /// 直近ステップでコリジョン応答が発生した頂点数(デバッグ用)
         #[getter]
         fn last_collision_count(&self) -> usize {
@@ -264,6 +274,26 @@ mod bindings {
         /// 数値発散していないか
         fn is_finite(&self) -> bool {
             self.inner.is_finite()
+        }
+
+        /// 直近 `step` の時間内訳(ミリ秒)を dict で返す。
+        ///
+        /// どこが重いのかを推測ではなく実測で決めるために使う。
+        fn timings(&self) -> std::collections::HashMap<&'static str, f64> {
+            let t = self.inner.timings();
+            let mut map = std::collections::HashMap::new();
+            map.insert("integrate", t.integrate);
+            map.insert("stretch", t.stretch);
+            map.insert("bending", t.bending);
+            map.insert("seam", t.seam);
+            map.insert("floor", t.floor);
+            map.insert("object_collision", t.object_collision);
+            map.insert("self_collision", t.self_collision);
+            map.insert("hash_rebuild", t.hash_rebuild);
+            map.insert("post_collision", t.post_collision);
+            map.insert("velocity", t.velocity);
+            map.insert("total", t.total);
+            map
         }
     }
 

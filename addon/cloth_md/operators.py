@@ -161,6 +161,51 @@ class CLOTHMD_OT_self_test(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CLOTHMD_OT_print_timings(bpy.types.Operator):
+    """実行中のシミュレーションの時間内訳をコンソールに出す"""
+
+    bl_idname = "cloth_md.print_timings"
+    bl_label = "Print Timings"
+
+    # 表示順と日本語ラベル。合計に対する割合で、どこが重いかを見る
+    _ROWS = (
+        ("integrate", "積分(外力・予測位置)"),
+        ("stretch", "伸び制約"),
+        ("bending", "曲げ制約"),
+        ("seam", "縫製制約"),
+        ("floor", "床衝突"),
+        ("object_collision", "オブジェクト衝突"),
+        ("self_collision", "自己衝突"),
+        ("hash_rebuild", "  └ 空間ハッシュ再構築"),
+        ("post_collision", "衝突後の伸び補正"),
+        ("velocity", "速度更新・摩擦"),
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return sim_state.is_running(context.active_object)
+
+    def execute(self, context):
+        obj = context.active_object
+        state = sim_state.get_state(obj)
+        timings = state["sim"].timings()
+        total = timings.get("total", 0.0)
+        if total <= 0.0:
+            self.report({'WARNING'}, "まだ1フレームも計算していません")
+            return {'CANCELLED'}
+
+        print(f"[cloth_md] ---- '{obj.name}' 直近フレームの内訳 ----")
+        for key, label in self._ROWS:
+            value = timings.get(key, 0.0)
+            if value < 1e-4:
+                continue
+            print(f"[cloth_md]  {label:<22}{value:8.3f} ms  {value / total * 100:5.1f}%")
+        print(f"[cloth_md]  {'合計':<22}{total:8.3f} ms")
+
+        self.report({'INFO'}, f"内訳をコンソールに出力しました(合計 {total:.2f} ms)")
+        return {'FINISHED'}
+
+
 class CLOTHMD_OT_start_sim(bpy.types.Operator):
     """選択中のメッシュオブジェクトでクロスシミュレーションを開始する"""
 
@@ -219,6 +264,7 @@ class CLOTHMD_OT_stop_sim(bpy.types.Operator):
 _classes = (
     CLOTHMD_OT_test_rust,
     CLOTHMD_OT_self_test,
+    CLOTHMD_OT_print_timings,
     CLOTHMD_OT_start_sim,
     CLOTHMD_OT_stop_sim,
 )

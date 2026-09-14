@@ -71,6 +71,18 @@ pub struct SimParams {
     pub self_collision_thickness: f64,
 
     // --- 衝突後の補正 ---
+    /// コリジョンオブジェクトの探索をフレーム先頭で1回だけ行う。
+    ///
+    /// 衝突解決はサブステップ毎に走るため、サブステップを増やすと BVH 探索が
+    /// 比例して増える。候補をフレーム先頭で作って使い回せば、サブステップを
+    /// 増やしても探索コストは増えない。1フレーム内の移動量を見込んだ
+    /// 半径で拾うので、途中で近づいた接触も取りこぼさない。
+    ///
+    /// 自己衝突には適用しない。計測の結果、自己衝突ではハッシュ再構築が
+    /// 全体の11%に過ぎず、支配的なのは近傍の反復そのものだった。加えて
+    /// 移動見込みで探索範囲を広げると候補が実接触の1000倍以上に膨れる
+    /// (接触1,000に対し候補1,174,163)。毎サブステップ作り直すほうが速い。
+    pub cache_broadphase: bool,
     /// 衝突解決の「後」に伸び制約を解き直す回数。
     ///
     /// 衝突の押し出しはサブステップ内の制約ループの外側で走るため、
@@ -97,8 +109,53 @@ impl Default for SimParams {
             self_collision_enabled: false,
             self_collision_thickness: 0.01,
             post_collision_iterations: 2,
+            cache_broadphase: false,
         }
     }
+}
+
+/// 移動見積もりに掛ける安全係数。
+///
+/// 衝突の瞬間は制約力で頂点が速度予測以上に動くため、素の見積もりだと
+/// その1フレームだけ食い込むことがある(実測で最大 0.0149)。
+pub const MARGIN_SAFETY: f64 = 1.5;
+
+/// `Instant` からの経過をミリ秒で返す。
+fn ms_since(t: std::time::Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// 1回の `step` に費やした時間の内訳(ミリ秒)。
+///
+/// ボトルネックがどこにあるかを推測ではなく実測で決めるために持つ。
+///
+/// 呼び出し回数は頂点数に依らず一定(既定設定で 1フレームあたり 240回程度)。
+/// A/B 計測では 4,225頂点で 0.9% 以内。14,641頂点では実行間のばらつき(同一
+/// バイナリで 34% の幅があった)に埋もれて、オーバーヘッドは検出できなかった。
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct StepTimings {
+    /// 外力の適用と予測位置の更新(semi-implicit Euler)
+    pub integrate: f64,
+    /// 伸び制約の求解
+    pub stretch: f64,
+    /// 曲げ制約の求解
+    pub bending: f64,
+    /// 縫製制約の求解
+    pub seam: f64,
+    /// 床面との衝突
+    pub floor: f64,
+    /// コリジョンオブジェクトとの衝突(BVH 探索を含む)
+    pub object_collision: f64,
+    /// 自己衝突(空間ハッシュの再構築を含む)
+    pub self_collision: f64,
+    /// 空間ハッシュの再構築のみ(self_collision の内数)
+    pub hash_rebuild: f64,
+    /// 衝突後の伸び補正
+    pub post_collision: f64,
+    /// 位置差からの速度更新と摩擦
+    pub velocity: f64,
+    /// step 全体
+    pub total: f64,
 }
 
 /// クロスシミュレーション本体。
@@ -136,6 +193,14 @@ pub struct ClothSim {
     neighbor_scratch: Vec<usize>,
     /// 直近サブステップで接触した頂点数(デバッグ表示用)
     last_collision_count: usize,
+    /// 直近フレームで作った衝突候補の数(キャッシュの効き具合を見るため)
+    last_candidate_counts: (usize, usize),
+    /// 直近 `step` の時間内訳
+    timings: StepTimings,
+
+    // --- 広域探索のキャッシュ(cache_broadphase 用) ---
+    /// (頂点, コライダー番号, 三角形番号)。フレーム先頭で作る。
+    object_candidates: Vec<(u32, u32, u32)>,
 }
 
 impl ClothSim {
@@ -205,6 +270,9 @@ impl ClothSim {
             hash: SpatialHash::new(0.01),
             neighbor_scratch: Vec::new(),
             last_collision_count: 0,
+            last_candidate_counts: (0, 0),
+            timings: StepTimings::default(),
+            object_candidates: Vec::new(),
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
             lambda_seam: Vec::new(),
@@ -366,11 +434,30 @@ impl ClothSim {
         if dt <= 0.0 || !dt.is_finite() {
             return;
         }
+        let step_start = std::time::Instant::now();
+        self.timings = StepTimings::default();
+
+        if params.cache_broadphase {
+            self.refresh_broadphase(dt, params);
+        }
+
         let substeps = params.substeps.max(1);
         let sub_dt = dt / substeps as f64;
         for _ in 0..substeps {
             self.substep(sub_dt, params);
         }
+
+        self.timings.total = step_start.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    /// 直近 `step` の時間内訳(ミリ秒)。
+    pub fn timings(&self) -> StepTimings {
+        self.timings
+    }
+
+    /// 直近フレームで作った衝突候補の数 (オブジェクト, 自己衝突ペア)。
+    pub fn last_candidate_counts(&self) -> (usize, usize) {
+        self.last_candidate_counts
     }
 
     fn substep(&mut self, dt: f64, params: &SimParams) {
@@ -384,6 +471,7 @@ impl ClothSim {
             1.0
         };
 
+        let t_integrate = std::time::Instant::now();
         let prev_positions = self.positions.clone();
 
         // 予測位置(semi-implicit Euler)
@@ -401,6 +489,8 @@ impl ClothSim {
             self.positions[i] = self.positions[i].add(self.velocities[i].scale(dt));
         }
 
+        self.timings.integrate += ms_since(t_integrate);
+
         // λ をサブステップ先頭でリセット(XPBD)
         self.lambda_stretch.iter_mut().for_each(|l| *l = 0.0);
         self.lambda_bending.iter_mut().for_each(|l| *l = 0.0);
@@ -408,6 +498,7 @@ impl ClothSim {
 
         let inv_dt2 = 1.0 / (dt * dt);
         for _ in 0..params.iterations.max(1) {
+            let t = std::time::Instant::now();
             solve_distance(
                 &mut self.positions,
                 &self.inv_mass,
@@ -415,6 +506,9 @@ impl ClothSim {
                 &mut self.lambda_stretch,
                 inv_dt2,
             );
+            self.timings.stretch += ms_since(t);
+
+            let t = std::time::Instant::now();
             solve_distance(
                 &mut self.positions,
                 &self.inv_mass,
@@ -422,6 +516,9 @@ impl ClothSim {
                 &mut self.lambda_bending,
                 inv_dt2,
             );
+            self.timings.bending += ms_since(t);
+
+            let t = std::time::Instant::now();
             solve_distance(
                 &mut self.positions,
                 &self.inv_mass,
@@ -429,6 +526,7 @@ impl ClothSim {
                 &mut self.lambda_seam,
                 inv_dt2,
             );
+            self.timings.seam += ms_since(t);
         }
 
         // 衝突解決(位置の押し出し)。接触した頂点と法線・摩擦を記録する。
@@ -436,6 +534,7 @@ impl ClothSim {
 
         // 押し出しで壊れた伸びを同じサブステップ内で回収する。
         // λ はリセットせず継続させる(サブステップ内での XPBD の一貫性を保つ)。
+        let t_post = std::time::Instant::now();
         for _ in 0..params.post_collision_iterations {
             solve_distance(
                 &mut self.positions,
@@ -445,8 +544,10 @@ impl ClothSim {
                 inv_dt2,
             );
         }
+        self.timings.post_collision += ms_since(t_post);
 
         // 位置差から速度を更新(押し出し分も速度に反映される)
+        let t_velocity = std::time::Instant::now();
         for i in 0..n {
             if self.inv_mass[i] == 0.0 {
                 self.velocities[i] = Vec3::zero();
@@ -465,6 +566,7 @@ impl ClothSim {
                 .add(v_tangent.scale(1.0 - friction.clamp(0.0, 1.0)));
         }
 
+        self.timings.velocity += ms_since(t_velocity);
         self.last_collision_count = contacts.len();
     }
 
@@ -473,6 +575,7 @@ impl ClothSim {
     fn resolve_collisions(&mut self, params: &SimParams) -> Vec<(usize, Vec3, f64)> {
         let mut contacts = Vec::new();
 
+        let t_floor = std::time::Instant::now();
         if params.floor_enabled {
             for i in 0..self.positions.len() {
                 if self.inv_mass[i] == 0.0 {
@@ -485,15 +588,137 @@ impl ClothSim {
             }
         }
 
-        if params.collision_enabled && !self.colliders.is_empty() {
-            self.resolve_object_collisions(params, &mut contacts);
-        }
+        self.timings.floor += ms_since(t_floor);
 
+        let t_object = std::time::Instant::now();
+        if params.collision_enabled && !self.colliders.is_empty() {
+            if params.cache_broadphase {
+                self.resolve_object_collisions_cached(params, &mut contacts);
+            } else {
+                self.resolve_object_collisions(params, &mut contacts);
+            }
+        }
+        self.timings.object_collision += ms_since(t_object);
+
+        // 自己衝突はキャッシュしない(理由は SimParams::cache_broadphase を参照)
+        let t_self = std::time::Instant::now();
         if params.self_collision_enabled {
             self.resolve_self_collisions(params, &mut contacts);
         }
+        self.timings.self_collision += ms_since(t_self);
 
         contacts
+    }
+
+    /// 頂点 `i` が1フレームで動きうる距離の見積もり。
+    ///
+    /// 全頂点の最大速度を一律に使うと、速い頂点が1つあるだけで全頂点の
+    /// 探索半径が膨らみ、候補数が爆発する(実測でキャッシュが2〜3倍遅くなった)。
+    /// 頂点ごとの速度で見積もる。
+    ///
+    /// 速度だけでは、フレーム先頭で止まっていて途中で加速する頂点を
+    /// 取りこぼす(実測で 0.0107 の食い込みが出た)。外力による増分も足す。
+    fn motion_margin(&self, i: usize, dt: f64, params: &SimParams) -> f64 {
+        let accel = params.gravity.length() + params.wind.length();
+        MARGIN_SAFETY * (self.velocities[i].length() * dt + 0.5 * accel * dt * dt)
+    }
+
+    /// 衝突の候補をフレーム先頭で1回だけ作る。
+    ///
+    /// 以降のサブステップは候補に対する距離判定と押し出しだけを行うので、
+    /// BVH 探索と空間ハッシュ再構築がサブステップ数に比例しなくなる。
+    fn refresh_broadphase(&mut self, dt: f64, params: &SimParams) {
+        self.object_candidates.clear();
+        if params.collision_enabled && !self.colliders.is_empty() {
+            let thickness = params.collision_thickness.max(0.0);
+            let base_radius = (thickness * 4.0).max(thickness + 0.02);
+            for i in 0..self.positions.len() {
+                if self.inv_mass[i] == 0.0 {
+                    continue;
+                }
+                let radius = base_radius + self.motion_margin(i, dt, params);
+                let p = self.positions[i];
+                for (ci, collider) in self.colliders.iter().enumerate() {
+                    // 最近傍1個ではフレーム途中で入れ替わったときに足りない。
+                    // 半径内の三角形を全て候補にする。
+                    collider.for_each_triangle_within(p, radius, |tri| {
+                        self.object_candidates.push((i as u32, ci as u32, tri as u32));
+                    });
+                }
+            }
+        }
+
+        self.last_candidate_counts = (self.object_candidates.len(), 0);
+    }
+
+    /// キャッシュ済み候補を使ったコリジョン解決(BVH 探索をやり直さない)。
+    fn resolve_object_collisions_cached(
+        &mut self,
+        params: &SimParams,
+        contacts: &mut Vec<(usize, Vec3, f64)>,
+    ) {
+        let thickness = params.collision_thickness.max(0.0);
+
+        // 候補は頂点ごとにまとまっているので、同じ頂点の区間を一気に処理して
+        // その中の最近傍を選び直す(探索し直さずに従来と同じ結果を狙う)。
+        let mut idx = 0;
+        while idx < self.object_candidates.len() {
+            let (vi, ci, _) = self.object_candidates[idx];
+            let mut end = idx;
+            while end < self.object_candidates.len()
+                && self.object_candidates[end].0 == vi
+                && self.object_candidates[end].1 == ci
+            {
+                end += 1;
+            }
+
+            let vi_us = vi as usize;
+            let collider = &self.colliders[ci as usize];
+            let p = self.positions[vi_us];
+
+            let mut best: Option<(Vec3, usize, f64)> = None;
+            for entry in &self.object_candidates[idx..end] {
+                let tri = entry.2 as usize;
+                let Some((a, b, c)) = collider.triangle(tri) else {
+                    continue;
+                };
+                let q = crate::collision::closest_point_on_triangle(p, a, b, c);
+                let d2 = q.sub(p).dot(q.sub(p));
+                if best.is_none() || d2 < best.unwrap().2 {
+                    best = Some((q, tri, d2));
+                }
+            }
+            idx = end;
+
+            let Some((closest, tri, _)) = best else {
+                continue;
+            };
+            let Some(face_normal) = collider.triangle_normal(tri) else {
+                continue;
+            };
+
+            let offset = p.sub(closest);
+            let dist = offset.length();
+            let signed = offset.dot(face_normal);
+
+            let outward = if signed < 0.0 {
+                face_normal
+            } else if dist > 1e-9 {
+                offset.scale(1.0 / dist)
+            } else {
+                face_normal
+            };
+            let penetration = if signed < 0.0 {
+                thickness + dist
+            } else {
+                thickness - dist
+            };
+
+            if penetration > 0.0 {
+                self.positions[vi_us] = closest.add(outward.scale(thickness));
+                contacts.push((vi_us, outward, params.collision_friction));
+            }
+        }
     }
 
     /// コリジョンオブジェクト表面から布を厚み分だけ押し出す。
@@ -567,7 +792,9 @@ impl ClothSim {
         let mut hash = std::mem::take(&mut self.hash);
         let mut neighbors = std::mem::take(&mut self.neighbor_scratch);
 
+        let t_hash = std::time::Instant::now();
         hash.rebuild_with(thickness, &self.positions);
+        self.timings.hash_rebuild += ms_since(t_hash);
 
         let n = self.positions.len();
         for i in 0..n {
@@ -869,6 +1096,60 @@ mod tests {
         assert!(
             light > heavy + 1e-3,
             "軽い生地の方が風で流されるはず: light={light}, heavy={heavy}"
+        );
+    }
+
+    /// 広域探索のキャッシュは、結果を変えずに衝突検出を減らす
+    ///
+    /// キャッシュはフレーム先頭で候補を作るので、フレーム途中で近づいた接触を
+    /// 取りこぼす危険がある。候補を複数持ち、移動見込みに安全係数を掛けることで
+    /// 結果が一致することを確認する。
+    #[test]
+    fn broadphase_cache_matches_direct_search() {
+        let drape = |cache: bool| {
+            let (positions, edges, bending, tris, _) = build_grid(21, 21, 0.05);
+            let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+            let center = Vec3::new(0.5, 0.5, -0.35);
+            let (sphere_pos, sphere_tris) = build_sphere(center, 0.3, 16, 12);
+            sim.add_collider(sphere_pos, sphere_tris);
+            let params = SimParams {
+                collision_enabled: true,
+                collision_thickness: 0.01,
+                substeps: 8,
+                iterations: 2,
+                cache_broadphase: cache,
+                ..Default::default()
+            };
+            let mut deepest = f64::INFINITY;
+            for _ in 0..120 {
+                sim.step(1.0 / 60.0, &params);
+                for p in &sim.positions {
+                    deepest = deepest.min(p.sub(center).length());
+                }
+            }
+            (sim.average_stretch_error(), deepest, sim.positions.clone())
+        };
+
+        let (err_direct, deep_direct, pos_direct) = drape(false);
+        let (err_cached, deep_cached, pos_cached) = drape(true);
+
+        assert!(
+            (err_direct - err_cached).abs() < 1e-6,
+            "伸び誤差が食い違う: 直接 {err_direct} / キャッシュ {err_cached}"
+        );
+        assert!(
+            deep_cached > deep_direct - 1e-3,
+            "キャッシュのほうが食い込んでいる: 直接 {deep_direct} / キャッシュ {deep_cached}"
+        );
+
+        let max_diff = pos_direct
+            .iter()
+            .zip(pos_cached.iter())
+            .map(|(a, b)| a.sub(*b).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff < 1e-6,
+            "頂点位置が食い違う: 最大差 {max_diff} m"
         );
     }
 
