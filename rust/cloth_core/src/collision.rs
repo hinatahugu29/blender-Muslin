@@ -361,15 +361,27 @@ impl TriangleBvh {
 // --------------------------------------------------------------- 空間ハッシュ
 
 /// 自己衝突検出用の一様グリッド空間ハッシュ。
-type GridMap = crate::hashing::FastMap<(i64, i64, i64), Vec<u32>>;
-
+/// 一様グリッドの空間ハッシュ。自己衝突の近傍探索に使う。
+///
+/// HashMap ではなく計数ソートで作る。毎サブステップ作り直すため、
+/// ハッシュ表の維持コストがそのまま効いてくるので、再利用できる
+/// 平坦な配列だけで組む。
 pub struct SpatialHash {
     cell_size: f64,
-    /// セルキー -> そのセルに入る頂点インデックス
+    /// バケット数 - 1(バケット数は2の冪)
+    mask: usize,
+    /// 各バケットの開始位置。長さはバケット数 + 1
+    starts: Vec<u32>,
+    /// バケット順に並べた頂点番号
+    entries: Vec<u32>,
+    /// `entries` と同じ並びの、セルの完全なハッシュ値
     ///
-    /// 毎サブステップ作り直すとバケットの `Vec` を都度確保することになるため、
-    /// エントリは残したまま中身だけ空にして確保済みメモリを使い回す。
-    buckets: GridMap,
+    /// 固定長のテーブルでは異なるセルが同じバケットに落ちる。数えるときに
+    /// これを突き合わせて、他のセルの頂点を弾く。持たないと 1クエリあたり
+    /// 十数個の余計な候補を数えることになる。
+    keys: Vec<u64>,
+    /// 書き込み位置の作業領域
+    cursor: Vec<u32>,
 }
 
 impl Default for SpatialHash {
@@ -382,11 +394,16 @@ impl SpatialHash {
     pub fn new(cell_size: f64) -> Self {
         SpatialHash {
             cell_size: cell_size.max(1e-6),
-            buckets: GridMap::default(),
+            mask: 0,
+            starts: Vec::new(),
+            entries: Vec::new(),
+            keys: Vec::new(),
+            cursor: Vec::new(),
         }
     }
 
-    fn key(&self, p: Vec3) -> (i64, i64, i64) {
+    #[inline]
+    fn cell_of(&self, p: Vec3) -> (i64, i64, i64) {
         (
             (p.x / self.cell_size).floor() as i64,
             (p.y / self.cell_size).floor() as i64,
@@ -394,33 +411,92 @@ impl SpatialHash {
         )
     }
 
-    /// セルサイズを変えて作り直す。サイズが変わらなければ確保済みメモリを保つ。
+    /// セル座標のハッシュ値。乗算とシフトだけで混ぜる。
+    #[inline]
+    fn hash_cell(cell: (i64, i64, i64)) -> u64 {
+        let (x, y, z) = cell;
+        let h = (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ (y as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+            ^ (z as u64).wrapping_mul(0x1656_67b1_9e37_79f9);
+        h ^ (h >> 29)
+    }
+
+    #[inline]
+    fn bucket_of(&self, hash: u64) -> usize {
+        (hash as usize) & self.mask
+    }
+
+    /// セルサイズを変えて作り直す。
     pub fn rebuild_with(&mut self, cell_size: f64, positions: &[Vec3]) {
-        let cell_size = cell_size.max(1e-6);
-        if (cell_size - self.cell_size).abs() > f64::EPSILON * self.cell_size.max(1.0) {
-            // セルサイズが変わるとキーの意味が変わるので、ここだけは捨てる
-            self.cell_size = cell_size;
-            self.buckets.clear();
-        }
+        self.cell_size = cell_size.max(1e-6);
         self.rebuild(positions);
     }
 
     pub fn rebuild(&mut self, positions: &[Vec3]) {
-        self.buckets.clear();
+        let n = positions.len();
+        if n == 0 {
+            self.mask = 0;
+            self.starts.clear();
+            self.entries.clear();
+            self.keys.clear();
+            return;
+        }
+
+        // 充填率を 0.5 程度に保つ(衝突が増えると余計な候補を数えることになる)
+        let buckets = (2 * n).next_power_of_two().max(64);
+        self.mask = buckets - 1;
+
+        self.starts.clear();
+        self.starts.resize(buckets + 1, 0);
+
+        // 1回目: 個数を数える
+        for p in positions {
+            let b = self.bucket_of(Self::hash_cell(self.cell_of(*p)));
+            self.starts[b + 1] += 1;
+        }
+        // 累積和
+        for i in 0..buckets {
+            self.starts[i + 1] += self.starts[i];
+        }
+
+        // 2回目: 書き込む
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&self.starts[..buckets]);
+        self.entries.clear();
+        self.entries.resize(n, 0);
+        self.keys.clear();
+        self.keys.resize(n, 0);
         for (i, p) in positions.iter().enumerate() {
-            self.buckets.entry(self.key(*p)).or_default().push(i as u32);
+            let hash = Self::hash_cell(self.cell_of(*p));
+            let b = self.bucket_of(hash);
+            let slot = self.cursor[b] as usize;
+            self.entries[slot] = i as u32;
+            self.keys[slot] = hash;
+            self.cursor[b] += 1;
         }
     }
 
     /// 点 p の近傍(自セル + 隣接26セル)にある頂点インデックスを列挙する。
+    ///
+    /// 各頂点はちょうど1つのセルに属し、27セルは互いに異なるので、
+    /// ハッシュ値を突き合わせれば重複も余計な候補も出ない。
     pub fn for_each_neighbor<F: FnMut(usize)>(&self, p: Vec3, mut f: F) {
-        let (cx, cy, cz) = self.key(p);
+        if self.entries.is_empty() {
+            return;
+        }
+        let (cx, cy, cz) = self.cell_of(p);
+
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(bucket) = self.buckets.get(&(cx + dx, cy + dy, cz + dz)) {
-                        for &i in bucket {
-                            f(i as usize);
+                    let hash = Self::hash_cell((cx + dx, cy + dy, cz + dz));
+                    let b = self.bucket_of(hash);
+                    let from = self.starts[b] as usize;
+                    let to = self.starts[b + 1] as usize;
+                    for slot in from..to {
+                        // 同じバケットに落ちた別セルの頂点を弾く
+                        if self.keys[slot] == hash {
+                            f(self.entries[slot] as usize);
                         }
                     }
                 }
