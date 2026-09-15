@@ -20,7 +20,11 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 # Rust 製のネイティブモジュール。abi3-py311 でビルドしているので
-# Python 3.11 以降で共通に使える。現状 Windows x64 のみ。
+# Python 3.11 以降で共通に使える。
+#
+# ここに書いてあるのは**手元でビルドしたとき**の Windows 版だけ。
+# 4プラットフォームぶんをまとめた配布物は GitHub Actions の Release
+# ワークフローが作り、scripts/build_extension.py がこの2行を書き換える。
 platforms = ["windows-x64"]
 wheels = ["./wheels/cloth_core-0.3.0-cp311-abi3-win_amd64.whl"]
 

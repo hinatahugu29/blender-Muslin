@@ -136,7 +136,7 @@ const SELF_COLLISION_CHUNK: usize = 512;
 /// Chebyshev 加速を始めるまでに素の反復を回す回数。
 ///
 /// 反復の初期は残差が大きく、そのまま増幅すると跳ねる。Wang 2015 の S。
-const CHEBYSHEV_DELAY: u32 = 2;
+const CHEBYSHEV_DELAY: u32 = 5;
 
 /// 摩擦を較正する基準のサブステップ数。
 ///
