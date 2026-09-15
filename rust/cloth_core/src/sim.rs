@@ -144,13 +144,34 @@ const SELF_COLLISION_CHUNK: usize = 512;
 /// 発散判定には掛からないので、黙って誤った布が出る。
 ///
 /// 5 にすると、反復が 5 以下なら加速が一度も走らない = 素の反復と同じになり、
-/// **構造的に安全**。6 以上でも単調に改善し、測った範囲(反復 6〜20 x
-/// ρ 0.9/0.95/0.97/0.98)で反り返りは出なかった。
+/// **構造的に安全**。6 以上でも反り返りは出なくなった。
+///
+/// **ただしこの確認は曲げ(垂れ比)しか見ておらず、伸びを見落としていた。**
+/// 伸び制約は曲げよりはるかに硬いので、曲げに合う ρ でも伸びには強すぎる。
+/// 反復を上げると伸びが壊れる別の穴が残っていた(`CHEBYSHEV_RESTART` を参照)。
 ///
 /// 遅延を伸ばしたぶん効きは落ちるが、ρ を上げれば取り戻せる。
 /// 反復10・ρ0.98 で垂れ比 0.4078 と、危険だった頃の設定(遅延2・ρ0.95 で
 /// 0.3986)とほぼ同じところまで戻る。
 const CHEBYSHEV_DELAY: u32 = 5;
+
+/// Chebyshev 加速をリスタートする周期(反復数)。
+///
+/// **これが無いと反復数を上げたときに布が吹き飛ぶ。** 外挿は前回位置との
+/// 差を ω 倍する操作で、ω は反復が進むほど固定点(ρ=0.98 で 1.67)に近づく。
+/// PBD は非線形なので、この外挿を延々と積み上げると誤差が発散する。
+///
+/// 0.4m 角の布を一辺で吊るし、伸び誤差と広がりを測った(リスタート無し):
+///
+/// | 反復 | ρ=0     | ρ=0.95  | ρ=0.98        |
+/// |------|---------|---------|---------------|
+/// | 10   | 0.00428 | 0.00471 | 0.00331       |
+/// | 20   | 0.00412 | 0.00185 | 0.08324       |
+/// | 40   | 0.00253 | 0.02184 | 14.3(12.5m まで飛ぶ) |
+///
+/// `is_finite()` は全部 true を返すので、発散判定では捕まらない。
+/// 周期的に ω を 1 に戻して基準位置を取り直せば、積み上がりが切れる。
+const CHEBYSHEV_RESTART: u32 = 10;
 
 /// 摩擦を較正する基準のサブステップ数。
 ///
@@ -745,11 +766,15 @@ impl ClothSim {
             self.timings.seam += ms_since(t);
 
             if cheb {
+                // 一定周期で加速をリスタートする。外挿の積み上がりを切らないと
+                // 反復数を上げたときに発散する(CHEBYSHEV_RESTART の表を参照)。
+                let phase = k % CHEBYSHEV_RESTART;
+
                 // 最初の数回は加速しない(Wang 2015 の S)。初期の大きな残差を
                 // そのまま増幅すると跳ねるため
-                omega = if k < CHEBYSHEV_DELAY {
+                omega = if phase < CHEBYSHEV_DELAY {
                     1.0
-                } else if k == CHEBYSHEV_DELAY {
+                } else if phase == CHEBYSHEV_DELAY {
                     2.0 / (2.0 - rho2)
                 } else {
                     4.0 / (4.0 - rho2 * omega)
@@ -1491,6 +1516,102 @@ fn solve_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chebyshev 加速が、反復数を上げても布を吹き飛ばさないこと。
+    ///
+    /// **この穴で一度出荷している。** 以前は垂れ比(曲げ)だけを見て安全だと
+    /// 判断していたが、伸びは見ていなかった。伸び制約は曲げよりはるかに硬いので
+    /// 曲げに合う ρ でも伸びには強すぎる。リスタート導入前は 0.4m 角の布が
+    /// 反復40・ρ0.98 で 12m まで広がっていた。
+    ///
+    /// `is_finite()` は true のままなので、発散判定では捕まらない。
+    /// 大きさと伸び誤差の両方で縛る。
+    #[test]
+    fn chebyshev_does_not_blow_up_at_high_iteration_counts() {
+        let (nx, ny, edge) = (31usize, 31usize, 0.01);
+        let span_rest = (nx - 1) as f64 * edge; // 0.30m
+
+        let measure = |iterations: u32, substeps: u32, rho: f64| -> (f64, f64) {
+            let (positions, edges, quads, tris, _) = build_grid(nx, ny, edge);
+            // 上辺一列を固定して自重で垂らす。伸びに最も負荷がかかる形
+            let pinned: Vec<usize> = (0..nx).map(|x| (ny - 1) * nx + x).collect();
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.0);
+            let params = SimParams {
+                iterations,
+                substeps,
+                damping: 0.01,
+                collision_enabled: false,
+                chebyshev_radius: rho,
+                ..Default::default()
+            };
+            for _ in 0..60 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            let span = sim
+                .positions
+                .iter()
+                .map(|p| p.x.abs().max(p.y.abs()).max(p.z.abs()))
+                .fold(0.0_f64, f64::max);
+            (sim.average_stretch_error(), span)
+        };
+
+        for &substeps in &[4u32, 8, 32] {
+            for &iterations in &[10u32, 20, 40] {
+                for &rho in &[0.95_f64, 0.98] {
+                    let (err, span) = measure(iterations, substeps, rho);
+                    assert!(
+                        span < span_rest * 3.0,
+                        "布が吹き飛んだ: 反復{iterations} substeps{substeps} ρ{rho}                          で広がり {span:.3}m (静止時 {span_rest:.2}m)"
+                    );
+                    assert!(
+                        err < 0.05,
+                        "伸びが壊れた: 反復{iterations} substeps{substeps} ρ{rho}                          で平均伸び誤差 {err:.5}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 加速を強めるほど、また反復を増やすほど、伸び誤差は改善するはず。
+    ///
+    /// リスタート導入前はここが逆転していた(反復20以降で悪化)。
+    #[test]
+    fn chebyshev_improves_monotonically_with_iterations() {
+        let (nx, ny, edge) = (31usize, 31usize, 0.01);
+        let err = |iterations: u32, rho: f64| -> f64 {
+            let (positions, edges, quads, tris, _) = build_grid(nx, ny, edge);
+            let pinned: Vec<usize> = (0..nx).map(|x| (ny - 1) * nx + x).collect();
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.0);
+            let params = SimParams {
+                iterations,
+                substeps: 8,
+                damping: 0.01,
+                collision_enabled: false,
+                chebyshev_radius: rho,
+                ..Default::default()
+            };
+            for _ in 0..60 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            sim.average_stretch_error()
+        };
+
+        let e20 = err(20, 0.98);
+        let e40 = err(40, 0.98);
+        assert!(
+            e40 <= e20,
+            "反復を増やしたのに悪化した: 20回 {e20:.5} -> 40回 {e40:.5}"
+        );
+
+        let plain = err(40, 0.0);
+        let boosted = err(40, 0.98);
+        assert!(
+            boosted <= plain,
+            "加速したのに悪化した: 加速なし {plain:.5} -> ρ0.98 {boosted:.5}"
+        );
+    }
 
     /// 曲げのコンプライアンスが剛性として機能するかを、カンチレバー法で確かめる。
     ///
