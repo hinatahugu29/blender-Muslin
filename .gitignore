@@ -4,6 +4,7 @@
 /addon/**/*.so
 /dist/
 /addon/muslin.zip
+/addon/*.zip
 .claude/settings.local.json
 *.blend1
 *.blend2
