@@ -11,6 +11,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . import mesh_io
+from . import rest_shape
 
 # オブジェクトキー(session_uid) -> state dict。
 # 名前をキーにするとリネーム・複製で状態が迷子になるため、
@@ -59,6 +60,10 @@ def create_state(obj, props):
 
     ベイクのように「ハンドラを経由せず自分でフレームを進めたい」処理から使う。
     """
+    # 元の形をどう扱うかを決めてから組み立てる。
+    # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
+    rest_shape.sync_before_start(obj)
+
     sim, info = mesh_io.build_cloth_sim(obj, props)
     rest = sim.get_positions()
     start_frame = bpy.context.scene.frame_current
@@ -331,9 +336,33 @@ def _playback_baked(scene):
             obj["muslin_baked"] = False
 
 
+def _restore_idle_cloths(scene):
+    """走っていない布を、先頭フレームで元の形に戻す。
+
+    Blender では「フレーム 1 に戻す = 元のメッシュの形に戻る」が当たり前
+    なので、シミュレーションを止めていてもそう振る舞わせる。Muslin は
+    モディファイアではなくメッシュに直接書くので、明示的に戻さないと
+    変形したまま残る。
+
+    走っている布はこの関数では触らない(そちらは _simulate_to が
+    start_frame 以下で元の形に戻す)。
+    """
+    if scene.frame_current > scene.frame_start:
+        return
+    for obj in scene.objects:
+        if obj.type != 'MESH' or obj.mode == 'EDIT':
+            continue
+        if obj_key(obj) in _running:
+            continue
+        if obj.get("muslin_baked", False):
+            continue        # ベイクの再生が形を決めているので触らない
+        rest_shape.restore(obj)
+
+
 @persistent
 def _frame_change_handler(scene, depsgraph=None):
     _playback_baked(scene)
+    _restore_idle_cloths(scene)
 
     if not _running:
         return
@@ -373,6 +402,9 @@ def _frame_change_handler(scene, depsgraph=None):
         try:
             positions = _simulate_to(state, props, dt, frame, obj)
             mesh_io.write_positions_to_mesh(obj, positions)
+            # 今のメッシュは Muslin の出力であって人が作った形ではない、
+            # という印。次に開始するときの扱いが変わる。
+            rest_shape.mark_deformed(obj)
             state["last_error"] = state["sim"].average_stretch_error()
             state["last_contacts"] = state["sim"].last_collision_count
             if not state["sim"].is_finite():

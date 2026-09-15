@@ -71,6 +71,10 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
             row.operator("muslin.stop_sim", icon='SNAP_FACE')
         else:
             row.operator("muslin.start_sim", icon='PHYSICS')
+        # メッシュに直接書くので、元の形へ戻す手段を目に見える場所に置く。
+        # Blender 標準のクロスはモディファイアなので外せば戻るが、こちらは
+        # 戻せることが分からないと「壊れた」ように見える。
+        row.operator("muslin.reset_shape", text="", icon='LOOP_BACK')
 
         # 走らせたままでは効かない設定を変えたときに知らせる。
         # 黙って効かないままだと「設定が壊れている」としか見えない。
@@ -314,6 +318,7 @@ class MUSLIN_PT_bake(_MuslinPanelBase, bpy.types.Panel):
     def draw(self, context):
         from . import bake_ops
         from . import cache_io
+        from . import rest_shape
 
         layout = self.layout
         scene = context.scene
@@ -356,6 +361,17 @@ class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        obj = context.active_object
+        if obj is not None and obj.type == 'MESH':
+            from . import rest_shape
+            col = layout.column(align=True)
+            col.label(
+                text="元の形: " + ("記録あり" if rest_shape.has_rest(obj) else "未記録"),
+                icon='MESH_DATA',
+            )
+            col.operator("muslin.set_rest_shape", icon='PINNED')
+            layout.separator()
+
         layout.operator("muslin.test_rust", icon='CONSOLE')
         layout.operator("muslin.self_test", icon='CHECKMARK')
         layout.operator("muslin.print_timings", icon='TIME')

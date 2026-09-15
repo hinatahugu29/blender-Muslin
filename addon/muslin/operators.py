@@ -4,6 +4,7 @@ import bpy
 
 from . import cloth_core
 from . import mesh_io
+from . import rest_shape
 from . import sim_state
 from . import ui_poll
 
@@ -291,6 +292,55 @@ class MUSLIN_OT_stop_sim(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_reset_shape(bpy.types.Operator):
+    """シミュレーションを止めて、メッシュを元の形に戻す"""
+
+    bl_idname = "muslin.reset_shape"
+    bl_label = "Reset to Rest Shape"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        if not rest_shape.has_rest(context.active_object):
+            return ui_poll.reject(cls, "元の形がまだ記録されていません")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        if not rest_shape.restore(obj):
+            self.report({'ERROR'}, "元の形と頂点数が合いません(メッシュを編集しましたか)")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"'{obj.name}' を元の形に戻しました")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_set_rest_shape(bpy.types.Operator):
+    """今のメッシュの形を「元の形」として記録し直す
+
+    シミュレーション結果を出発点にしたいときに使う。
+    """
+
+    bl_idname = "muslin.set_rest_shape"
+    bl_label = "Set Current as Rest"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return ui_poll.mesh_selected(cls, context)
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        if not rest_shape.store(obj):
+            self.report({'ERROR'}, "メッシュに頂点がありません")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"今の形を '{obj.name}' の元の形にしました")
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_restart_sim(bpy.types.Operator):
     """シミュレーションを組み立て直す(コライダーや縫い目の変更を反映する)
 
@@ -395,6 +445,8 @@ _classes = (
     MUSLIN_OT_play,
     MUSLIN_OT_rewind,
     MUSLIN_OT_restart_sim,
+    MUSLIN_OT_reset_shape,
+    MUSLIN_OT_set_rest_shape,
 )
 
 

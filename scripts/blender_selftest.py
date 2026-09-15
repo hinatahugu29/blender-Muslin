@@ -595,6 +595,199 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("フレームと形の同期")
+
+    # Blender では「フレーム 1 に戻す = 元のメッシュの形に戻る」。
+    # Muslin はモディファイアではなくメッシュに直接書くので、明示的に
+    # 戻さないと変形したまま残る。操作の順番によらずそうなることを見る。
+    from muslin import rest_shape
+
+    def drape_scenario(steps):
+        """grid を作り、steps を実行し、(元の最低 z, 今の最低 z) を返す。"""
+        clear_scene()
+        scene = bpy.context.scene
+        scene.frame_start = 1
+        o = make_grid("SyncGrid", side=9, z=1.0)
+        o.muslin.collision_enabled = False
+        rest_low = min(v.co.z for v in o.data.vertices)
+        steps(o, scene)
+        return rest_low, min(v.co.z for v in o.data.vertices), o
+
+    def run_and_back(o, scene, stop=False, restart=False, use_rewind=False,
+                     start_at=1):
+        scene.frame_set(start_at)
+        bpy.ops.muslin.start_sim()
+        for f in range(start_at + 1, start_at + 15):
+            scene.frame_set(f)
+        if stop:
+            bpy.ops.muslin.stop_sim()
+        if restart:
+            bpy.ops.muslin.start_sim()
+        if use_rewind:
+            bpy.ops.muslin.rewind()
+        else:
+            scene.frame_set(1)
+
+    cases = [
+        ("1で開始して1へ戻す", dict()),
+        ("停止してから1へ戻す", dict(stop=True)),
+        ("途中フレームで開始して1へ戻す", dict(start_at=30)),
+        ("停止して開始し直してから1へ", dict(stop=True, restart=True)),
+        ("Rewind で戻す", dict(use_rewind=True)),
+        ("停止してから Rewind", dict(stop=True, use_rewind=True)),
+    ]
+    for title, kwargs in cases:
+        rest_low, now_low, _ = drape_scenario(
+            lambda o, scene, k=kwargs: run_and_back(o, scene, **k)
+        )
+        check(f"{title} → 元の形に戻る", abs(now_low - rest_low) < 1e-5,
+              f"元 {rest_low:.3f} / 今 {now_low:.3f}")
+
+    # 元の形はメッシュの属性として .blend に残る
+    rest_low, _, obj = drape_scenario(
+        lambda o, scene: run_and_back(o, scene, stop=True)
+    )
+    check("元の形が属性として残る", rest_shape.has_rest(obj))
+
+    # **人が編集した形を、古い元の形で上書きしないこと**
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    obj = make_grid("EditedGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+    scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    advance(10, start=2)
+    bpy.ops.muslin.stop_sim()
+    scene.frame_set(1)          # ここで元の形に戻る
+
+    # 人がメッシュを持ち上げる(編集したことにする)
+    for v in obj.data.vertices:
+        v.co.z += 2.0
+    obj.data.update()
+    lifted = min(v.co.z for v in obj.data.vertices)
+
+    bpy.ops.muslin.start_sim()
+    started = min(v.co.z for v in obj.data.vertices)
+    check(
+        "人が編集した形は開始時に上書きされない",
+        abs(started - lifted) < 1e-5,
+        f"編集後 {lifted:.3f} / 開始時 {started:.3f}",
+    )
+    advance(5, start=2)
+    bpy.ops.muslin.stop_sim()
+    scene.frame_set(1)
+    back = min(v.co.z for v in obj.data.vertices)
+    check(
+        "編集した形が新しい元の形になる",
+        abs(back - lifted) < 1e-5,
+        f"編集後 {lifted:.3f} / 戻り先 {back:.3f}",
+    )
+
+    # 明示的に戻す/記録し直すオペレータ
+    clear_scene()
+    obj = make_grid("ResetGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+    rest_low = min(v.co.z for v in obj.data.vertices)
+    check("記録前は Reset を押せない", not bpy.ops.muslin.reset_shape.poll())
+
+    bpy.ops.muslin.start_sim()
+    advance(10, start=2)
+    deformed = min(v.co.z for v in obj.data.vertices)
+    check("走らせると変形している", deformed < rest_low - 0.1, f"{deformed:.3f}")
+
+    res = bpy.ops.muslin.reset_shape()
+    check("Reset to Rest Shape が通る", res == {'FINISHED'}, str(res))
+    check("Reset で元の形に戻る",
+          abs(min(v.co.z for v in obj.data.vertices) - rest_low) < 1e-5)
+    check("Reset でシミュレーションも止まる", not sim_state.is_running(obj))
+
+    # 今の形を元の形にし直す
+    bpy.ops.muslin.start_sim()
+    advance(10, start=2)
+    now = min(v.co.z for v in obj.data.vertices)
+    bpy.ops.muslin.set_rest_shape()
+    check("Set Current as Rest で止まる", not sim_state.is_running(obj))
+    bpy.context.scene.frame_set(1)
+    check(
+        "以後は今の形が元の形になる",
+        abs(min(v.co.z for v in obj.data.vertices) - now) < 1e-5,
+        f"設定時 {now:.3f} / 戻り先 {min(v.co.z for v in obj.data.vertices):.3f}",
+    )
+
+    # メッシュを細分化しても元の形は生き残る。
+    #
+    # 当初は「頂点数が変われば戻せないはず」と考えていたが、元の形は
+    # メッシュの属性なので **Blender が細分化に合わせて補間してくれる**。
+    # 頂点数も自動で揃う。
+    clear_scene()
+    obj = make_grid("SubdivGrid", side=5, z=1.0)
+    for v in obj.data.vertices:          # 平らだと補間の確認にならない
+        v.co.z += 0.3 * v.co.x
+    obj.data.update()
+    rest_shape.store(obj)
+    before = [v.co.copy() for v in obj.data.vertices]
+    before_span = max(v.z for v in before) - min(v.z for v in before)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.subdivide()
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    loaded = rest_shape.load(obj)
+    check("細分化しても元の形が残る", loaded is not None,
+          f"{len(obj.data.vertices)} 頂点")
+    check("頂点数も追随する",
+          loaded is not None and len(loaded) == len(obj.data.vertices) * 3,
+          f"{0 if loaded is None else len(loaded) // 3} / {len(obj.data.vertices)}")
+    if loaded is not None:
+        zs = loaded[2::3]
+        span = float(zs.max() - zs.min())
+        check("補間された形が元の起伏を保つ", abs(span - before_span) < 1e-4,
+              f"元 {before_span:.4f} / 細分化後 {span:.4f}")
+
+    # 一方、属性を消したうえで頂点数が変わった場合は当然戻せない
+    rest_shape.clear(obj)
+    check("消したら戻せない", rest_shape.load(obj) is None)
+
+    # .blend に保存され、開き直しても戻せること。
+    # 元の形をメモリではなくメッシュの属性にした理由がここなので、
+    # 往復を実際に通す。
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    obj = make_grid("SavedGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+    rest_low = min(v.co.z for v in obj.data.vertices)
+
+    scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    advance(10, start=2)
+    bpy.ops.muslin.stop_sim()          # 変形したまま保存する
+    saved_low = min(v.co.z for v in obj.data.vertices)
+    check("保存時点では変形している", saved_low < rest_low - 0.1, f"{saved_low:.3f}")
+
+    blend_path = os.path.join(tempfile.gettempdir(), "muslin_rest_roundtrip.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+    bpy.ops.wm.open_mainfile(filepath=blend_path)
+
+    reopened = bpy.data.objects.get("SavedGrid")
+    check("開き直せた", reopened is not None)
+    if reopened is not None:
+        check("元の形が .blend に残っている", rest_shape.has_rest(reopened))
+        bpy.context.scene.frame_set(1)
+        back = min(v.co.z for v in reopened.data.vertices)
+        check(
+            "開き直してフレーム1で元の形に戻る",
+            abs(back - rest_low) < 1e-5,
+            f"元 {rest_low:.3f} / 戻り先 {back:.3f}",
+        )
+    try:
+        os.remove(blend_path)
+    except OSError:
+        pass
+
+    # ------------------------------------------------------------------
     section("選択からピン留めを作る")
 
     from muslin import pin_ops

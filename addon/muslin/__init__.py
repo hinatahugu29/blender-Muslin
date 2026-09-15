@@ -28,6 +28,7 @@ from . import previews
 from . import properties
 from . import sim_state
 from . import operators
+from . import rest_shape
 from . import pin_ops
 from . import sewing_ops
 from . import bake_ops
