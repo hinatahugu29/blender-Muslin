@@ -126,6 +126,10 @@ Cloth モディファイアと同じで、1つのシーンでシルクのブラ�
 
 必要なもの: Rust (rustup/cargo)、maturin、Python 3.11 以降
 
+`maturin` は `python -m pip install maturin` で入ります。`build.ps1` は
+`maturin` をそのまま呼ぶので、`Scripts` ディレクトリが PATH に必要です。
+動作確認したのは maturin 1.15.0 です。
+
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
