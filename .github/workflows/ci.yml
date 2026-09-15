@@ -23,8 +23,15 @@ env:
 
 jobs:
   core-tests:
-    name: 物理コアの単体テスト
-    runs-on: ubuntu-latest
+    # 物理コアはプラットフォーム依存の処理を持たないが、「持っていないこと」は
+    # 実際に走らせないと分からない。配布は今のところ Windows のみだが、
+    # Linux と macOS でも通ることを確かめておく(クロスプラットフォーム対応の下地)
+    name: 物理コアの単体テスト (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust/cloth_core
+          key: ${{ matrix.os }}
 
       # --no-default-features で pyo3 を外せるので Python 抜きで検証できる。
       # 物理コアを pyo3 非依存に保っている理由がここで効く。
@@ -40,8 +48,14 @@ jobs:
         run: cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo.toml
 
   verify-core:
-    name: コア検証ハーネス
-    runs-on: ubuntu-latest
+    # 拡張モジュール(wheel)まで作って、Blender の外の Python から叩く。
+    # 3 OS で wheel が作れることの確認も兼ねる
+    name: コア検証ハーネス (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust/cloth_core
+          key: ${{ matrix.os }}-wheel
 
       - uses: actions/setup-python@v5
         with:
@@ -59,11 +74,16 @@ jobs:
       - name: 依存を入れる
         run: python -m pip install --upgrade pip maturin numpy
 
-      # 配布は abi3-py311 の wheel なので、CI でも同じ作り方で通す
+      # 配布は abi3-py311 の wheel なので、CI でも同じ作り方で通す。
+      # shell を bash に固定する。Windows の既定は pwsh で、複数行のうち
+      # 先頭のコマンドが失敗しても step が落ちないことがある
       - name: 拡張モジュールをビルドして入れる
+        shell: bash
         run: |
+          set -euo pipefail
           maturin build --release --manifest-path rust/cloth_core/Cargo.toml --out dist-ci
           python -m pip install --no-index --find-links dist-ci cloth_core
 
       - name: verify_core.py
+        shell: bash
         run: python scripts/verify_core.py
