@@ -595,6 +595,73 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("再生の操作")
+
+    # Play はパネルから離れずに回せるようにするためのもの。
+    # 走っていなければ開始も兼ね、起点を先頭に揃える。
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_end = 40
+    obj = make_grid("PlayGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+
+    scene.frame_set(17)             # わざと途中のフレームに居る状態から
+    res = bpy.ops.muslin.play()
+    check("Play で開始できる", res == {'FINISHED'}, str(res))
+    check("Play がシミュレーションを開始する", sim_state.is_running(obj))
+    state = sim_state.get_state(obj)
+    check(
+        "起点がシーンの先頭に揃う",
+        state["start_frame"] == scene.frame_start,
+        f"start_frame={state['start_frame']} / frame_start={scene.frame_start}",
+    )
+
+    # 走らせてから巻き戻すと、布が元の形に戻る
+    rest = positions_of(obj)
+    advance(15, start=scene.frame_start + 1)
+    moved = positions_of(obj)
+    drop = max(abs(r[2] - m[2]) for r, m in zip(rest, moved))
+    check("再生すると布が動く", drop > 0.01, f"{drop:.4f} m")
+
+    res = bpy.ops.muslin.rewind()
+    check("Rewind が通る", res == {'FINISHED'}, str(res))
+    check(
+        "Rewind で開始フレームに戻る",
+        scene.frame_current == state["start_frame"],
+        f"frame {scene.frame_current}",
+    )
+    back = positions_of(obj)
+    diff = max(
+        max(abs(a[k] - b[k]) for k in range(3)) for a, b in zip(rest, back)
+    )
+    check("Rewind で布が元の形に戻る", diff < 1e-5, f"最大差 {diff:.2e} m")
+
+    # 既に走っているときは、起点を勝手に動かさない
+    scene.frame_set(9)
+    bpy.ops.muslin.play()
+    check(
+        "走行中の Play は起点を動かさない",
+        sim_state.get_state(obj)["start_frame"] == state["start_frame"],
+        f"start_frame={sim_state.get_state(obj)['start_frame']}",
+    )
+
+    # 走っていない状態の Rewind はシーンの先頭へ
+    bpy.ops.muslin.stop_sim()
+    scene.frame_set(23)
+    bpy.ops.muslin.rewind()
+    check(
+        "停止中の Rewind はシーン先頭へ",
+        scene.frame_current == scene.frame_start,
+        f"frame {scene.frame_current}",
+    )
+
+    # メッシュが無ければ押せない
+    bpy.context.view_layer.objects.active = None
+    check("非メッシュでは Play が押せない", not bpy.ops.muslin.play.poll())
+    check("非メッシュでは Rewind が押せない", not bpy.ops.muslin.rewind.poll())
+
+    # ------------------------------------------------------------------
     section("Quality の段")
 
     from muslin.properties import QUALITY_PRESETS

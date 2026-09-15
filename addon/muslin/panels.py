@@ -47,11 +47,22 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
         layout = self.layout
         obj = context.active_object
 
+        # 再生の操作をここに置く。タイムラインへ目を移さずに回せるように
+        # するためで、押すと必要に応じて Start Simulation も兼ねる。
+        playing = context.screen is not None and context.screen.is_animation_playing
+        row = layout.row(align=True)
+        row.scale_y = 1.5
+        row.operator("muslin.rewind", text="", icon='REW')
+        if playing:
+            row.operator("muslin.play", text="Pause", icon='PAUSE')
+        else:
+            row.operator("muslin.play", text="Play", icon='PLAY')
+
         row = layout.row(align=True)
         if obj is not None and sim_state.is_running(obj):
-            row.operator("muslin.stop_sim", icon='PAUSE')
+            row.operator("muslin.stop_sim", icon='SNAP_FACE')
         else:
-            row.operator("muslin.start_sim", icon='PLAY')
+            row.operator("muslin.start_sim", icon='PHYSICS')
 
         state = sim_state.get_state(obj)
         if state is not None:

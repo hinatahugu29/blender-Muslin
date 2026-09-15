@@ -291,6 +291,76 @@ class MUSLIN_OT_stop_sim(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _is_playing(context):
+    screen = getattr(context, "screen", None)
+    return bool(screen is not None and screen.is_animation_playing)
+
+
+class MUSLIN_OT_play(bpy.types.Operator):
+    """シミュレーションを再生する(止まっているときは一時停止する)
+
+    必要ならシミュレーションの開始も兼ねる。パネルから目を離して
+    タイムラインへ操作を探しに行かずに済むようにするためのもの。
+    """
+
+    bl_idname = "muslin.play"
+    bl_label = "Play"
+
+    @classmethod
+    def poll(cls, context):
+        return ui_poll.mesh_selected(cls, context)
+
+    def execute(self, context):
+        obj = context.active_object
+        scene = context.scene
+
+        if _is_playing(context):
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+            return {'FINISHED'}
+
+        if not sim_state.is_running(obj):
+            # start_frame は「開始した時点のフレーム」になる。再生の起点と
+            # ずれると巻き戻し先が直感に反するので、先頭へ移してから始める。
+            if scene.frame_current != scene.frame_start:
+                scene.frame_set(scene.frame_start)
+            res = bpy.ops.muslin.start_sim()
+            if res != {'FINISHED'}:
+                return res
+
+        if getattr(context, "screen", None) is None:
+            # ヘッドレスでは再生する画面が無い。シミュレーション自体は
+            # 開始できているので、そこまでを成果として返す。
+            self.report({'INFO'}, "開始しました(再生には画面が必要です)")
+            return {'FINISHED'}
+        bpy.ops.screen.animation_play()
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_rewind(bpy.types.Operator):
+    """再生を止めて開始フレームまで巻き戻し、布を元の形に戻す"""
+
+    bl_idname = "muslin.rewind"
+    bl_label = "Rewind"
+
+    @classmethod
+    def poll(cls, context):
+        return ui_poll.mesh_selected(cls, context)
+
+    def execute(self, context):
+        obj = context.active_object
+        scene = context.scene
+
+        if _is_playing(context):
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+
+        state = sim_state.get_state(obj)
+        # 走っていればその開始フレームへ。走っていなければシーンの先頭へ。
+        target = state["start_frame"] if state is not None else scene.frame_start
+        scene.frame_set(target)
+        self.report({'INFO'}, f"フレーム {target} に戻しました")
+        return {'FINISHED'}
+
+
 _classes = (
     MUSLIN_OT_test_rust,
     MUSLIN_OT_self_test,
@@ -298,6 +368,8 @@ _classes = (
     MUSLIN_OT_fit_thickness,
     MUSLIN_OT_start_sim,
     MUSLIN_OT_stop_sim,
+    MUSLIN_OT_play,
+    MUSLIN_OT_rewind,
 )
 
 
