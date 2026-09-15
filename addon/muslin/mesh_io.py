@@ -328,6 +328,10 @@ def check_thickness(obj, props):
 # どう設定しても差が出ない(実測は check_bending_stiffness の説明を参照)。
 SUBSTEPS_FOR_STIFF_FABRIC = 16
 
+# 開始時点の食い込みを解消する反復回数。押し離した先でまた別の対が近づくので
+# 数回まわす。深く絡んだ状態は数回では解けないが、そこは警告で知らせる。
+UNTANGLE_ITERATIONS = 8
+
 # これ**未満**の Bending Compliance を「硬さが売りの生地」とみなす。
 # 常に出る警告は読まれなくなるので、Wool / Denim / Leather のように硬さ
 # そのものが特徴の生地だけに絞る。
@@ -426,6 +430,26 @@ def build_cloth_sim(obj, props):
             sim.add_collider(c_positions, c_triangles)
             collider_objects.append(collider.name)
 
+    # 開始時点で食い込んでいる分を、速度を発生させずに片付ける。
+    # そのまま走らせると押し出した距離がそのまま速度になり、布が吹き飛ぶ
+    # (分離速度 = 食い込みの深さ ÷ サブステップの時間)。パターンを重ねて
+    # 置いてから縫う使い方で実際に起きるので、開始前に必ず通す。
+    remaining = sim.untangle(
+        UNTANGLE_ITERATIONS,
+        props.self_collision_enabled,
+        props.self_collision_thickness,
+        props.collision_enabled,
+        props.collision_thickness,
+        props.floor_enabled,
+        props.floor_z,
+    )
+    if remaining:
+        warnings.append(
+            f"開始時点の食い込みを解消しきれませんでした(残り {remaining} 箇所)。"
+            "布やコライダーが深く交差しています。配置を見直すか、"
+            "Thickness を小さくしてください"
+        )
+
     info = {
         "vertices": len(mesh.vertices),
         "edges": len(edges),
@@ -435,6 +459,7 @@ def build_cloth_sim(obj, props):
         "seams": len(seam_pairs),
         "colliders": collider_objects,
         "collider_triangles": sim.collider_triangle_count,
+        "untangle_remaining": remaining,
         "warnings": warnings,
     }
     return sim, info

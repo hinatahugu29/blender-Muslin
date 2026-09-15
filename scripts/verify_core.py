@@ -345,6 +345,35 @@ def test_self_collision():
           thickness <= separated < thickness * 2.0,
           f"{separated:.5f} m (厚み {thickness})")
 
+    # 開始時点で深く食い込んでいると、押し出した距離がそのまま速度になって
+    # 布が吹き飛ぶ。untangle は速度を発生させずに位置だけを直す。
+    deep_gap = 0.004
+    deep = []
+    for layer in range(2):
+        for y in range(ny):
+            for x in range(nx):
+                deep.extend((x * spacing, y * spacing, layer * deep_gap))
+
+    def run_deep(use_untangle):
+        s = cloth_core.ClothSim(list(deep), stacked_edges, [], [], [],
+                                0.0, 0.0, 0.0)
+        left = None
+        if use_untangle:
+            left = s.untangle(8, True, thickness, False, 0.0, False, 0.0)
+        for _ in range(30):
+            s.step(1.0 / 60.0, 0.0, 10, 4, 0.0, (0.0, 0.0, 0.0),
+                   False, 0.0, 0.3, False, 0.0, 0.3, True, thickness, 2, False)
+        return closest_between_layers(s.get_positions()), left
+
+    flung, _ = run_deep(False)
+    check("untangle 無しでは深い食い込みで吹き飛ぶ(前提の確認)",
+          flung > thickness * 10, f"{flung:.4f} m まで離れた")
+
+    settled, left = run_deep(True)
+    check("untangle が食い込みを解消しきる", left == 0, f"残り {left} 箇所")
+    check("untangle 後は吹き飛ばない", settled < thickness * 1.5,
+          f"{settled:.5f} m (厚み {thickness})")
+
 
 def test_rewind_determinism():
     """set_positions で巻き戻し、同じフレーム数進めれば同じ結果になる"""

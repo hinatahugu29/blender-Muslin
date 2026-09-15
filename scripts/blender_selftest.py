@@ -384,6 +384,53 @@ def main():
     )
 
     # ----------------------------------------------------------------
+    section("開始時点で食い込んだ布が吹き飛ばない")
+    # 速度は位置差から作るので、食い込んだまま走らせると押し出した距離が
+    # そのまま速度になる。Start Simulation が untangle を通していれば防げる。
+    clear_scene()
+    side, spacing, gap = 5, 0.05, 0.004
+    thickness = 0.02
+    verts, faces = [], []
+    for layer in range(2):
+        base = layer * side * side
+        for y in range(side):
+            for x in range(side):
+                verts.append((x * spacing, y * spacing, layer * gap))
+        for y in range(side - 1):
+            for x in range(side - 1):
+                i = base + y * side + x
+                faces.append((i, i + 1, i + side + 1, i + side))
+    mesh = bpy.data.meshes.new("Stacked")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    stacked = bpy.data.objects.new("Stacked", mesh)
+    bpy.context.collection.objects.link(stacked)
+    bpy.context.view_layer.objects.active = stacked
+
+    sprops = stacked.muslin
+    sprops.self_collision_enabled = True
+    sprops.self_collision_thickness = thickness
+    sprops.collision_enabled = False
+    sprops.gravity = 0.0
+    sprops.damping = 0.0
+
+    res = bpy.ops.muslin.start_sim()
+    check("食い込んだ布でも開始できる", res == {'FINISHED'}, str(res))
+    info = sim_state.get_state(stacked)["info"]
+    check("開始時に食い込みを解消する", info["untangle_remaining"] == 0,
+          f"残り {info['untangle_remaining']} 箇所")
+
+    advance(30)
+    coords = positions_of(stacked)
+    half = side * side
+    spread = max(
+        abs(coords[i][2] - coords[i + half][2]) for i in range(half)
+    )
+    check("開始後に吹き飛ばない", spread < thickness * 2.0,
+          f"層間 {spread:.5f} m (厚み {thickness})")
+    bpy.ops.muslin.stop_sim()
+
+    # ----------------------------------------------------------------
     section("ベイクと .blend をまたいだ再生 (CP-B14)")
     clear_scene()
     blend_dir = tempfile.mkdtemp(prefix="muslin_selftest_")

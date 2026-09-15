@@ -1035,6 +1035,41 @@ impl ClothSim {
     }
 
     /// 位置を強制設定し、速度をリセットする(巻き戻し用)。
+    /// 開始時点で食い込んでいる頂点を、**速度を発生させずに**押し離す。
+    ///
+    /// 速度はサブステップの中で「位置の差 ÷ dt」から作る。そのため、最初から
+    /// 食い込んだ状態で走らせると、押し出した距離がそのまま速度になって布が
+    /// 吹き飛ぶ(分離速度 = 食い込みの深さ ÷ サブステップの dt。厚み 0.02 に
+    /// 0.016 食い込ませると 3.84 m/s)。パターンを重ねて置いてから縫う、
+    /// 取り込んだ衣装が最初から交差している、といった場面で実際に起きる。
+    ///
+    /// ここでは `step` を通さずに位置だけを直すので、押し出しが速度に化けない。
+    ///
+    /// 分離速度そのものを一律に殺す手もあるが、それだと**動くコライダーが布を
+    /// 押し出せなくなる**(アバターの動きに布が付いてこない)。食い込みは開始
+    /// 時点に限った問題なので、開始前に片付ける形にしてある。
+    ///
+    /// 戻り値: 最後の反復で残っていた接触の数(0 なら解消しきった)
+    pub fn untangle(&mut self, params: &SimParams, iterations: u32) -> usize {
+        // 広域探索のキャッシュはフレーム先頭で作る前提なので、ここでは使わない
+        let params = SimParams {
+            cache_broadphase: false,
+            ..*params
+        };
+
+        let mut remaining = 0;
+        for _ in 0..iterations.max(1) {
+            remaining = self.resolve_collisions(&params).len();
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        // 位置だけを動かした。速度は作らない
+        self.velocities.iter_mut().for_each(|v| *v = Vec3::zero());
+        remaining
+    }
+
     pub fn set_positions(&mut self, positions: Vec<Vec3>) -> Result<(), String> {
         if positions.len() != self.positions.len() {
             return Err(format!(
@@ -1654,6 +1689,122 @@ mod tests {
 
     /// 自己衝突が実際に頂点同士を押し離す
     #[test]
+    /// 最初から食い込んでいる布が、開始と同時に吹き飛ばないこと。
+    ///
+    /// 速度は「位置の差 ÷ dt」から作るので、深い食い込みをそのまま押し出すと
+    /// 分離がそのまま運動エネルギーになる(厚み 0.02 に 0.016 食い込むと
+    /// 3.84 m/s、0.5秒で 1.9m 離れた)。`untangle` で開始前に位置だけを直す。
+    #[test]
+    fn untangle_resolves_initial_overlap_without_launching_cloth() {
+        let thickness = 0.02;
+        let gap = 0.004; // 厚みの 1/5。かなり深い食い込み
+
+        // 2枚を gap だけ離して重ねる(互いに制約では繋がっていない)
+        let (nx, ny, spacing) = (5usize, 5usize, 0.05);
+        let mut positions = Vec::new();
+        let mut edges = Vec::new();
+        for layer in 0..2 {
+            let base = layer * nx * ny;
+            for y in 0..ny {
+                for x in 0..nx {
+                    positions.push(Vec3::new(
+                        x as f64 * spacing,
+                        y as f64 * spacing,
+                        layer as f64 * gap,
+                    ));
+                }
+            }
+            for y in 0..ny {
+                for x in 0..nx {
+                    let i = base + y * nx + x;
+                    if x + 1 < nx {
+                        edges.push((i, i + 1));
+                    }
+                    if y + 1 < ny {
+                        edges.push((i, i + nx));
+                    }
+                }
+            }
+        }
+
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.0,
+            collision_enabled: false,
+            self_collision_enabled: true,
+            self_collision_thickness: thickness,
+            ..SimParams::default()
+        };
+
+        let half = nx * ny;
+        let separation = |sim: &ClothSim| -> f64 {
+            sim.positions[0].sub(sim.positions[half]).length()
+        };
+
+        // --- untangle 無し: 押し出しが速度になって離れ続ける ---
+        let mut runaway =
+            ClothSim::new(positions.clone(), &edges, &[], &[], &[], 0.0, 0.0, 0.0);
+        for _ in 0..30 {
+            runaway.step(1.0 / 60.0, &params);
+        }
+        let flung = separation(&runaway);
+        assert!(
+            flung > thickness * 10.0,
+            "吹き飛びが再現できていない。試験の前提が崩れている: {flung}"
+        );
+
+        // --- untangle 有り ---
+        let mut fixed = ClothSim::new(positions, &edges, &[], &[], &[], 0.0, 0.0, 0.0);
+        let remaining = fixed.untangle(&params, 8);
+        assert_eq!(remaining, 0, "食い込みを解消しきれなかった");
+
+        let after_untangle = separation(&fixed);
+        assert!(
+            after_untangle >= thickness,
+            "厚みまで離れていない: {after_untangle}"
+        );
+        assert!(
+            after_untangle < thickness * 1.5,
+            "押し離しすぎ: {after_untangle}"
+        );
+
+        // 速度が残っていないので、回しても離れ続けない
+        for _ in 0..30 {
+            fixed.step(1.0 / 60.0, &params);
+        }
+        let settled = separation(&fixed);
+        assert!(
+            settled < thickness * 1.5,
+            "untangle 後も離れ続けている: {after_untangle} -> {settled}"
+        );
+    }
+
+    /// 食い込んでいない布に対して `untangle` は何もしないこと。
+    ///
+    /// 開始時に必ず通す処理なので、ここで位置が動くと**重なっていない既存の
+    /// シーンの結果まで変わってしまう**。ベイクの互換性がこの性質に乗っている。
+    #[test]
+    fn untangle_does_nothing_when_nothing_overlaps() {
+        let (positions, edges, quads, tris, pinned) = build_grid(11, 11, 0.1);
+        let params = SimParams {
+            collision_enabled: false,
+            self_collision_enabled: true,
+            // エッジ長 0.1 に対して十分小さい(斜めの 0.141 を超えない)
+            self_collision_thickness: 0.03,
+            ..SimParams::default()
+        };
+
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &quads, &tris, &pinned, 0.2, 0.0, 1e-4);
+        let before = sim.positions.clone();
+        let remaining = sim.untangle(&params, 8);
+
+        assert_eq!(remaining, 0, "食い込んでいないのに接触が出た");
+        for (a, b) in before.iter().zip(sim.positions.iter()) {
+            assert_eq!(a, b, "untangle が位置を動かした");
+        }
+    }
+
     /// 摩擦の強さが接触対の個数に依らないこと。
     ///
     /// 接触ごとに掛けていた頃は、接線速度に (1 - friction) が接触数ぶん

@@ -204,6 +204,43 @@ mod bindings {
             self.inner.step(dt, &params);
         }
 
+        /// 開始時点の食い込みを、速度を発生させずに解消する。
+        ///
+        /// 最初から食い込んだまま走らせると、押し出した距離がそのまま速度に
+        /// なって布が吹き飛ぶ。`step` の前に1回だけ呼ぶ。
+        /// 戻り値: 解消しきれずに残った接触の数(0 なら完了)
+        #[pyo3(signature = (
+            iterations = 8,
+            self_collision_enabled = true,
+            self_collision_thickness = 0.01,
+            collision_enabled = true,
+            collision_thickness = 0.005,
+            floor_enabled = false,
+            floor_z = 0.0,
+        ))]
+        #[allow(clippy::too_many_arguments)]
+        fn untangle(
+            &mut self,
+            iterations: u32,
+            self_collision_enabled: bool,
+            self_collision_thickness: f64,
+            collision_enabled: bool,
+            collision_thickness: f64,
+            floor_enabled: bool,
+            floor_z: f64,
+        ) -> usize {
+            let params = SimParams {
+                floor_enabled,
+                floor_z,
+                collision_enabled,
+                collision_thickness,
+                self_collision_enabled,
+                self_collision_thickness,
+                ..SimParams::default()
+            };
+            self.inner.untangle(&params, iterations)
+        }
+
         /// 現在の頂点座標をフラット配列で取得
         fn get_positions(&self) -> Vec<f64> {
             to_flat(&self.inner.positions)
