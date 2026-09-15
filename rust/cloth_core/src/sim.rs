@@ -84,6 +84,12 @@ pub struct SimParams {
     /// 移動見込みで探索範囲を広げると候補が実接触の1000倍以上に膨れる
     /// (接触1,000に対し候補1,174,163)。毎サブステップ作り直すほうが速い。
     pub cache_broadphase: bool,
+    /// Chebyshev 加速に使うスペクトル半径の見積もり(0 で無効)。
+    ///
+    /// 反復そのものを加速する手法なので、収束先は変わらない。つまり
+    /// **材質を変えずに収束を速められる**。1 に近いほど強く加速するが、
+    /// 大きすぎると振動して発散する。
+    pub chebyshev_radius: f64,
     /// 衝突解決の「後」に伸び制約を解き直す回数。
     ///
     /// 衝突の押し出しはサブステップ内の制約ループの外側で走るため、
@@ -111,6 +117,7 @@ impl Default for SimParams {
             self_collision_thickness: 0.01,
             post_collision_iterations: 2,
             cache_broadphase: false,
+            chebyshev_radius: 0.0,
         }
     }
 }
@@ -125,6 +132,11 @@ pub const MARGIN_SAFETY: f64 = 1.5;
 ///
 /// 自分で区切ることで結合順を固定し、結果を決定的に保つ。
 const SELF_COLLISION_CHUNK: usize = 512;
+
+/// Chebyshev 加速を始めるまでに素の反復を回す回数。
+///
+/// 反復の初期は残差が大きく、そのまま増幅すると跳ねる。Wang 2015 の S。
+const CHEBYSHEV_DELAY: u32 = 2;
 
 /// これ以上の頂点数なら並列化する。
 ///
@@ -224,6 +236,12 @@ pub struct ClothSim {
     last_candidate_counts: (usize, usize),
     /// 直近 `step` の時間内訳
     timings: StepTimings,
+
+    // --- Chebyshev 加速の作業領域 ---
+    /// 2反復前の位置 x^(k-1)
+    cheb_prev: Vec<Vec3>,
+    /// 1反復前の位置 x^(k)
+    cheb_cur: Vec<Vec3>,
 
     // --- 摩擦を頂点ごとにまとめる作業領域(毎サブステップ確保し直さない) ---
     /// その頂点の接触法線の和。正規化して代表の法線にする
@@ -333,6 +351,8 @@ impl ClothSim {
             last_collision_count: 0,
             last_candidate_counts: (0, 0),
             timings: StepTimings::default(),
+            cheb_prev: vec![Vec3::zero(); n],
+            cheb_cur: vec![Vec3::zero(); n],
             friction_normal: vec![Vec3::zero(); n],
             friction_coeff: vec![0.0; n],
             friction_stamp: vec![0; n],
@@ -563,7 +583,28 @@ impl ClothSim {
         self.lambda_seam.iter_mut().for_each(|l| *l = 0.0);
 
         let inv_dt2 = 1.0 / (dt * dt);
-        for _ in 0..params.iterations.max(1) {
+
+        // Chebyshev 加速(Wang 2015)。反復そのものを加速するので、収束先は
+        // 変わらない = 材質を変えない。制約を足す方向(広い間隔の曲げ制約)は
+        // エネルギーを足してしまいドレープを潰したので、こちらを試す。
+        //
+        //   x^(k+1) = ω(x̃^(k+1) - x^(k-1)) + x^(k-1)
+        //   ω は 1 → 2/(2-ρ²) → 4/(4-ρ²ω) と更新する
+        //
+        // ω=1 のときは素の反復と一致する。固定頂点は x̃ = x^k = x^(k-1) なので
+        // この式でも動かない。
+        let cheb = params.chebyshev_radius > 0.0;
+        let rho2 = params.chebyshev_radius * params.chebyshev_radius;
+        let mut omega = 1.0_f64;
+        if cheb {
+            self.cheb_prev.copy_from_slice(&self.positions);
+        }
+
+        for k in 0..params.iterations.max(1) {
+            if cheb {
+                self.cheb_cur.copy_from_slice(&self.positions);
+            }
+
             let t = std::time::Instant::now();
             solve_distance(
                 &mut self.positions,
@@ -593,6 +634,29 @@ impl ClothSim {
                 inv_dt2,
             );
             self.timings.seam += ms_since(t);
+
+            if cheb {
+                // 最初の数回は加速しない(Wang 2015 の S)。初期の大きな残差を
+                // そのまま増幅すると跳ねるため
+                omega = if k < CHEBYSHEV_DELAY {
+                    1.0
+                } else if k == CHEBYSHEV_DELAY {
+                    2.0 / (2.0 - rho2)
+                } else {
+                    4.0 / (4.0 - rho2 * omega)
+                };
+
+                if omega != 1.0 {
+                    for i in 0..n {
+                        let prev = self.cheb_prev[i];
+                        self.positions[i] =
+                            prev.add(self.positions[i].sub(prev).scale(omega));
+                    }
+                }
+                // prev = x^k。cheb_cur は次の反復の頭で上書きするので、
+                // コピーせず入れ替えるだけでよい(毎反復 n*24 バイトの節約)
+                std::mem::swap(&mut self.cheb_prev, &mut self.cheb_cur);
+            }
         }
 
         // 衝突解決(位置の押し出し)。接触した頂点と法線・摩擦を記録する。
@@ -2078,6 +2142,91 @@ mod tests {
         for (a, b) in before.iter().zip(sim.positions.iter()) {
             assert_eq!(a, b, "untangle が位置を動かした");
         }
+    }
+
+    /// Chebyshev 加速が曲げの収束を速めること、かつ材質を変えないこと。
+    ///
+    /// 広い間隔の曲げ制約(梯子)はカンチレバーだけ見て良さそうに見えたが、
+    /// ドレープで布が板になった。加速は「同じ解に速く近づける」手法なので、
+    /// **硬い生地は硬く、柔らかい生地は柔らかいまま**でなければならない。
+    /// 片側だけを見て判断しないよう、両方を確かめる。
+    #[test]
+    fn chebyshev_accelerates_without_changing_material() {
+        let (nx, ny, edge, clamp) = (41usize, 5usize, 0.005, 5usize);
+        let idx = |x: usize, y: usize| y * nx + x;
+        let overhang = (nx - clamp) as f64 * edge;
+
+        let droop = |compliance: f64, rho: f64| -> Option<f64> {
+            let mut positions = Vec::new();
+            for y in 0..ny {
+                for x in 0..nx {
+                    positions.push(Vec3::new(x as f64 * edge, y as f64 * edge, 0.0));
+                }
+            }
+            let mut edges = Vec::new();
+            let mut tris = Vec::new();
+            for y in 0..ny {
+                for x in 0..nx {
+                    if x + 1 < nx {
+                        edges.push((idx(x, y), idx(x + 1, y)));
+                    }
+                    if y + 1 < ny {
+                        edges.push((idx(x, y), idx(x, y + 1)));
+                    }
+                    if x + 1 < nx && y + 1 < ny {
+                        tris.push((idx(x, y), idx(x + 1, y), idx(x + 1, y + 1)));
+                        tris.push((idx(x, y), idx(x + 1, y + 1), idx(x, y + 1)));
+                    }
+                }
+            }
+            let quads = crate::bending::quads_from_triangles(&tris);
+            let pinned: Vec<usize> = (0..ny)
+                .flat_map(|y| (0..clamp).map(move |x| idx(x, y)))
+                .collect();
+            let anchor = positions[pinned[0]];
+
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.15, 0.0, compliance);
+            let params = SimParams {
+                iterations: 10,
+                // 加速は「サブステップを上げたとき」に特によく効く
+                substeps: 32,
+                damping: 0.6,
+                collision_enabled: false,
+                post_collision_iterations: 0,
+                chebyshev_radius: rho,
+                ..SimParams::default()
+            };
+            for _ in 0..200 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            if !sim.is_finite() {
+                return None;
+            }
+            // 固定頂点が動いていないこと(加速の式が固定を壊さないか)
+            assert_eq!(sim.positions[pinned[0]], anchor, "固定頂点が動いた");
+
+            let tip: f64 = (0..ny).map(|y| sim.positions[idx(nx - 1, y)].z).sum::<f64>()
+                / ny as f64;
+            Some(-tip / overhang)
+        };
+
+        // 硬い生地(完全剛体): 加速すると目に見えて硬くなる
+        let stiff_plain = droop(0.0, 0.0).expect("素の反復で発散した");
+        let stiff_cheb = droop(0.0, 0.95).expect("加速して発散した");
+        assert!(
+            stiff_cheb < stiff_plain * 0.8,
+            "加速しても硬さが出ていない: {stiff_plain:.4} -> {stiff_cheb:.4}"
+        );
+
+        // 柔らかい生地: 材質は変わらないので、ほとんど動かないこと。
+        // ここが硬くなるようなら「加速」ではなく「剛性を足している」
+        let soft_plain = droop(0.3, 0.0).expect("素の反復で発散した");
+        let soft_cheb = droop(0.3, 0.95).expect("加速して発散した");
+        assert!(
+            (soft_cheb - soft_plain).abs() < 0.05,
+            "柔らかい生地の垂れ方が変わった: {soft_plain:.4} -> {soft_cheb:.4}"
+        );
     }
 
     /// 摩擦の強さが接触対の個数に依らないこと。

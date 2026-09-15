@@ -75,6 +75,7 @@ class MUSLIN_PT_solver(_MuslinSettingsPanel, bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(props, "iterations")
         col.prop(props, "substeps")
+        col.prop(props, "chebyshev_radius")
         col.prop(props, "post_collision_iterations")
         col.prop(props, "cache_broadphase")
         col.prop(props, "use_cache")

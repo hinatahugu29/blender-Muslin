@@ -372,12 +372,15 @@ def check_bending_stiffness(props):
     if not needs_more_substeps_for_bending(props):
         return []
 
-    return [
+    hint = (
         f"Bending Compliance ({props.bending_compliance:.4g}) は硬い生地の設定ですが、"
         f"Substeps が {props.substeps} では曲げ剛性がほとんど出ません"
         f"(この設定ではどの生地もほぼ同じように垂れます)。"
         f"硬さを出すには Substeps を {SUBSTEPS_FOR_STIFF_FABRIC} 以上にしてください"
-    ]
+    )
+    if props.chebyshev_radius <= 0.0:
+        hint += "。あわせて Convergence Boost を 0.95 にすると効果が大きくなります"
+    return [hint]
 
 
 def build_cloth_sim(obj, props):
