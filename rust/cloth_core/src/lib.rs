@@ -301,7 +301,21 @@ mod bindings {
             Ok(self.inner.add_collider(verts, tris))
         }
 
-        /// アニメーションするコライダーの頂点座標を更新する(BVHは再フィットのみ)。
+        /// このフレームの終点を指定する。サブステップごとに補間して動かす。
+        ///
+        /// 実効的な標本化が substeps 倍細かくなるので、速いコライダーが
+        /// 布を素通りしにくくなる。`step` を1回呼ぶと終点に到達する。
+        fn set_collider_target(&mut self, index: usize, positions: Vec<f64>) -> PyResult<()> {
+            let verts = to_vec3s(&positions)?;
+            self.inner
+                .set_collider_target(index, verts)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// アニメーションするコライダーの頂点座標を**その場で**更新する。
+        ///
+        /// 1フレームの移動がコライダー自身の大きさに近づくと布を素通りする。
+        /// 動くコライダーには `set_collider_target` を使うこと。
         fn update_collider(&mut self, index: usize, positions: Vec<f64>) -> PyResult<()> {
             let verts = to_vec3s(&positions)?;
             self.inner

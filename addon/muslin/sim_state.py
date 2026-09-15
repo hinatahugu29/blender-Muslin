@@ -122,7 +122,9 @@ def _update_animated_colliders(state, props):
             continue
         positions, _ = mesh_io.build_collider_mesh(obj, depsgraph, positions_only=True)
         try:
-            state["sim"].update_collider(index, positions)
+            # その場で動かすとフレーム頭の1回しか標本化されず、速いコライダーが
+            # 布を素通りする。終点として渡してサブステップごとに補間させる
+            state["sim"].set_collider_target(index, positions)
         except ValueError as exc:
             # トポロジが変わった場合は追従できない(頂点数が変わるモディファイア等)
             print(f"[muslin] コライダー '{name}' を更新できません: {exc}")

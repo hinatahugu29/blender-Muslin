@@ -214,6 +214,23 @@ pub struct ClothSim {
     constrained_pairs: crate::hashing::FastSet<(u32, u32)>,
     /// コリジョンオブジェクト(BVH付き三角形メッシュ)
     colliders: Vec<TriangleBvh>,
+    /// このフレームの終点となるコライダー頂点。サブステップごとに補間する。
+    ///
+    /// コライダーはフレーム頭で1回しか更新されないので、速く動くと**重なる
+    /// 瞬間がサンプルされずに素通りする**。実測では、球(直径 0.30m)が
+    /// 15 m/s(1フレーム 0.25m)で布を通ると、開始位置によって 8回中2回
+    /// 素通りした。60 m/s では 8回中5回。
+    ///
+    /// サブステップごとに始点から終点へ補間すれば、実効的な標本化が
+    /// substeps 倍細かくなる。連続衝突判定(CCD)そのものではないが、
+    /// 支配的な取りこぼしはこれで塞がる。
+    collider_targets: Vec<Option<Vec<Vec3>>>,
+    /// 直近のサブステップでコライダーが動いた最大距離。
+    ///
+    /// 探索半径をこのぶん広げる。半径は既定 0.025 しかないので、**大きな
+    /// コライダーの内部深くに入った頂点は表面が遠くて検出されない**。
+    /// 球(半径 0.15)の中心から 0.06 の頂点は表面まで 0.09 あり、圏外だった。
+    collider_motion: f64,
     /// 布自身の三角形。頂点-三角形の自己衝突に使う。
     ///
     /// 頂点同士の反発だけでは、**頂点の並びがずれた2枚が素通りする**。
@@ -338,6 +355,8 @@ impl ClothSim {
             vertex_area,
             constrained_pairs,
             colliders: Vec::new(),
+            collider_targets: Vec::new(),
+            collider_motion: 0.0,
             triangles: triangles
                 .iter()
                 .filter(|&&(a, b, c)| a < n && b < n && c < n && a != b && b != c && a != c)
@@ -447,28 +466,90 @@ impl ClothSim {
     /// コリジョンオブジェクトを追加し、そのインデックスを返す。
     pub fn add_collider(&mut self, vertices: Vec<Vec3>, triangles: Vec<[usize; 3]>) -> usize {
         self.colliders.push(TriangleBvh::new(vertices, triangles));
+        self.collider_targets.push(None);
         self.colliders.len() - 1
     }
 
-    /// アニメーションするコライダーの頂点を更新する(BVHは再フィット)。
+    /// コライダーの頂点を**その場で**更新する(BVHは再フィット)。
+    ///
+    /// 速く動くコライダーには [`Self::set_collider_target`] を使うこと。
+    /// こちらはフレーム頭で1回だけ動かすので、1フレームの移動がコライダー
+    /// 自身の大きさに近づくと布を素通りする。
     pub fn update_collider(&mut self, index: usize, vertices: Vec<Vec3>) -> Result<(), String> {
+        self.check_collider_vertices(index, vertices.len())?;
+        self.colliders[index].refit(vertices);
+        self.collider_targets[index] = None;
+        Ok(())
+    }
+
+    /// このフレームの終点を指定する。サブステップごとに補間して動かす。
+    ///
+    /// 現在位置を始点、`vertices` を終点として、各サブステップで線形補間する。
+    /// 実効的な標本化が substeps 倍細かくなるので、速いコライダーの
+    /// 取りこぼしが減る。`step` を1回呼ぶと終点に到達し、指定は消える。
+    pub fn set_collider_target(
+        &mut self,
+        index: usize,
+        vertices: Vec<Vec3>,
+    ) -> Result<(), String> {
+        self.check_collider_vertices(index, vertices.len())?;
+        self.collider_targets[index] = Some(vertices);
+        Ok(())
+    }
+
+    fn check_collider_vertices(&self, index: usize, len: usize) -> Result<(), String> {
         let collider = self
             .colliders
-            .get_mut(index)
+            .get(index)
             .ok_or_else(|| format!("collider index {index} out of range"))?;
-        if collider.vertices.len() != vertices.len() {
+        if collider.vertices.len() != len {
             return Err(format!(
                 "collider vertex count mismatch: expected {}, got {}",
                 collider.vertices.len(),
-                vertices.len()
+                len
             ));
         }
-        collider.refit(vertices);
         Ok(())
+    }
+
+    /// サブステップ `step_index`(1 始まり)の位置までコライダーを進める。
+    fn advance_colliders(&mut self, step_index: u32, substeps: u32) {
+        if self.collider_targets.iter().all(|t| t.is_none()) {
+            self.collider_motion = 0.0;
+            return;
+        }
+        // 始点を別に持たずに正確な線形補間をする。
+        // いま from + (to-from)*(s-1)/n にいるので、残り (n-s+1) 回で
+        // 終点に着くよう「残り距離の 1/(n-s+1)」だけ進めればよい。
+        // s = n では係数 1 になり、終点そのものになる(丸め誤差が残らない)。
+        let remaining = substeps.saturating_sub(step_index) + 1;
+        let beta = 1.0 / remaining as f64;
+
+        for (i, target) in self.collider_targets.iter().enumerate() {
+            let Some(target) = target else { continue };
+            let collider = &mut self.colliders[i];
+            let moved: Vec<Vec3> = if remaining <= 1 {
+                target.clone()
+            } else {
+                collider
+                    .vertices
+                    .iter()
+                    .zip(target.iter())
+                    .map(|(cur, to)| cur.add(to.sub(*cur).scale(beta)))
+                    .collect()
+            };
+            let mut motion: f64 = 0.0;
+            for (from, to) in collider.vertices.iter().zip(moved.iter()) {
+                motion = motion.max(to.sub(*from).length());
+            }
+            self.collider_motion = self.collider_motion.max(motion);
+            collider.refit(moved);
+        }
     }
 
     pub fn clear_colliders(&mut self) {
         self.colliders.clear();
+        self.collider_targets.clear();
     }
 
     pub fn collider_count(&self) -> usize {
@@ -529,8 +610,14 @@ impl ClothSim {
 
         let substeps = params.substeps.max(1);
         let sub_dt = dt / substeps as f64;
-        for _ in 0..substeps {
+        for s in 0..substeps {
+            // コライダーを先に進めてから布を解く。フレーム頭で1回だけ動かすと
+            // 速いコライダーが布を素通りする
+            self.advance_colliders(s + 1, substeps);
             self.substep(sub_dt, params);
+        }
+        for target in self.collider_targets.iter_mut() {
+            *target = None;
         }
 
         self.timings.total = step_start.elapsed().as_secs_f64() * 1000.0;
@@ -929,8 +1016,11 @@ impl ClothSim {
         use rayon::prelude::*;
 
         let thickness = params.collision_thickness.max(0.0);
-        // 深く潜り込んだ頂点も拾えるよう、探索半径は厚みより大きめに取る
-        let search_radius = (thickness * 4.0).max(thickness + 0.02);
+        // 深く潜り込んだ頂点も拾えるよう、探索半径は厚みより大きめに取る。
+        // 動くコライダーでは、そのサブステップの移動量ぶんさらに広げる。
+        // 広げないと、通り抜ける途中で内部深くに入った頂点が圏外になる
+        let search_radius =
+            (thickness * 4.0).max(thickness + 0.02) + self.collider_motion;
         let friction = params.collision_friction;
         let colliders = &self.colliders;
         let inv_mass = &self.inv_mass;
@@ -2227,6 +2317,109 @@ mod tests {
             (soft_cheb - soft_plain).abs() < 0.05,
             "柔らかい生地の垂れ方が変わった: {soft_plain:.4} -> {soft_cheb:.4}"
         );
+    }
+
+    /// 速く動くコライダーが布を素通りしないこと。
+    ///
+    /// コライダーはフレーム頭で1回しか更新されないので、1フレームの移動が
+    /// コライダー自身の大きさに近づくと、重なる瞬間がサンプルされずに
+    /// 素通りしていた。加えて探索半径が 0.025 しかなく、**大きなコライダーの
+    /// 内部深くに入った頂点は表面が遠くて検出されなかった**。
+    /// 実測では球(直径 0.30m)が 15 m/s で通ると 8回中2回、60 m/s では
+    /// 8回中5回、布に触れずに通り抜けた。
+    ///
+    /// `set_collider_target` でサブステップごとに補間し、探索半径を
+    /// 移動量ぶん広げることで、いずれも 0 回になった。
+    #[test]
+    fn fast_collider_does_not_pass_through_cloth() {
+        let (n, e, radius) = (15usize, 0.05, 0.15);
+        let cx = (n - 1) as f64 * e / 2.0;
+
+        let mut positions = Vec::new();
+        for z in 0..n {
+            for x in 0..n {
+                positions.push(Vec3::new(x as f64 * e, 0.0, z as f64 * e));
+            }
+        }
+        let mut edges = Vec::new();
+        let mut tris = Vec::new();
+        for z in 0..n {
+            for x in 0..n {
+                let i = z * n + x;
+                if x + 1 < n {
+                    edges.push((i, i + 1));
+                }
+                if z + 1 < n {
+                    edges.push((i, i + n));
+                }
+                if x + 1 < n && z + 1 < n {
+                    tris.push((i, i + 1, i + n + 1));
+                    tris.push((i, i + n + 1, i + n));
+                }
+            }
+        }
+        let quads = crate::bending::quads_from_triangles(&tris);
+        let pinned = vec![0, n - 1, n * (n - 1), n * n - 1];
+
+        // 球が y 方向に通過する
+        let sphere = |y: f64| build_sphere(Vec3::new(cx, y, cx), radius, 16, 12);
+
+        // interpolate=false は従来の update_collider(その場で動かす)
+        let shaken = |speed: f64, start: f64, interpolate: bool| -> f64 {
+            let mut sim = ClothSim::new(
+                positions.clone(), &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.02,
+            );
+            let (sp, st) = sphere(start);
+            sim.add_collider(sp, st);
+
+            let params = SimParams {
+                gravity: Vec3::zero(),
+                damping: 0.0,
+                collision_enabled: true,
+                collision_thickness: 0.005,
+                ..SimParams::default()
+            };
+            let dt = 1.0 / 60.0;
+            let mut y = start;
+            let frames = ((start.abs() + 0.5) / (speed * dt)) as usize + 2;
+            for _ in 0..frames {
+                y += speed * dt;
+                let (moved, _) = sphere(y);
+                if interpolate {
+                    sim.set_collider_target(0, moved).unwrap();
+                } else {
+                    sim.update_collider(0, moved).unwrap();
+                }
+                sim.step(dt, &params);
+            }
+
+            // 球を遠ざけて、残った揺れを測る。当たっていれば揺れている
+            let (far, _) = sphere(100.0);
+            sim.update_collider(0, far).unwrap();
+            let mut shake: f64 = 0.0;
+            for _ in 0..20 {
+                sim.step(dt, &params);
+                for p in sim.positions.iter() {
+                    shake = shake.max(p.y.abs());
+                }
+            }
+            assert!(sim.is_finite(), "発散した");
+            shake
+        };
+
+        // 1フレームで球の直径(0.30m)以上動く速さ
+        let speed = 30.0;
+        let per_frame = speed / 60.0;
+
+        // 開始位置(位相)をずらして、どれも取りこぼさないこと
+        let mut missed = 0;
+        for k in 0..4 {
+            let start = -0.5 - k as f64 * (per_frame / 4.0);
+            if shaken(speed, start, true) < 0.01 {
+                missed += 1;
+            }
+        }
+        assert_eq!(missed, 0, "補間しても素通りした位相がある: {missed}/4");
     }
 
     /// 摩擦の強さが接触対の個数に依らないこと。
