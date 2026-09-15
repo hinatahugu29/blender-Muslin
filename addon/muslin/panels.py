@@ -19,8 +19,9 @@ class _MuslinSettingsPanel(_MuslinPanelBase):
 
     @classmethod
     def poll(cls, context):
-        # 編集中は計算結果がメッシュに書き戻らないので、ここをいじっても
-        # 何も起きない。代わりに Pattern / Sewing が前に出る。
+        # 編集中はシミュレーション自体を止めている(編集用の BMesh が
+        # 書き戻されて計算結果が捨てられるため)。止まっている設定を
+        # 並べても何も起きないので隠し、代わりに Pattern / Sewing を前に出す。
         return context.mode == 'OBJECT'
 
     def draw(self, context):
@@ -140,7 +141,10 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
 
     def draw_cloth(self, context, layout, props):
 
-        layout.prop(props, "fabric_preset")
+        # サムネイルで選ばせる。生地の違いはシルエットに出るので、
+        # 名前より絵の方が早い。
+        col = self.buttons(layout)
+        col.template_icon_view(props, "fabric_preset", show_labels=True, scale=5.0)
 
         col = layout.column(align=True)
         col.prop(props, "density")

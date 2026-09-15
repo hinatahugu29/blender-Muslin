@@ -595,6 +595,66 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("生地のサムネイル")
+
+    from muslin import previews as muslin_previews
+    from muslin.properties import FABRIC_ITEMS, FABRIC_PRESETS
+
+    check(
+        "サムネイルが読み込まれている",
+        muslin_previews.loaded_count() == len(FABRIC_PRESETS),
+        f"{muslin_previews.loaded_count()} / {len(FABRIC_PRESETS)} 枚",
+    )
+    # icon_id はヘッドレスでは常に 0 になる(アイコンの割り当てに UI が要る)。
+    # 画像そのものは読めているので、そちらで確かめる。実際に絵が出るかは
+    # GUI でしか見られない。
+    sizes = {n: muslin_previews.image_size(n) for n in FABRIC_PRESETS}
+    check(
+        "全プリセットの画像が読めている",
+        all(sz == (128, 128) for sz in sizes.values()),
+        ", ".join(f"{n}:{sz}" for n, sz in sizes.items() if sz != (128, 128)) or "全て 128x128",
+    )
+    check(
+        "Custom には絵が無い(手動設定なので)",
+        muslin_previews.image_size('CUSTOM') is None,
+    )
+
+    # items の並びと保存される番号が、プリセット表と食い違っていないこと
+    keys = [item[0] for item in FABRIC_ITEMS]
+    check(
+        "items がプリセット表を網羅している",
+        set(keys) == set(FABRIC_PRESETS) | {'CUSTOM'},
+        str(set(keys) ^ (set(FABRIC_PRESETS) | {'CUSTOM'})),
+    )
+    numbers = [item[3] for item in FABRIC_ITEMS]
+    check("保存される番号が重複していない", len(set(numbers)) == len(numbers),
+          str(numbers))
+    check("Custom が先頭(動的 enum の既定になる)", keys[0] == 'CUSTOM', keys[0])
+
+    # 実際に enum として全項目を選べること。
+    # 動的 items の enum は bl_rna.enum_items が空になるので、そちらは見ない。
+    clear_scene()
+    obj = make_grid("IconGrid")
+    unselectable = []
+    for key, _label, _desc, _number in FABRIC_ITEMS:
+        try:
+            obj.muslin.fabric_preset = key
+        except TypeError:
+            unselectable.append(key)
+            continue
+        if obj.muslin.fabric_preset != key:
+            unselectable.append(key)
+    check("全項目を選べる", not unselectable, f"選べない: {unselectable}")
+
+    # 描き直しても壊れない(items コールバックが毎回新しい文字列を返すため、
+    # 参照を持ち損ねると表示が壊れるという落とし穴がある)
+    for _ in range(3):
+        obj.muslin.fabric_preset = 'DENIM'
+        obj.muslin.fabric_preset = 'SILK'
+    check("何度引き直しても値が保たれる", obj.muslin.fabric_preset == 'SILK',
+          obj.muslin.fabric_preset)
+
+    # ------------------------------------------------------------------
     section("組み立て直しが要る変更")
 
     # コライダーと縫い目は組み立て時に登録されるので、走らせたままでは
@@ -1095,6 +1155,9 @@ def main():
                 raise AttributeError(f"{listtype} という UIList は無い")
             self.prop(data, propname)
             self.prop(active_data, active_propname)
+
+        def template_icon_view(self, data, propname, **_kw):
+            self.prop(data, propname)
 
         def label(self, **_kw):
             pass

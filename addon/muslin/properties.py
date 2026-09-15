@@ -117,6 +117,36 @@ def _fabric_to_custom(self, context):
     _fall_back_to_custom(self, "fabric_preset")
 
 
+# 生地の並びと説明。サムネイル付きで出すため、items は関数で作る。
+#
+# 末尾の数字は .blend に保存される値なので**動かしてはいけない**。
+# 動的 items の enum は識別子ではなくこの数字で保存されるので、並べ替えや
+# 追加のたびにずれると、開き直したときに別の生地になってしまう。
+FABRIC_ITEMS = [
+    ('CUSTOM', "Custom", "手動で設定する(選んでも値は変わりません)", 0),
+    ('CHIFFON', "Chiffon", "シフォン: 非常に軽く柔らかい (50 g/m^2)", 1),
+    ('SILK', "Silk", "シルク: 軽くなめらかに落ちる (80 g/m^2)", 2),
+    ('COTTON', "Cotton", "コットン: 標準的なシャツ地 (150 g/m^2)", 3),
+    ('KNIT', "Knit", "ニット: 伸びる編み地 (180 g/m^2)", 4),
+    ('WOOL', "Wool", "ウール: 厚みがありゆったり落ちる (300 g/m^2)", 5),
+    ('DENIM', "Denim", "デニム: 重く硬い (400 g/m^2)", 6),
+    ('LEATHER', "Leather", "革: 非常に重く曲がりにくい (900 g/m^2)", 7),
+]
+
+# Blender は items コールバックが返した文字列を保持しないので、Python 側で
+# 参照を持っておかないと解放されて表示が壊れる(よくある落とし穴)。
+_fabric_items_cache = []
+
+
+def _fabric_items(self, context):
+    from . import previews
+    _fabric_items_cache[:] = [
+        (key, label, description, previews.icon_id(key), number)
+        for key, label, description, number in FABRIC_ITEMS
+    ]
+    return _fabric_items_cache
+
+
 class MUSLIN_PG_vertex_index(bpy.types.PropertyGroup):
     """シームのチェーンを構成する頂点インデックス(順序を保持する)。"""
 
@@ -315,17 +345,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
             "生地のプリセット。選ぶと Density / Stretch / Bending / Damping が"
             "まとめて設定される"
         ),
-        items=[
-            ('CUSTOM', "Custom", "手動で設定する(選んでも値は変わりません)"),
-            ('CHIFFON', "Chiffon", "シフォン: 非常に軽く柔らかい (50 g/m^2)"),
-            ('SILK', "Silk", "シルク: 軽くなめらかに落ちる (80 g/m^2)"),
-            ('COTTON', "Cotton", "コットン: 標準的なシャツ地 (150 g/m^2)"),
-            ('KNIT', "Knit", "ニット: 伸びる編み地 (180 g/m^2)"),
-            ('WOOL', "Wool", "ウール: 厚みがありゆったり落ちる (300 g/m^2)"),
-            ('DENIM', "Denim", "デニム: 重く硬い (400 g/m^2)"),
-            ('LEATHER', "Leather", "革: 非常に重く曲がりにくい (900 g/m^2)"),
-        ],
-        default='CUSTOM',
+        items=_fabric_items,
         update=_apply_fabric_preset,
     )
     density: bpy.props.FloatProperty(

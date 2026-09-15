@@ -24,6 +24,7 @@ except ImportError:                            # pragma: no cover
 
 cloth_core = _cloth_core
 
+from . import previews
 from . import properties
 from . import sim_state
 from . import operators
@@ -32,7 +33,8 @@ from . import bake_ops
 from . import overlay
 from . import panels
 
-_modules = (properties, sim_state, operators, sewing_ops, bake_ops, overlay, panels)
+# previews は properties より先に。生地の items がアイコン ID を引くため。
+_modules = (previews, properties, sim_state, operators, sewing_ops, bake_ops, overlay, panels)
 
 
 def register():
