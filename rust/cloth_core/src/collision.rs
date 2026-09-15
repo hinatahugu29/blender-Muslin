@@ -49,8 +49,17 @@ impl Aabb {
 
 // -------------------------------------------------------- 三角形の最近接点
 
+/// ゼロ除算を避けるための下限。分母はどれも長さの2乗なので、
+/// この程度を下回る三角形は退化しているとみなす。
+const DEGENERATE_EPS: f64 = 1e-20;
+
 /// 三角形 (a,b,c) 上で点 p に最も近い点を返す(Ericson, Real-Time Collision Detection)。
+///
+/// **退化した三角形でも NaN を返さない。** 頂点が重なった三角形(布が潰れたとき、
+/// あるいは二重頂点のあるコライダーメッシュ)では分母が 0 になり、NaN が
+/// 頂点座標へ流れ込んで発散していた。教科書の式には無い分岐を足してある。
 pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    const EPS: f64 = DEGENERATE_EPS;
     let ab = b.sub(a);
     let ac = c.sub(a);
     let ap = p.sub(a);
@@ -70,7 +79,12 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
+        // 分母は |ab|^2。a と b が重なっていると 0/0 で NaN になる
+        let denom = d1 - d3;
+        if denom <= EPS {
+            return a;
+        }
+        let v = d1 / denom;
         return a.add(ab.scale(v));
     }
 
@@ -83,17 +97,32 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
+        // 分母は |ac|^2
+        let denom = d2 - d6;
+        if denom <= EPS {
+            return a;
+        }
+        let w = d2 / denom;
         return a.add(ac.scale(w));
     }
 
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        // 分母は |bc|^2
+        let denom = (d4 - d3) + (d5 - d6);
+        if denom <= EPS {
+            return b;
+        }
+        let w = (d4 - d3) / denom;
         return b.add(c.sub(b).scale(w));
     }
 
-    let denom = 1.0 / (va + vb + vc);
+    // 分母は三角形の面積の2倍。一直線に並んでいると 0 になる
+    let sum = va + vb + vc;
+    if sum <= EPS {
+        return a;
+    }
+    let denom = 1.0 / sum;
     let v = vb * denom;
     let w = vc * denom;
     a.add(ab.scale(v)).add(ac.scale(w))
@@ -722,6 +751,35 @@ mod tests {
         ];
         let tris = vec![[0, 1, 2], [0, 2, 3]];
         (verts, tris)
+    }
+
+    #[test]
+    /// 退化した三角形でも NaN を返さないこと。
+    ///
+    /// 分母は順に |ab|^2, |ac|^2, |bc|^2, 三角形の面積の2倍に対応する。
+    /// 頂点が重なった三角形(布が潰れたとき、あるいは二重頂点のあるコライダー)
+    /// では 0/0 になり、NaN が頂点座標に流れ込んで発散していた。
+    #[test]
+    fn closest_point_handles_degenerate_triangles() {
+        let p = Vec3::new(0.3, 0.4, 1.0);
+        let o = Vec3::zero();
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let y = Vec3::new(0.0, 1.0, 0.0);
+
+        let cases = [
+            ("a と b が一致", o, o, y),
+            ("a と c が一致", o, x, o),
+            ("b と c が一致", o, x, x),
+            ("3点とも一致", o, o, o),
+            ("一直線に並ぶ", o, x, x.scale(2.0)),
+        ];
+        for (name, a, b, c) in cases {
+            let q = closest_point_on_triangle(p, a, b, c);
+            assert!(
+                q.x.is_finite() && q.y.is_finite() && q.z.is_finite(),
+                "{name} で NaN が出た: {q:?}"
+            );
+        }
     }
 
     #[test]
