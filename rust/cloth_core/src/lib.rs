@@ -261,6 +261,16 @@ mod bindings {
         }
 
         /// ピン留めを再設定する(質量分布は保持される)
+        /// 生地の面密度を差し替える(走らせたまま反映できる)。
+        fn set_density(&mut self, density: f64) {
+            self.inner.set_density(density);
+        }
+
+        /// 伸び・曲げのコンプライアンスを差し替える(走らせたまま反映できる)。
+        fn set_compliances(&mut self, stretch: f64, bending: f64) {
+            self.inner.set_compliances(stretch, bending);
+        }
+
         fn set_pinned(&mut self, pinned: Vec<u32>) {
             let pinned: Vec<usize> = pinned.iter().map(|&i| i as usize).collect();
             self.inner.set_pinned(&pinned);

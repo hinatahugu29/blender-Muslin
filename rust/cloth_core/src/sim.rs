@@ -515,6 +515,38 @@ impl ClothSim {
         self.positions.len()
     }
 
+    /// 生地の面密度を差し替える。位置・速度・静止長には触らない。
+    ///
+    /// 生地を選び直したときに、走らせたまま反映できるようにするためのもの。
+    /// 組み立て直すと布が初期姿勢に戻ってしまい、見比べられない。
+    /// ピン留めした頂点(inv_mass == 0)はピンのまま残す。
+    pub fn set_density(&mut self, density: f64) {
+        let uniform = density <= 0.0;
+        for i in 0..self.positions.len() {
+            let mass = if uniform {
+                1.0
+            } else {
+                (self.vertex_area[i] * density).max(1e-12)
+            };
+            let inv = 1.0 / mass;
+            self.base_inv_mass[i] = inv;
+            // ピン留めされている頂点はそのまま(質量無限)にしておく
+            if self.inv_mass[i] != 0.0 {
+                self.inv_mass[i] = inv;
+            }
+        }
+    }
+
+    /// 伸び・曲げのコンプライアンスを差し替える。静止長・静止角は保持する。
+    pub fn set_compliances(&mut self, stretch: f64, bending: f64) {
+        for c in self.stretch_constraints.iter_mut() {
+            c.compliance = stretch;
+        }
+        for c in self.bending_constraints.iter_mut() {
+            c.compliance = bending;
+        }
+    }
+
     /// ピン留めを再設定する。面積から算出した質量分布は保持される。
     pub fn set_pinned(&mut self, pinned: &[usize]) {
         self.inv_mass.copy_from_slice(&self.base_inv_mass);
@@ -1636,6 +1668,109 @@ fn solve_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 生地を走らせたまま差し替えられること。
+    ///
+    /// density / compliance は組み立て時に焼き込まれるので、以前は
+    /// 走行中に生地を選び直しても何も起きなかった。組み立て直すと布が
+    /// 初期姿勢に戻ってしまうため、姿勢を保ったまま差し替える。
+    #[test]
+    fn density_and_compliance_can_change_while_running() {
+        let (positions, edges, bending, tris, pinned) = build_grid(11, 11, 0.1);
+        let mut sim =
+            ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-4);
+        let params = SimParams::default();
+        for _ in 0..30 {
+            sim.step(1.0 / 60.0, &params);
+        }
+
+        // 差し替えても姿勢はそのまま
+        let before = sim.positions.clone();
+        sim.set_density(0.8);
+        sim.set_compliances(1e-3, 0.3);
+        for (a, b) in sim.positions.iter().zip(before.iter()) {
+            assert!(a.sub(*b).length() < 1e-12, "差し替えで位置が動いた");
+        }
+
+        // ピン留めは維持される(質量無限のまま)
+        for &i in pinned.iter() {
+            assert_eq!(sim.inv_mass[i], 0.0, "ピン留めが外れた");
+        }
+        // ピン以外は新しい密度を反映している
+        let free = (0..sim.positions.len())
+            .find(|i| !pinned.contains(i))
+            .expect("自由な頂点が無い");
+        let expect = 1.0 / (sim.vertex_area[free] * 0.8);
+        assert!(
+            (sim.inv_mass[free] - expect).abs() < 1e-9,
+            "密度が反映されていない: {} vs {}",
+            sim.inv_mass[free],
+            expect
+        );
+
+        // コンプライアンスは全制約に行き渡る
+        assert!(sim.stretch_constraints.iter().all(|c| c.compliance == 1e-3));
+        assert!(sim.bending_constraints.iter().all(|c| c.compliance == 0.3));
+
+        // 差し替えた後も発散しない
+        for _ in 0..30 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        assert!(sim.is_finite(), "差し替え後に発散した");
+    }
+
+    /// 差し替えたコンプライアンスが、その後の運動に実際に効くこと。
+    ///
+    /// 「全制約に値が行き渡った」ことは上のテストで見ている。ここでは
+    /// solver が毎ステップその値を読んでいる、という繋がりの方を確かめる。
+    ///
+    /// 硬さと垂れの向きを見るなら片持ち(bending_compliance_controls_cantilever_droop)
+    /// が正しい測り方で、吊り下げでは逆転する。硬い布は平面を保って下まで
+    /// 伸びるので、柔らかい布より低い位置に届く。ここでは向きを問わず、
+    /// 同じ初期状態から分岐することだけを見る。
+    #[test]
+    fn swapped_compliance_changes_later_motion() {
+        let run = |swap_to: Option<f64>| {
+            let (positions, edges, quads, tris, pinned) = build_grid(9, 9, 0.1);
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.3);
+            let params = SimParams::default();
+            for _ in 0..10 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            if let Some(bending) = swap_to {
+                sim.set_compliances(0.0, bending);
+            }
+            for _ in 0..30 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            sim.positions.clone()
+        };
+
+        let untouched = run(None);
+        let swapped = run(Some(0.0));
+        let moved = untouched
+            .iter()
+            .zip(swapped.iter())
+            .map(|(a, b)| a.sub(*b).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            moved > 1e-4,
+            "差し替えても運動が変わらない: 最大差 {moved:.2e} m"
+        );
+
+        // 同じ値に差し替えたときは、何もしなかった場合と一致する
+        let same = run(Some(0.3));
+        let drift = untouched
+            .iter()
+            .zip(same.iter())
+            .map(|(a, b)| a.sub(*b).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            drift < 1e-12,
+            "同じ値への差し替えで結果が動いた: {drift:.2e} m"
+        );
+    }
 
     /// 掃過判定が、位置だけでは抜けていた布どうしの高速な交差を止めること。
     ///

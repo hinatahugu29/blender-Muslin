@@ -595,6 +595,133 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("走らせたまま生地を変える")
+
+    # density / compliance / ピン留めは組み立て時に焼き込まれるので、
+    # 以前は走行中に生地を選び直しても何も起きなかった。
+    clear_scene()
+    obj = make_grid("LiveGrid", side=11, z=1.0)
+    props = obj.muslin
+    props.collision_enabled = False
+    props.fabric_preset = 'CHIFFON'
+
+    bpy.ops.muslin.start_sim()
+    advance(10, start=1)
+    state = sim_state.get_state(obj)
+    soft = positions_of(obj)
+
+    # 柔らかい生地で計算したフレームが、この時点でキャッシュに載っている
+    stale = set(state["cache"]) - {state["start_frame"]}
+    check("計算したフレームがキャッシュに載る", len(stale) > 0, f"{len(stale)} フレーム")
+
+    props.fabric_preset = 'LEATHER'
+    # 反映は次のフレーム更新のとき。1フレームだけ進めて確かめる。
+    advance(1, start=11)
+    check(
+        "生地を変えると古いキャッシュが捨てられる",
+        not (stale & set(state["cache"])),
+        f"残ってしまった: {sorted(stale & set(state['cache']))}",
+    )
+
+    advance(9, start=12)
+    stiff = positions_of(obj)
+    changed = max(
+        max(abs(a[k] - b[k]) for k in range(3)) for a, b in zip(soft, stiff)
+    )
+    check("走行中に生地を変えると形が変わる", changed > 1e-4, f"最大差 {changed:.4f} m")
+    check("生地を変えても発散しない", state["sim"].is_finite())
+
+    # 同じ生地のままなら、キャッシュは捨てられない
+    advance(5, start=21)
+    before_cache = set(state["cache"])
+    advance(1, start=26)
+    check(
+        "生地が同じならキャッシュは残る",
+        before_cache <= set(state["cache"]),
+        f"{len(before_cache)} -> {len(state['cache'])}",
+    )
+
+    # ピン留めも走らせたまま効く
+    group = obj.vertex_groups.new(name="Pin")
+    top = [i for i, v in enumerate(obj.data.vertices) if v.co.y > 0.99]
+    group.add(top, 1.0, 'REPLACE')
+    props.pin_vertex_group = "Pin"
+    advance(2, start=27)
+    check(
+        "走行中に付けたピンが効く",
+        sim_state.get_state(obj)["info"]["pinned"] == len(top),
+        f"{sim_state.get_state(obj)['info']['pinned']} / {len(top)} 頂点",
+    )
+    held = positions_of(obj)
+    advance(10, start=29)
+    now = positions_of(obj)
+    pin_move = max(
+        max(abs(now[i][k] - held[i][k]) for k in range(3)) for i in top
+    )
+    check("ピンを付けた頂点が止まる", pin_move < 1e-6, f"最大 {pin_move:.2e} m")
+    bpy.ops.muslin.stop_sim()
+
+    # ------------------------------------------------------------------
+    section("Fabric プリセット")
+
+    from muslin.properties import FABRIC_PRESETS
+
+    clear_scene()
+    obj = make_grid("FabricGrid")
+    props = obj.muslin
+
+    for name, want in FABRIC_PRESETS.items():
+        props.fabric_preset = name
+        got = (props.density, props.stretch_compliance,
+               props.bending_compliance, props.damping)
+        expect = (want["density"], want["stretch"], want["bending"], want["damping"])
+        close = all(abs(a - b) < 1e-6 for a, b in zip(got, expect))
+        check(f"{name} が物性値に反映される", close,
+              " ".join(f"{v:.4g}" for v in got))
+        check(f"{name} を選んでも Custom に落ちない",
+              props.fabric_preset == name, props.fabric_preset)
+
+    # 手で値を変えたら Custom に落ちる(Quality と同じ作法)
+    props.fabric_preset = 'DENIM'
+    props.density = FABRIC_PRESETS['DENIM']["density"] + 0.1
+    check("手で変えると Custom に落ちる",
+          props.fabric_preset == 'CUSTOM', props.fabric_preset)
+    props.fabric_preset = 'DENIM'
+    check("選び直すと戻る",
+          props.fabric_preset == 'DENIM'
+          and abs(props.density - FABRIC_PRESETS['DENIM']["density"]) < 1e-6,
+          f"{props.fabric_preset} / density={props.density:.4g}")
+
+    # 生地と品質は互いに干渉しない(同じ _applying_preset を使っているため)
+    props.quality = 'HIGH'
+    props.fabric_preset = 'SILK'
+    check("生地を変えても Quality は保たれる",
+          props.quality == 'HIGH', props.quality)
+    props.quality = 'DRAFT'
+    check("品質を変えても生地は保たれる",
+          props.fabric_preset == 'SILK', props.fabric_preset)
+
+    # プリセットどうしが重複していないこと
+    sigs = {n: tuple(v[k] for k in ("density", "stretch", "bending", "damping"))
+            for n, v in FABRIC_PRESETS.items()}
+    check("生地どうしの中身が重複していない", len(set(sigs.values())) == len(sigs))
+    # 織物は重いほど曲がりにくい、という並びになっていること。
+    # ニットは編み地なので、コットンより重いのに柔らかい。目付と硬さが
+    # 一致しない実在の例外なので、この並びからは外す。
+    woven = ['CHIFFON', 'SILK', 'COTTON', 'WOOL', 'DENIM', 'LEATHER']
+    by_density = sorted(woven, key=lambda n: FABRIC_PRESETS[n]["density"])
+    bendings = [FABRIC_PRESETS[n]["bending"] for n in by_density]
+    check("織物は重いほど bending が小さい",
+          bendings == sorted(bendings, reverse=True),
+          " > ".join(f"{n}:{b:.3g}" for n, b in zip(by_density, bendings)))
+    check(
+        "ニットはコットンより重いのに柔らかい",
+        FABRIC_PRESETS['KNIT']["density"] > FABRIC_PRESETS['COTTON']["density"]
+        and FABRIC_PRESETS['KNIT']["bending"] > FABRIC_PRESETS['COTTON']["bending"],
+        "編み地なので目付と硬さが一致しない",
+    )
+
+    # ------------------------------------------------------------------
     section("再生の操作")
 
     # Play はパネルから離れずに回せるようにするためのもの。

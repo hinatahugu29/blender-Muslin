@@ -73,7 +73,42 @@ def create_state(obj, props):
         "last_error": 0.0,
         "last_contacts": 0,
         "name": obj.name,
+        "material": _material_signature(props),
     }
+
+
+def _material_signature(props):
+    """組み立て時に焼き込まれる生地の値。変化の検出に使う。"""
+    return (props.density, props.stretch_compliance, props.bending_compliance,
+            props.pin_vertex_group)
+
+
+def _sync_material(state, props, obj=None):
+    """生地とピン留めが変わっていたら、姿勢を保ったままコアに流し込む。
+
+    density / compliance / ピン留めは ClothSim の組み立て時に焼き込まれる
+    ので、以前は走らせたまま生地を選び直しても何も起きなかった。組み立て
+    直すと布が初期姿勢に戻って見比べられないため、コアの差し替えを使う。
+
+    既に計算したフレームは古い生地の結果なので、キャッシュは捨てる。
+    """
+    signature = _material_signature(props)
+    if signature == state["material"]:
+        return False
+
+    sim = state["sim"]
+    sim.set_density(props.density)
+    sim.set_compliances(props.stretch_compliance, props.bending_compliance)
+
+    if obj is not None:
+        pinned = mesh_io.find_vertex_group_indices(obj, props.pin_vertex_group)
+        sim.set_pinned(pinned)
+        state["info"]["pinned"] = len(pinned)
+
+    state["material"] = signature
+    if state["cache"] is not None:
+        state["cache"] = {state["start_frame"]: state["rest_positions"]}
+    return True
 
 
 def start_simulation(obj, props):
@@ -175,8 +210,11 @@ def _trim_cache(cache, start_frame):
         del cache[oldest]
 
 
-def _simulate_to(state, props, dt, target_frame):
+def _simulate_to(state, props, dt, target_frame, obj=None):
     """target_frame の状態まで進める。キャッシュがあれば活用する。"""
+    # キャッシュを引く前に生地の変化を反映する(古い生地の結果を返さない)
+    _sync_material(state, props, obj)
+
     cache = state["cache"] if props.use_cache else None
     start_frame = state["start_frame"]
     sim = state["sim"]
@@ -256,7 +294,7 @@ def _frame_change_handler(scene, depsgraph=None):
         props = obj.muslin
 
         try:
-            positions = _simulate_to(state, props, dt, frame)
+            positions = _simulate_to(state, props, dt, frame, obj)
             mesh_io.write_positions_to_mesh(obj, positions)
             state["last_error"] = state["sim"].average_stretch_error()
             state["last_contacts"] = state["sim"].last_collision_count

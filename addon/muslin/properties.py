@@ -12,9 +12,10 @@ import bpy
 # bending の値はカンチレバー法(片持ちの短冊がどれだけ垂れるか)で較正した。
 # 有効なのは 0 〜 0.3 の範囲で、それより大きくしても「完全に柔らかい」で頭打ちになる。
 #
-# **曲げ剛性は Substeps に強く依存する**。既定の Substeps 4 では、どの生地も
-# ほとんど同じように垂れる。生地の違いを出したいなら Substeps を 16 以上にすること
-# (実測は README「パラメータの決め方」を参照)。
+# **曲げ剛性は Substeps に強く依存する**。既定の Quality(Normal, Substeps 8)
+# では、硬い側の生地どうしがほとんど同じように垂れる。生地の違いを出したい
+# なら Quality を High 以上(Substeps 16 以上)にすること。
+# (実測は README「パラメータの決め方」と scripts/bench_quality.py を参照)
 FABRIC_PRESETS = {
     'CHIFFON': dict(density=0.05, stretch=0.0, bending=0.3, damping=0.02),
     'SILK': dict(density=0.08, stretch=0.0, bending=0.1, damping=0.03),
@@ -49,46 +50,71 @@ QUALITY_PRESETS = {
     'FINAL':  dict(iterations=15, substeps=32, chebyshev=0.98, post=4, cache=True),
 }
 
-# 段を適用している最中は、個々の値の update を無視する。これが無いと
-# 段が書き込んだ値そのものが「手で変えた」とみなされ、即 Custom に戻る。
-_applying_quality = False
+# プリセットを適用している最中は、個々の値の update を無視する。これが
+# 無いと、プリセットが書き込んだ値そのものが「手で変えた」とみなされて
+# 即 Custom に戻ってしまう。
+_applying_preset = False
+
+
+def _apply_preset(props, table, key_prop, mapping):
+    """プリセット表の値を、対応するプロパティに流し込む。
+
+    mapping は {表の列名: プロパティ名}。'CUSTOM' のように表に無い
+    選択肢のときは何もしない。
+    """
+    global _applying_preset
+    values = table.get(getattr(props, key_prop))
+    if values is None:
+        return
+    _applying_preset = True
+    try:
+        for column, prop_name in mapping.items():
+            setattr(props, prop_name, values[column])
+    finally:
+        _applying_preset = False
+
+
+def _fall_back_to_custom(props, key_prop):
+    """値が手で変えられたら、プリセットの表示を Custom に落とす。
+
+    プリセット名が出たままなのに中身が違う、という嘘の表示を防ぐ。
+    """
+    if not _applying_preset and getattr(props, key_prop) != 'CUSTOM':
+        setattr(props, key_prop, 'CUSTOM')
+
+
+QUALITY_MAPPING = {
+    "iterations": "iterations",
+    "substeps": "substeps",
+    "chebyshev": "chebyshev_radius",
+    "post": "post_collision_iterations",
+    "cache": "cache_broadphase",
+}
+
+FABRIC_MAPPING = {
+    "density": "density",
+    "stretch": "stretch_compliance",
+    "bending": "bending_compliance",
+    "damping": "damping",
+}
 
 
 def _apply_quality_preset(self, context):
     """品質の段が選ばれたら、解法の各値を流し込む。"""
-    global _applying_quality
-    values = QUALITY_PRESETS.get(self.quality)
-    if values is None:      # 'CUSTOM' は何もしない
-        return
-    _applying_quality = True
-    try:
-        self.iterations = values["iterations"]
-        self.substeps = values["substeps"]
-        self.chebyshev_radius = values["chebyshev"]
-        self.post_collision_iterations = values["post"]
-        self.cache_broadphase = values["cache"]
-    finally:
-        _applying_quality = False
+    _apply_preset(self, QUALITY_PRESETS, "quality", QUALITY_MAPPING)
 
 
 def _quality_to_custom(self, context):
-    """解法の値が手で変えられたら、段の表示を Custom に落とす。
-
-    段が選ばれたままなのに中身が違う、という嘘の表示を防ぐ。
-    """
-    if not _applying_quality and self.quality != 'CUSTOM':
-        self.quality = 'CUSTOM'
+    _fall_back_to_custom(self, "quality")
 
 
 def _apply_fabric_preset(self, context):
-    """プリセットが選ばれたら物性値を流し込む。"""
-    values = FABRIC_PRESETS.get(self.fabric_preset)
-    if values is None:      # 'CUSTOM' は何もしない
-        return
-    self.density = values["density"]
-    self.stretch_compliance = values["stretch"]
-    self.bending_compliance = values["bending"]
-    self.damping = values["damping"]
+    """生地が選ばれたら物性値を流し込む。"""
+    _apply_preset(self, FABRIC_PRESETS, "fabric_preset", FABRIC_MAPPING)
+
+
+def _fabric_to_custom(self, context):
+    _fall_back_to_custom(self, "fabric_preset")
 
 
 class MUSLIN_PG_vertex_index(bpy.types.PropertyGroup):
@@ -279,6 +305,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         default=0.01,
         min=0.0,
         max=1.0,
+        update=_fabric_to_custom,
     )
 
     # --- 生地物性 ---
@@ -307,6 +334,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         default=0.2,
         min=0.001,
         soft_max=2.0,
+        update=_fabric_to_custom,
     )
     stretch_compliance: bpy.props.FloatProperty(
         name="Stretch Compliance",
@@ -315,6 +343,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=0.01,
         precision=6,
+        update=_fabric_to_custom,
     )
     bending_compliance: bpy.props.FloatProperty(
         name="Bending Compliance",
@@ -327,6 +356,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=0.5,
         precision=5,
+        update=_fabric_to_custom,
     )
 
     # --- 衝突(暫定: 床のみ。本格的なコリジョンは M2) ---
