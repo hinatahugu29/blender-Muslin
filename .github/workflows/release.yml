@@ -25,13 +25,19 @@ jobs:
         include:
           - os: windows-latest
             platform: windows-x64
+            target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             platform: linux-x64
-          # macos-latest は arm64。x64 も要るので macos-13 を併用する
+            target: x86_64-unknown-linux-gnu
+          # Intel Mac 用は macos-13 で作っていたが、**そのランナーは順番が
+          # 回ってこない**(Intel ランナーは提供終了している)。実際に走らせて
+          # 気づいた。Apple Silicon 上でクロスコンパイルする形に変えた
           - os: macos-latest
             platform: macos-arm64
-          - os: macos-13
+            target: aarch64-apple-darwin
+          - os: macos-latest
             platform: macos-x64
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -44,12 +50,15 @@ jobs:
       - name: maturin を入れる
         run: python -m pip install --upgrade pip maturin
 
+      - name: ターゲットを追加する
+        run: rustup target add ${{ matrix.target }}
+
       # abi3-py311 なので、Python 3.11 で作った wheel が 3.11 以降で使える
       - name: wheel を作る
         shell: bash
         run: |
           set -euo pipefail
-          maturin build --release --manifest-path rust/cloth_core/Cargo.toml --out wheels
+          maturin build --release             --manifest-path rust/cloth_core/Cargo.toml             --target ${{ matrix.target }}             --out wheels
 
       - uses: actions/upload-artifact@v4
         with:
