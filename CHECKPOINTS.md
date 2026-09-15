@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(59項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(66項目)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -23,7 +23,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 | 縫い線の描画 | ビューポートに線が出るか、アクティブなシームが強調されるか、リストの ⇔ で向きが反転するか |
 | パネルの見た目 | 各サブパネルが読めるか、メッシュ未選択時の案内が出るか |
 | 操作の感触 | スクラブの反応、再生の滑らかさ、警告メッセージの分かりやすさ |
-| 実機の Blender 版 | 自動テストは 5.1 で走っている。実機の 5.2 でも一度は通すこと |
+| ~~実機の Blender 版~~ | **済み**。Blender 5.2.1 LTS でヘッドレステスト 66項目すべて通過 (2026-09-15) |
 
 下の CP-B の各項目は、ヘッドレステストが何を見ているかを人間向けに書いた
 ものとして残してあります。自動テストが通っていれば、改めて手で追う必要は
@@ -31,8 +31,11 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 ---
 
-最終更新: 2026-09-15 / cloth_core v0.3.0 / アドオン v0.5.0
-（M1・M2・M3 完了。M5 は生地プリセットとオブジェクト単位設定まで。M6 完了）
+最終更新: 2026-09-15 / cloth_core v0.3.0 / アドオン v0.5.0 / Blender 5.2.1 LTS で検証
+（M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
+作り直し・収束加速まで。M4 未着手）
+
+自動テストの規模: cargo test 48 / verify_core.py 75 / blender_selftest.py 66
 
 ---
 
@@ -63,6 +66,22 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 | A-1-13 | `set_pinned_preserves_mass_distribution` | ピン付け外しで質量分布が壊れない | ✅ |
 | A-1-14〜20 | `collision::tests::*` | 三角形最近接点・BVHが総当たりと一致・探索半径・refit・空間ハッシュ | ✅ |
 
+上の表は M2 までの分。その後に追加した主なものは次のとおり(全 48項目):
+
+| テスト | 検証内容 |
+|--------|----------|
+| `bending_compliance_controls_cantilever_droop` | 曲げの compliance が剛性として効く(カンチレバー法) |
+| `chebyshev_accelerates_without_changing_material` | 収束加速が硬い生地を硬くし、柔らかい生地は変えない |
+| `offset_layers_do_not_pass_through_each_other` | 半セルずらした2枚が素通りしない(頂点-三角形) |
+| `self_collision_keeps_layers_apart_when_cloth_piles_up` | 崩落して折り重なった布で層が保たれる |
+| `untangle_resolves_initial_overlap_without_launching_cloth` | 開始時の食い込みで布が吹き飛ばない |
+| `untangle_does_nothing_when_nothing_overlaps` | 重なっていなければ1つも動かさない(ベイク互換) |
+| `friction_does_not_compound_with_contact_count` | 摩擦が接触対の個数に依らない |
+| `friction_does_not_depend_on_substeps` | 摩擦が Substeps に依らない |
+| `fast_collider_does_not_pass_through_cloth` | 速く動くコライダーが布を素通りしない |
+| `closest_point_handles_degenerate_triangles` | 退化した三角形で NaN を返さない |
+| `parallel_self_collision_is_deterministic` | 並列化しても結果が決定的 |
+
 ### A-2. ビルド済み `.pyd` の Python 検証ハーネス
 
 実際に Blender に入れるバイナリを、Blender の外の Python 3.11+ から叩いて検証する。
@@ -71,7 +90,7 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1 -Bench
 ```
 
-48項目すべて PASS(2026-08-08 時点)。A-1 に加えて以下も確認している:
+75項目すべて PASS(2026-09-15 時点)。A-1 に加えて以下も確認している:
 
 - `core_version()` が取れる = `.pyd` の更新漏れを検出できる
 - 巻き戻し(`set_positions`)後の再計算が**ビット一致**(決定的)
@@ -110,11 +129,23 @@ CPU シングルスレッド / iterations=10, substeps=4 / Ryzen 環境:
 | 両方 | 25.1 | 40 |
 
 → **約1.5万頂点までは CPU でリアルタイム(>30fps)**。BVHのおかげでコライダーの追加コストは
-+25% 程度に収まっている。一方**自己衝突は約3倍**と支配的で、M4(GPU化)の第一目標はここ。
++25% 程度に収まっている。
+
+> **この節の数字は古い (2026-09-15)。** 以下の変更で内訳が入れ替わっている。
+> 最新の実測は [README.md](README.md) の「性能の目安」を見ること。
+>
+> - 空間ハッシュを計数ソート方式にして自己衝突が 6倍速くなった
+> - 頂点-三角形の自己衝突を足したので、自己衝突は再び最大項目になった
+>   (14,641頂点で 44.3%)。**ただし「GPU化の第一目標」という結論は無効**で、
+>   いま制約求解と自己衝突のどちらを狙うべきかは測り直す必要がある
 
 ---
 
-## B. 手動チェック(Blender必須) — **未実施**
+## B. 手動チェック(Blender必須)
+
+> **大半はヘッドレステストで自動化済み** (`blender_selftest.py`、66項目)。
+> ここは「自動テストが何を見ているか」を人間向けに書いたものとして残してある。
+> 手で追う必要があるのは、冒頭の「手作業で残っているもの」の4件だけ。
 
 準備: `powershell -ExecutionPolicy Bypass -File scripts/package_zip.ps1` を実行し、
 Blender の Preferences > Add-ons > Install... から `dist/muslin.zip` を入れる。
