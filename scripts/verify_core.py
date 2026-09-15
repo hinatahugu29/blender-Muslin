@@ -20,6 +20,14 @@ import sys
 import time
 from pathlib import Path
 
+# Windows のコンソールは既定が cp932 / cp1252 なので、日本語を print した
+# 時点で UnicodeEncodeError で落ちる。呼び出し側が PYTHONIOENCODING を
+# 立てているかに依存しないよう、ここで UTF-8 に寄せる。
+# (verify_core.ps1 は立てているが、CI は python を直接叩くので落ちた)
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_DIR = REPO_ROOT / "addon" / "muslin"
 

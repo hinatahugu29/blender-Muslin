@@ -16,6 +16,13 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
+# Windows のコンソールは既定が cp932 / cp1252 なので、日本語を print した
+# 時点で UnicodeEncodeError で落ちる。呼び出し側の PYTHONIOENCODING に
+# 依存しないよう、ここで UTF-8 に寄せる。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "addon"))
 
