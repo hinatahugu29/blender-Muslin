@@ -161,6 +161,7 @@ def advance_one_frame(state, props, dt, target_frame):
         props.post_collision_iterations,
         props.cache_broadphase,
         props.chebyshev_radius,
+        props.continuous_self_collision,
     )
 
 

@@ -164,6 +164,7 @@ mod bindings {
             post_collision_iterations = 2,
             cache_broadphase = false,
             chebyshev_radius = 0.0,
+            continuous_self_collision = false,
         ))]
         #[allow(clippy::too_many_arguments)]
         fn step(
@@ -185,6 +186,7 @@ mod bindings {
             post_collision_iterations: u32,
             cache_broadphase: bool,
             chebyshev_radius: f64,
+            continuous_self_collision: bool,
         ) {
             let params = SimParams {
                 gravity: Vec3::new(0.0, 0.0, gravity),
@@ -203,6 +205,7 @@ mod bindings {
                 post_collision_iterations,
                 cache_broadphase,
                 chebyshev_radius,
+                continuous_self_collision,
             };
             self.inner.step(dt, &params);
         }

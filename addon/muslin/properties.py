@@ -319,6 +319,14 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         description="布同士の貫通を防ぐ(重いので必要なときだけ)",
         default=False,
     )
+    continuous_self_collision: bpy.props.BoolProperty(
+        name="Catch Fast Motion",
+        description=(
+            "布どうしの高速な交差を、前後の位置を結ぶ線分で捕まえる。"
+            "切ると 厚み x fps x Substeps を超える速度で布が素通りする"
+        ),
+        default=True,
+    )
     self_collision_thickness: bpy.props.FloatProperty(
         name="Self Thickness",
         description="自己衝突で保つ頂点間距離。メッシュのエッジ長より小さくすること",

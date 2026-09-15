@@ -58,6 +58,43 @@ const DEGENERATE_EPS: f64 = 1e-20;
 /// **退化した三角形でも NaN を返さない。** 頂点が重なった三角形(布が潰れたとき、
 /// あるいは二重頂点のあるコライダーメッシュ)では分母が 0 になり、NaN が
 /// 頂点座標へ流れ込んで発散していた。教科書の式には無い分岐を足してある。
+/// 線分 p0->p1 が三角形 abc を貫くなら、交差位置のパラメータ t (0..=1) を返す。
+///
+/// 位置だけを見る判定は、1サブステップで厚みを超えて動くと**飛び越えた先が
+/// 本当に遠い**ので捕まえられない。前後を結ぶ線分で見れば、通り抜けた事実
+/// そのものを捕まえられる。
+///
+/// Moller-Trumbore。面の裏表は問わない(布はどちら側からも当たる)。
+pub fn segment_triangle_hit(p0: Vec3, p1: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f64> {
+    const EPS: f64 = 1e-12;
+    let dir = p1.sub(p0);
+    let e1 = b.sub(a);
+    let e2 = c.sub(a);
+    let pv = dir.cross(e2);
+    let det = e1.dot(pv);
+    // 線分が面と平行(退化した三角形もここで弾かれる)
+    if det.abs() < EPS {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let tv = p0.sub(a);
+    let u = tv.dot(pv) * inv_det;
+    if !(-EPS..=1.0 + EPS).contains(&u) {
+        return None;
+    }
+    let qv = tv.cross(e1);
+    let v = dir.dot(qv) * inv_det;
+    if v < -EPS || u + v > 1.0 + EPS {
+        return None;
+    }
+    let t = e2.dot(qv) * inv_det;
+    if (-EPS..=1.0 + EPS).contains(&t) {
+        Some(t.clamp(0.0, 1.0))
+    } else {
+        None
+    }
+}
+
 pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     const EPS: f64 = DEGENERATE_EPS;
     let ab = b.sub(a);

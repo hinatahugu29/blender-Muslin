@@ -97,6 +97,12 @@ pub struct SimParams {
     /// ここで数回だけ解き直すと、押し出しを保ったまま伸びを戻せる。
     /// 0 で従来どおり(補正なし)。
     pub post_collision_iterations: u32,
+    /// 布どうしの自己衝突を、前後の位置を結ぶ線分で判定する(掃過判定)。
+    ///
+    /// 位置だけを見る判定は、1サブステップの移動量が厚みを超えると抜ける
+    /// (抜けない上限速度 = 厚み x fps x substeps)。線分で見れば、飛び越えた
+    /// 事実そのものを捕まえられる。
+    pub continuous_self_collision: bool,
 }
 
 impl Default for SimParams {
@@ -118,6 +124,7 @@ impl Default for SimParams {
             post_collision_iterations: 2,
             cache_broadphase: false,
             chebyshev_radius: 0.0,
+            continuous_self_collision: false,
         }
     }
 }
@@ -153,6 +160,13 @@ const SELF_COLLISION_CHUNK: usize = 512;
 /// 遅延を伸ばしたぶん効きは落ちるが、ρ を上げれば取り戻せる。
 /// 反復10・ρ0.98 で垂れ比 0.4078 と、危険だった頃の設定(遅延2・ρ0.95 で
 /// 0.3986)とほぼ同じところまで戻る。
+/// 掃過判定で経路上を拾う最大の刻み数。
+///
+/// 刻みは厚み間隔なので、速い頂点ほど増える。上限を置かないと、異常に速い
+/// 頂点1つのために走査が膨らむ。32 刻みは厚みの 32倍の移動に相当し、
+/// substeps 4・60fps・厚み 0.016 なら 123 m/s まで覆う。
+const MAX_SWEPT_SAMPLES: usize = 32;
+
 const CHEBYSHEV_DELAY: u32 = 5;
 
 /// Chebyshev 加速をリスタートする周期(反復数)。
@@ -216,6 +230,9 @@ pub struct StepTimings {
     pub self_collision: f64,
     /// 空間ハッシュの再構築のみ(self_collision の内数)
     pub hash_rebuild: f64,
+    /// 掃過判定で面まで戻した頂点の数(時間ではなく件数)。
+    /// 0 でないなら、位置だけの判定では抜けていた頂点があったということ。
+    pub self_tunneling: f64,
     /// 衝突後の伸び補正
     pub post_collision: f64,
     /// 位置差からの速度更新と摩擦
@@ -249,6 +266,9 @@ pub struct ClothSim {
     lambda_stretch: Vec<f64>,
     lambda_bending: Vec<f64>,
     lambda_seam: Vec<f64>,
+
+    /// サブステップ開始時の位置。掃過判定で「どこから来たか」に使う。
+    substep_start: Vec<Vec3>,
 
     /// 制約で直接結ばれた頂点対。自己衝突の対象から除外するのに使う
     /// (伸び制約と自己衝突が綱引きして布が破裂するのを防ぐ)。
@@ -424,6 +444,7 @@ impl ClothSim {
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
             lambda_seam: Vec::new(),
+            substep_start: vec![Vec3::zero(); n],
             stretch_constraints,
             bending_constraints,
             seam_constraints: Vec::new(),
@@ -689,6 +710,10 @@ impl ClothSim {
 
         let t_integrate = std::time::Instant::now();
         let prev_positions = self.positions.clone();
+        if params.continuous_self_collision {
+            self.substep_start.clear();
+            self.substep_start.extend_from_slice(&self.positions);
+        }
 
         // 予測位置(semi-implicit Euler)
         for i in 0..n {
@@ -1294,6 +1319,101 @@ impl ClothSim {
         self.timings.hash_rebuild += ms_since(t_hash);
 
         let n = self.positions.len();
+
+        // --- 掃過判定: 飛び越えた頂点を、通り抜けた面まで戻す ---
+        //
+        // 位置だけを見る判定は「飛び越えた先が本当に遠い」ので捕まえられない。
+        // ここで面まで引き戻しておけば、あとは通常の押し出しがいつもどおり
+        // 処理できる。押し出しの仕組みには手を入れない。
+        if params.continuous_self_collision && self.substep_start.len() == n {
+            let mut fixes: Vec<(u32, Vec3)> = Vec::new();
+            {
+                let positions = &self.positions;
+                let inv_mass = &self.inv_mass;
+                let triangles = &self.triangles;
+                let start = &self.substep_start;
+                let hash = &hash;
+
+                // 頂点ごとに独立(読むだけ)なので並列にできる。通常の
+                // 近傍列挙と同じく、区切り方を自分で決めて順序を固定する。
+                let swept_for = |i: usize, out: &mut Vec<(u32, Vec3)>| {
+                    if inv_mass[i] == 0.0 {
+                        return;
+                    }
+                    let p0 = start[i];
+                    let p1 = positions[i];
+                    let motion = p1.sub(p0).length();
+                    // 厚みの範囲しか動いていないなら位置だけの判定で足りる
+                    if motion <= thickness {
+                        return;
+                    }
+                    // 経路上を厚み間隔で拾う。セルの取りこぼしを防ぐため
+                    let steps = ((motion / thickness).ceil() as usize)
+                        .clamp(1, MAX_SWEPT_SAMPLES);
+                    let mut best: Option<(f64, usize)> = None;
+                    for sstep in 0..=steps {
+                        let sp = p0.add(p1.sub(p0).scale(sstep as f64 / steps as f64));
+                        hash.for_each_triangle(sp, |ti| {
+                            let t = triangles[ti];
+                            if t[0] == i || t[1] == i || t[2] == i {
+                                return;
+                            }
+                            if let Some(tt) = crate::collision::segment_triangle_hit(
+                                p0,
+                                p1,
+                                positions[t[0]],
+                                positions[t[1]],
+                                positions[t[2]],
+                            ) {
+                                // 最初に当たった面を採る
+                                if best.map_or(true, |(bt, _)| tt < bt) {
+                                    best = Some((tt, ti));
+                                }
+                            }
+                        });
+                    }
+
+                    if let Some((tt, ti)) = best {
+                        let t = triangles[ti];
+                        let (a, b, c) =
+                            (positions[t[0]], positions[t[1]], positions[t[2]]);
+                        let hit = p0.add(p1.sub(p0).scale(tt));
+                        if let Some(nrm) = b.sub(a).cross(c.sub(a)).normalized() {
+                            // 入ってきた側へ厚みぶん戻す
+                            let side = if p0.sub(hit).dot(nrm) >= 0.0 { 1.0 } else { -1.0 };
+                            out.push((i as u32, hit.add(nrm.scale(side * thickness))));
+                        }
+                    }
+                };
+
+                if n >= PARALLEL_MIN_VERTICES {
+                    let starts: Vec<usize> = (0..n).step_by(SELF_COLLISION_CHUNK).collect();
+                    let chunks: Vec<Vec<(u32, Vec3)>> = starts
+                        .into_par_iter()
+                        .map(|st| {
+                            let end = (st + SELF_COLLISION_CHUNK).min(n);
+                            let mut out = Vec::new();
+                            for i in st..end {
+                                swept_for(i, &mut out);
+                            }
+                            out
+                        })
+                        .collect();
+                    for chunk in chunks {
+                        fixes.extend(chunk);
+                    }
+                } else {
+                    for i in 0..n {
+                        swept_for(i, &mut fixes);
+                    }
+                }
+            }
+            self.timings.self_tunneling = fixes.len() as f64;
+            for (i, pos) in fixes {
+                self.positions[i as usize] = pos;
+            }
+        }
+
         let positions = &self.positions;
         let inv_mass = &self.inv_mass;
         let triangles = &self.triangles;
@@ -1516,6 +1636,107 @@ fn solve_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 掃過判定が、位置だけでは抜けていた布どうしの高速な交差を止めること。
+    ///
+    /// 位置だけを見る判定は、1サブステップの移動量が厚みを超えると抜ける:
+    ///
+    ///     抜けない上限速度 = Self Thickness x fps x Substeps
+    ///
+    /// 厚み 0.016 / 60fps / substeps 4 なら 3.84 m/s。実測でも 3.13 m/s は
+    /// 無事、4.43 m/s で 225頂点**全部**が下の布を素通りしていた。
+    /// 掃過判定を入れると 12 m/s まで 0 になる。
+    #[test]
+    fn swept_test_stops_cloth_passing_through_cloth() {
+        const N: usize = 15;
+        const E: f64 = 0.04;
+        const TH: f64 = 0.016;
+        const G: f64 = 9.81;
+
+        // 下の布(固定) + 上の布(半セルずらして落とす)
+        let sheet = |z: f64, shift: f64| {
+            let mut pos = Vec::new();
+            for y in 0..N {
+                for x in 0..N {
+                    pos.push(Vec3::new(x as f64 * E + shift, y as f64 * E + shift, z));
+                }
+            }
+            let mut edges = Vec::new();
+            let mut tris = Vec::new();
+            for y in 0..N {
+                for x in 0..N {
+                    let i = y * N + x;
+                    if x + 1 < N {
+                        edges.push((i, i + 1));
+                    }
+                    if y + 1 < N {
+                        edges.push((i, i + N));
+                    }
+                    if x + 1 < N && y + 1 < N {
+                        tris.push((i, i + 1, i + N + 1));
+                        tris.push((i, i + N + 1, i + N));
+                    }
+                }
+            }
+            (pos, edges, tris)
+        };
+
+        let through = |speed: f64, swept: bool| -> usize {
+            let height = speed * speed / (2.0 * G);
+            let (lower_pos, lower_edges, lower_tris) = sheet(0.0, 0.0);
+            let (upper_pos, upper_edges, upper_tris) = sheet(height, E * 0.5);
+            let off = lower_pos.len();
+
+            let mut positions = lower_pos;
+            positions.extend(upper_pos);
+            let mut edges = lower_edges;
+            edges.extend(upper_edges.iter().map(|&(a, b)| (a + off, b + off)));
+            let mut tris = lower_tris;
+            tris.extend(
+                upper_tris
+                    .iter()
+                    .map(|&(a, b, c)| (a + off, b + off, c + off)),
+            );
+            let pinned: Vec<usize> = (0..off).collect();
+            let quads = crate::bending::quads_from_triangles(&tris);
+
+            let mut sim =
+                ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.01);
+            let params = SimParams {
+                iterations: 10,
+                substeps: 4,
+                damping: 0.0,
+                collision_enabled: false,
+                self_collision_enabled: true,
+                self_collision_thickness: TH,
+                continuous_self_collision: swept,
+                ..Default::default()
+            };
+            let frames = (speed / G * 60.0) as usize + 25;
+            for _ in 0..frames {
+                sim.step(1.0 / 60.0, &params);
+            }
+            assert!(sim.is_finite(), "発散した (速度 {speed}, 掃過 {swept})");
+            (off..sim.positions.len())
+                .filter(|&i| sim.positions[i].z < -TH)
+                .count()
+        };
+
+        let total = N * N;
+
+        // 予測上限(3.84 m/s)より下なら、掃過判定が無くても抜けない
+        assert_eq!(through(3.13, false), 0, "遅くても抜けた。前提が崩れている");
+
+        // 上限を超えると、位置だけの判定では全部抜ける
+        let naive = through(4.43, false);
+        assert_eq!(naive, total, "素通りが再現できていない: {naive}/{total}");
+
+        // 掃過判定を入れると止まる
+        for speed in [4.43, 6.26, 12.0] {
+            let swept = through(speed, true);
+            assert_eq!(swept, 0, "掃過判定でも抜けた: {speed} m/s で {swept}/{total}");
+        }
+    }
 
     /// 自己衝突が「離す」ついでに布を膨らませないこと。
     ///

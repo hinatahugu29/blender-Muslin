@@ -143,6 +143,7 @@ class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):
         sub = col.column(align=True)
         sub.enabled = props.self_collision_enabled
         sub.prop(props, "self_collision_thickness")
+        sub.prop(props, "continuous_self_collision")
 
         layout.separator()
         col = layout.column(align=True)
