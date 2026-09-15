@@ -300,6 +300,51 @@ def test_self_collision():
     check("自己衝突を有効にしても布が破裂しない", sim.is_finite() and err < 0.05,
           f"伸び誤差 {err * 100:.2f}%")
 
+    # 上の吊り下げグリッドは自己接触を一度も起こさない(接触数 0 を実測)。
+    # つまり「破裂しない」だけでは、自己衝突が何もしていなくても通る。
+    # 重なった2枚を用意して、実際に押し離すことを直接確かめる。
+    # 食い込みは浅くする。深いと押し出しがそのまま速度になり(分離速度 =
+    # 食い込み / サブステップの dt)布が吹き飛ぶので、押し離せるかが見えない。
+    nx = ny = 5
+    spacing, thickness, gap = 0.05, 0.02, 0.018
+    stacked, stacked_edges = [], []
+    for layer in range(2):
+        base = layer * nx * ny
+        for y in range(ny):
+            for x in range(nx):
+                stacked.extend((x * spacing, y * spacing, layer * gap))
+        for y in range(ny):
+            for x in range(nx):
+                i = base + y * nx + x
+                if x + 1 < nx:
+                    stacked_edges.append((i, i + 1))
+                if y + 1 < ny:
+                    stacked_edges.append((i, i + nx))
+
+    def closest_between_layers(flat):
+        half = nx * ny
+        best = float("inf")
+        for a in range(half):
+            for b in range(half, 2 * half):
+                best = min(best, math.dist(flat[a * 3:a * 3 + 3],
+                                           flat[b * 3:b * 3 + 3]))
+        return best
+
+    def run_stacked(enabled):
+        s = cloth_core.ClothSim(list(stacked), stacked_edges, [], [], [],
+                                0.0, 0.0, 0.0)
+        # 1ステップだけ見る。長く回すと押し出しで得た速度のぶん離れ続ける
+        s.step(1.0 / 60.0, 0.0, 10, 4, 0.0, (0.0, 0.0, 0.0),
+               False, 0.0, 0.3, False, 0.0, 0.3, enabled, thickness, 2, False)
+        return closest_between_layers(s.get_positions())
+
+    check("自己衝突なしなら重なったままである",
+          abs(run_stacked(False) - gap) < 1e-6, f"{run_stacked(False):.5f} m")
+    separated = run_stacked(True)
+    check("重なった2枚を厚みまで押し離す",
+          thickness <= separated < thickness * 2.0,
+          f"{separated:.5f} m (厚み {thickness})")
+
 
 def test_rewind_determinism():
     """set_positions で巻き戻し、同じフレーム数進めれば同じ結果になる"""

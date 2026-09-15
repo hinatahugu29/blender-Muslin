@@ -215,6 +215,18 @@ pub struct ClothSim {
     /// 直近 `step` の時間内訳
     timings: StepTimings,
 
+    // --- 摩擦を頂点ごとにまとめる作業領域(毎サブステップ確保し直さない) ---
+    /// その頂点の接触法線の和。正規化して代表の法線にする
+    friction_normal: Vec<Vec3>,
+    /// その頂点に掛ける摩擦係数(接触のうち最大)
+    friction_coeff: Vec<f64>,
+    /// 今回の呼び出しで触れたかを示す世代印。配列全体を毎回ゼロ埋めしない
+    friction_stamp: Vec<u32>,
+    /// 今回触れた頂点(ここだけを走査して速度を更新する)
+    friction_touched: Vec<u32>,
+    /// 世代番号
+    friction_epoch: u32,
+
     // --- 広域探索のキャッシュ(cache_broadphase 用) ---
     /// (頂点, コライダー番号, 三角形番号)。フレーム先頭で作る。
     object_candidates: Vec<(u32, u32, u32)>,
@@ -304,6 +316,11 @@ impl ClothSim {
             last_collision_count: 0,
             last_candidate_counts: (0, 0),
             timings: StepTimings::default(),
+            friction_normal: vec![Vec3::zero(); n],
+            friction_coeff: vec![0.0; n],
+            friction_stamp: vec![0; n],
+            friction_touched: Vec::new(),
+            friction_epoch: 0,
             object_candidates: Vec::new(),
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
@@ -588,18 +605,84 @@ impl ClothSim {
             self.velocities[i] = self.positions[i].sub(prev_positions[i]).scale(1.0 / dt);
         }
 
-        // 接触点の摩擦: 面へ食い込む法線速度を除去し、接線速度を摩擦分だけ落とす
-        for &(i, normal, friction) in &contacts {
-            let v = self.velocities[i];
-            let vn = v.dot(normal);
-            let v_tangent = v.sub(normal.scale(vn));
-            self.velocities[i] = normal
-                .scale(vn.max(0.0))
-                .add(v_tangent.scale(1.0 - friction.clamp(0.0, 1.0)));
-        }
+        // 接触点の摩擦: 面へ食い込む法線速度を除去し、接線速度を摩擦分だけ落とす。
+        //
+        // **頂点ごとに1回だけ掛ける。** 接触ごとに掛けると、接線速度に
+        // (1 - friction) がその頂点の接触数ぶん累乗で掛かってしまう。
+        // 自己衝突では1頂点が多数の対に現れるので影響が大きい:
+        // friction 0.3 で 8対に含まれる頂点は、本来 70% 残るはずの接線速度が
+        // 5.8% まで落ちていた(実測値が (1-f)^K に一致することを確認済み)。
+        // 摩擦の強さが「たまたま何対に含まれたか」= メッシュ密度と局所配置で
+        // 決まってしまい、折り重なった布が不自然に固着する。
+        self.apply_contact_friction(&contacts);
 
         self.timings.velocity += ms_since(t_velocity);
         self.last_collision_count = contacts.len();
+    }
+
+    /// 接触の摩擦を**頂点ごとに1回だけ**適用する。
+    ///
+    /// 面へ食い込む法線速度の除去は接触ごとに行う(どの接触面にも入り込まない
+    /// ようにするため。同じ法線に対しては冪等なので重複しても害がない)。
+    /// 接線の減衰だけを1回にまとめる。ここを接触ごとに掛けると
+    /// (1 - friction) が接触数ぶん累乗になり、摩擦の強さが接触対の個数、
+    /// つまりメッシュ密度と局所配置で決まってしまう。
+    ///
+    /// 代表の法線は接触法線の和を正規化したもの。接触が1つなら従来と同じ。
+    /// 上下から挟まれて法線が打ち消し合う場合は向きを決められないので、
+    /// 速度全体を摩擦分だけ落とす。
+    fn apply_contact_friction(&mut self, contacts: &[(usize, Vec3, f64)]) {
+        if contacts.is_empty() {
+            return;
+        }
+
+        self.friction_epoch = self.friction_epoch.wrapping_add(1);
+        // wrapping で 0 に戻ると前回の印と衝突するので、その一巡だけ作り直す
+        if self.friction_epoch == 0 {
+            self.friction_stamp.iter_mut().for_each(|s| *s = 0);
+            self.friction_epoch = 1;
+        }
+        let epoch = self.friction_epoch;
+        self.friction_touched.clear();
+
+        for &(i, normal, friction) in contacts {
+            if self.friction_stamp[i] != epoch {
+                self.friction_stamp[i] = epoch;
+                self.friction_normal[i] = Vec3::zero();
+                self.friction_coeff[i] = 0.0;
+                self.friction_touched.push(i as u32);
+            }
+            self.friction_normal[i] = self.friction_normal[i].add(normal);
+            if friction > self.friction_coeff[i] {
+                self.friction_coeff[i] = friction;
+            }
+
+            // 食い込む向きの法線速度はこの場で落とす
+            let v = self.velocities[i];
+            let vn = v.dot(normal);
+            if vn < 0.0 {
+                self.velocities[i] = v.sub(normal.scale(vn));
+            }
+        }
+
+        for &idx in self.friction_touched.iter() {
+            let i = idx as usize;
+            let friction = self.friction_coeff[i].clamp(0.0, 1.0);
+            if friction <= 0.0 {
+                continue;
+            }
+            let v = self.velocities[i];
+            match self.friction_normal[i].normalized() {
+                Some(n) => {
+                    let vn = v.dot(n);
+                    let v_tangent = v.sub(n.scale(vn));
+                    self.velocities[i] =
+                        n.scale(vn.max(0.0)).add(v_tangent.scale(1.0 - friction));
+                }
+                // 法線が打ち消し合った = 挟まれている。接線を決められない
+                None => self.velocities[i] = v.scale(1.0 - friction),
+            }
+        }
     }
 
     /// 床面・コリジョンオブジェクト・自己衝突をまとめて解決し、接触情報を返す。
@@ -1570,6 +1653,272 @@ mod tests {
     }
 
     /// 自己衝突が実際に頂点同士を押し離す
+    #[test]
+    /// 摩擦の強さが接触対の個数に依らないこと。
+    ///
+    /// 接触ごとに掛けていた頃は、接線速度に (1 - friction) が接触数ぶん
+    /// 累乗で掛かっていた(friction 0.3 / 8対で 70% のはずが 5.8%)。
+    /// 摩擦がメッシュ密度と局所配置で変わってしまうので、頂点ごとに1回に
+    /// まとめた。ここでは中心の頂点の真下に置く頂点の数を変えて、
+    /// 接線速度の残り方が変わらないことを確かめる。
+    #[test]
+    fn friction_does_not_compound_with_contact_count() {
+        let thickness = 0.02;
+        let friction = 0.3;
+        let dt = 1.0 / 60.0;
+
+        // 自己衝突だけを効かせる設定
+        let quiet = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.0,
+            iterations: 1,
+            substeps: 1,
+            collision_enabled: false,
+            post_collision_iterations: 0,
+            ..SimParams::default()
+        };
+
+        let retention = |count: usize| -> f64 {
+            let mut positions = vec![Vec3::zero()];
+            for m in 0..count {
+                let ang = std::f64::consts::TAU * m as f64 / count.max(1) as f64;
+                positions.push(Vec3::new(
+                    0.0008 * ang.cos(),
+                    0.0008 * ang.sin(),
+                    -0.9 * thickness,
+                ));
+            }
+            let mut sim = ClothSim::new(positions, &[], &[], &[], &[], 0.0, 0.0, 0.0);
+
+            // 中心に接線方向(+x)の速度を作る
+            let push = SimParams {
+                wind: Vec3::new(1.0 / dt, 0.0, 0.0),
+                ..quiet
+            };
+            sim.step(dt, &push);
+
+            // 自己衝突ありで1ステップ。末尾で摩擦が掛かる
+            let touch = SimParams {
+                self_collision_enabled: true,
+                self_collision_thickness: thickness,
+                collision_friction: friction,
+                ..quiet
+            };
+            sim.step(dt, &touch);
+
+            // 摩擦を受けた後の速度は、次のステップの移動量に現れる
+            let before = sim.positions[0].x;
+            sim.step(dt, &quiet);
+            (sim.positions[0].x - before) / (1.0 * dt)
+        };
+
+        let one = retention(1);
+        assert!(
+            (one - (1.0 - friction)).abs() < 0.02,
+            "接触1つのときに (1-friction) にならない: {one}"
+        );
+        for count in [2usize, 4, 8] {
+            let many = retention(count);
+            assert!(
+                (many - one).abs() < 0.05,
+                "接触が {count} 個で摩擦が変わった: {one:.4} -> {many:.4}"
+            );
+        }
+    }
+
+    /// 自己衝突が**実際に層を引き離している**こと。
+    ///
+    /// 既存の `self_collision_keeps_cloth_stable` は上端を固定した平らな
+    /// グリッドを垂らすだけで、自己接触が一度も起きない(接触数 0 を確認済み)。
+    /// つまり `resolve_self_collisions` が何もしなくても通ってしまう。
+    /// ここでは重なった2枚を用意して、押し離すことを直接確かめる。
+    #[test]
+    fn self_collision_separates_stacked_layers() {
+        let (nx, ny, spacing) = (5usize, 5usize, 0.05);
+        let thickness = 0.02;
+        // 食い込みは浅くする。深い食い込みは押し出しがそのまま速度になり
+        // (v = 食い込み / サブステップの dt)、布が吹き飛ぶ。
+        // 例: 厚み 0.02 に対し 0.016 食い込ませると 3.84 m/s で分離する。
+        // ここで見たいのは「押し離せるか」なので、その影響が出ない量にする。
+        let gap = 0.018;
+
+        // 同じ形の2枚を gap だけ離して重ねる(互いに制約では繋がっていない)
+        let mut positions = Vec::new();
+        let mut edges = Vec::new();
+        for layer in 0..2 {
+            let base = layer * nx * ny;
+            let z = layer as f64 * gap;
+            for y in 0..ny {
+                for x in 0..nx {
+                    positions.push(Vec3::new(x as f64 * spacing, y as f64 * spacing, z));
+                }
+            }
+            for y in 0..ny {
+                for x in 0..nx {
+                    let i = base + y * nx + x;
+                    if x + 1 < nx {
+                        edges.push((i, i + 1));
+                    }
+                    if y + 1 < ny {
+                        edges.push((i, i + nx));
+                    }
+                }
+            }
+        }
+
+        let closest = |sim: &ClothSim| -> f64 {
+            let n = sim.positions.len();
+            let half = n / 2;
+            let mut worst = f64::MAX;
+            for i in 0..half {
+                for j in half..n {
+                    worst = worst.min(sim.positions[i].sub(sim.positions[j]).length());
+                }
+            }
+            worst
+        };
+
+        let run = |enabled: bool| -> f64 {
+            let mut sim =
+                ClothSim::new(positions.clone(), &edges, &[], &[], &[], 0.0, 0.0, 0.0);
+            let params = SimParams {
+                gravity: Vec3::zero(),
+                damping: 0.0,
+                collision_enabled: false,
+                self_collision_enabled: enabled,
+                self_collision_thickness: thickness,
+                ..SimParams::default()
+            };
+            // 1ステップで押し離せることを見る。長く回すと、押し出しで得た
+            // 速度のぶん(重力も減衰も無いので)いつまでも離れ続ける
+            sim.step(1.0 / 60.0, &params);
+            assert!(sim.is_finite());
+            closest(&sim)
+        };
+
+        let without = run(false);
+        assert!(
+            (without - gap).abs() < 1e-6,
+            "自己衝突なしなのに動いた: {without}"
+        );
+
+        let with = run(true);
+        assert!(
+            with >= thickness,
+            "重なった2枚が厚みまで離れない: {with} (厚み {thickness})"
+        );
+        assert!(
+            with < thickness * 2.0,
+            "押し離しすぎ: {with} (厚み {thickness})"
+        );
+    }
+
+    /// 崩れて折り重なった布で、自己衝突が層を保てているか。
+    ///
+    /// 重ねた2枚を離すだけの試験では、実際の使われ方(折り目が次々に増える)
+    /// を再現できない。垂直な布を床に崩落させ、**制約で結ばれていない頂点対が
+    /// 厚みより近くなっていないか**を総当たりで数える。
+    ///
+    /// 自己衝突なしでは布が完全に潰れて重なる(頂点が一致するところまでいく)。
+    /// あるなら違反はごくわずかに収まるはず。
+    #[test]
+    fn self_collision_keeps_layers_apart_when_cloth_piles_up() {
+        let (n, spacing) = (15usize, 0.04);
+        let thickness = 0.016; // エッジ長の 0.4倍(推奨どおり)
+        let floor_z = -0.30;
+
+        let idx = |x: usize, y: usize| y * n + x;
+        let mut positions = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                // xz 平面に立てた布。床のすぐ上から崩れ落ちる
+                positions.push(Vec3::new(
+                    x as f64 * spacing,
+                    0.0,
+                    floor_z + 0.02 + y as f64 * spacing,
+                ));
+            }
+        }
+        let mut edges = Vec::new();
+        let mut tris = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                if x + 1 < n {
+                    edges.push((idx(x, y), idx(x + 1, y)));
+                }
+                if y + 1 < n {
+                    edges.push((idx(x, y), idx(x, y + 1)));
+                }
+                if x + 1 < n && y + 1 < n {
+                    tris.push((idx(x, y), idx(x + 1, y), idx(x + 1, y + 1)));
+                    tris.push((idx(x, y), idx(x + 1, y + 1), idx(x, y + 1)));
+                }
+            }
+        }
+        let quads = crate::bending::quads_from_triangles(&tris);
+
+        // Rust 側の constrained_pairs と同じ集合(伸び + 曲げの対角)
+        let mut constrained = std::collections::HashSet::new();
+        for &(a, b) in &edges {
+            constrained.insert((a.min(b), a.max(b)));
+        }
+        for &(_p1, _p2, p3, p4) in &quads {
+            constrained.insert((p3.min(p4), p3.max(p4)));
+        }
+
+        let run = |enabled: bool| -> (usize, f64) {
+            let mut sim =
+                ClothSim::new(positions.clone(), &edges, &quads, &tris, &[], 0.2, 0.0, 0.02);
+            let params = SimParams {
+                damping: 0.02,
+                floor_enabled: true,
+                floor_z,
+                collision_enabled: false,
+                self_collision_enabled: enabled,
+                self_collision_thickness: thickness,
+                ..SimParams::default()
+            };
+            for _ in 0..240 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            assert!(sim.is_finite(), "崩落で発散した (自己衝突 {enabled})");
+
+            let total = sim.positions.len();
+            let mut count = 0usize;
+            let mut worst = f64::MAX;
+            for i in 0..total {
+                for j in (i + 1)..total {
+                    let d = sim.positions[i].sub(sim.positions[j]).length();
+                    if d >= thickness || constrained.contains(&(i, j)) {
+                        continue;
+                    }
+                    count += 1;
+                    worst = worst.min(d);
+                }
+            }
+            (count, if count == 0 { thickness } else { worst })
+        };
+
+        let (off_count, off_worst) = run(false);
+        let (on_count, on_worst) = run(true);
+
+        // 自己衝突なしでは大量に重なる(効果の基準線)
+        assert!(
+            off_count > 200,
+            "自己衝突なしでも重ならない。試験が自己接触を起こせていない: {off_count} 対"
+        );
+        // 有効にしたら大きく減ること
+        assert!(
+            on_count * 4 < off_count,
+            "自己衝突を入れても違反が減っていない: {off_count} -> {on_count} 対"
+        );
+        // 潰れ切った対が残っていないこと(厚みに対する最小距離)
+        assert!(
+            on_worst > off_worst,
+            "最も潰れた対が改善していない: {off_worst:.5} -> {on_worst:.5}"
+        );
+    }
+
     #[test]
     fn self_collision_separates_overlapping_vertices() {
         // 制約で結ばれていない2頂点をほぼ同じ位置に置く
