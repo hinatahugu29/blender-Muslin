@@ -390,7 +390,8 @@ def check_bending_stiffness(props):
         f"Bending Compliance ({props.bending_compliance:.4g}) は硬い生地の設定ですが、"
         f"Substeps が {props.substeps} では曲げ剛性がほとんど出ません"
         f"(この設定ではどの生地もほぼ同じように垂れます)。"
-        f"硬さを出すには Substeps を {SUBSTEPS_FOR_STIFF_FABRIC} 以上にしてください"
+        f"硬さを出すには Quality を High 以上にするか、"
+        f"Substeps を {SUBSTEPS_FOR_STIFF_FABRIC} 以上にしてください"
     )
     if props.chebyshev_radius <= 0.0:
         hint += "。あわせて Convergence Boost を 0.98 にすると効果が大きくなります"

@@ -75,6 +75,10 @@ class MUSLIN_PT_solver(_MuslinSettingsPanel, bpy.types.Panel):
     bl_parent_id = "MUSLIN_PT_main"
 
     def draw_cloth(self, context, layout, props):
+        # まず品質の段。ここだけ触れば済むようにして、生の数値は
+        # 下の Advanced に畳んである。
+        layout.prop(props, "quality")
+
         # 1フレームが表す時間はシーン全体で共通
         tools = context.scene.muslin_tools
         col = layout.column(align=True)
@@ -83,13 +87,22 @@ class MUSLIN_PT_solver(_MuslinSettingsPanel, bpy.types.Panel):
         sub.enabled = not tools.use_scene_fps
         sub.prop(tools, "dt")
 
+        layout.prop(props, "use_cache")
+
+
+class MUSLIN_PT_solver_advanced(_MuslinSettingsPanel, bpy.types.Panel):
+    bl_label = "Advanced"
+    bl_parent_id = "MUSLIN_PT_solver"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_cloth(self, context, layout, props):
+        # ここを触ると Quality の表示は Custom に落ちる
         col = layout.column(align=True)
         col.prop(props, "iterations")
         col.prop(props, "substeps")
         col.prop(props, "chebyshev_radius")
         col.prop(props, "post_collision_iterations")
         col.prop(props, "cache_broadphase")
-        col.prop(props, "use_cache")
 
 
 class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
@@ -114,9 +127,7 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
             box = self.buttons(layout).box()
             box.alert = True
             box.label(text="この硬さは出ません", icon='ERROR')
-            box.label(
-                text=f"Solver の Substeps を {mesh_io.SUBSTEPS_FOR_STIFF_FABRIC} 以上に"
-            )
+            box.label(text="Solver の Quality を High 以上に")
 
 
 class MUSLIN_PT_forces(_MuslinSettingsPanel, bpy.types.Panel):
@@ -303,6 +314,7 @@ _classes = (
     MUSLIN_UL_seams,
     MUSLIN_PT_main,
     MUSLIN_PT_solver,
+    MUSLIN_PT_solver_advanced,
     MUSLIN_PT_material,
     MUSLIN_PT_forces,
     MUSLIN_PT_collision,

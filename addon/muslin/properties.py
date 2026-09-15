@@ -26,6 +26,60 @@ FABRIC_PRESETS = {
 }
 
 
+# 品質の段。数字は scripts/bench_quality.py の実測で決めた。
+# 41x41(1681頂点) を 2 隅で吊るした場面、48 フレーム、min-of-5:
+#
+#   段       it  sub  cheb  ms/frame  伸び誤差  垂れ
+#   Draft     5    4  0.00      1.26   0.1600  1.394
+#   Normal   10    8  0.98      4.84   0.0142  0.810
+#   High     10   16  0.98      9.62   0.0018  0.716
+#   Final    15   32  0.98     28.0    0.0002  0.707
+#
+# 垂れは 0.707 に収束する。Normal で既に形はほぼ出ており、High から先は
+# 伸び誤差を詰めるための段。
+#
+# Substeps を主に振るのは、伸び誤差に対して Iterations より約 3 倍効くため。
+# Chebyshev はコスト +3% で垂れの収束が明確に良くなるので、5 を超える
+# Iterations では常に入れる(5 以下だと行き過ぎて布が反り返る)。
+# cache_broadphase は Substeps 8 以上でだけ得になる。
+QUALITY_PRESETS = {
+    'DRAFT':  dict(iterations=5,  substeps=4,  chebyshev=0.0,  post=1, cache=False),
+    'NORMAL': dict(iterations=10, substeps=8,  chebyshev=0.98, post=2, cache=True),
+    'HIGH':   dict(iterations=10, substeps=16, chebyshev=0.98, post=3, cache=True),
+    'FINAL':  dict(iterations=15, substeps=32, chebyshev=0.98, post=4, cache=True),
+}
+
+# 段を適用している最中は、個々の値の update を無視する。これが無いと
+# 段が書き込んだ値そのものが「手で変えた」とみなされ、即 Custom に戻る。
+_applying_quality = False
+
+
+def _apply_quality_preset(self, context):
+    """品質の段が選ばれたら、解法の各値を流し込む。"""
+    global _applying_quality
+    values = QUALITY_PRESETS.get(self.quality)
+    if values is None:      # 'CUSTOM' は何もしない
+        return
+    _applying_quality = True
+    try:
+        self.iterations = values["iterations"]
+        self.substeps = values["substeps"]
+        self.chebyshev_radius = values["chebyshev"]
+        self.post_collision_iterations = values["post"]
+        self.cache_broadphase = values["cache"]
+    finally:
+        _applying_quality = False
+
+
+def _quality_to_custom(self, context):
+    """解法の値が手で変えられたら、段の表示を Custom に落とす。
+
+    段が選ばれたままなのに中身が違う、という嘘の表示を防ぐ。
+    """
+    if not _applying_quality and self.quality != 'CUSTOM':
+        self.quality = 'CUSTOM'
+
+
 def _apply_fabric_preset(self, context):
     """プリセットが選ばれたら物性値を流し込む。"""
     values = FABRIC_PRESETS.get(self.fabric_preset)
@@ -122,12 +176,33 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
     こうしないと1つのシーンで生地を作り分けられない。
     """
     # --- ソルバー ---
+    quality: bpy.props.EnumProperty(
+        name="Quality",
+        description=(
+            "計算の細かさ。下の各値をまとめて設定する。"
+            "段ごとの実測値は scripts/bench_quality.py を参照"
+        ),
+        items=[
+            ('DRAFT', "Draft",
+             "形を見るための最速設定。伸びは目に見えて残る (Normal の 0.26倍の時間)"),
+            ('NORMAL', "Normal",
+             "既定。形はほぼ出る (伸び誤差 1.4%)"),
+            ('HIGH', "High",
+             "伸びをほぼ取り除く。硬い生地の硬さもここから出る (Normal の 2.0倍)"),
+            ('FINAL', "Final",
+             "書き出し用。これ以上細かくしても結果は変わらない (Normal の 5.8倍)"),
+            ('CUSTOM', "Custom", "下の値を手で設定する"),
+        ],
+        default='NORMAL',
+        update=_apply_quality_preset,
+    )
     iterations: bpy.props.IntProperty(
         name="Iterations",
         description="制約解決(XPBD)の反復回数。多いほど硬く安定するが重くなる",
         default=10,
         min=1,
         soft_max=50,
+        update=_quality_to_custom,
     )
     substeps: bpy.props.IntProperty(
         name="Substeps",
@@ -135,9 +210,10 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
             "1フレームを分割するサブステップ数。"
             "伸び誤差を減らすには Iterations より効率が良い(実測で約3倍)"
         ),
-        default=4,
+        default=8,
         min=1,
-        soft_max=20,
+        soft_max=32,
+        update=_quality_to_custom,
     )
     chebyshev_radius: bpy.props.FloatProperty(
         name="Convergence Boost",
@@ -150,10 +226,11 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
             "Iterations が 5 以下のときは加速されない(短い反復で加速すると"
             "行き過ぎて布が反り返るため)"
         ),
-        default=0.0,
+        default=0.98,
         min=0.0,
         max=0.98,
         precision=3,
+        update=_quality_to_custom,
     )
     cache_broadphase: bpy.props.BoolProperty(
         name="Cache Collision Search",
@@ -162,7 +239,8 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
             "Substeps が 8 以上のときに効く(実測で 1.1〜1.3倍)。"
             "4 以下ではわずかに遅くなる"
         ),
-        default=False,
+        default=True,
+        update=_quality_to_custom,
     )
     post_collision_iterations: bpy.props.IntProperty(
         name="Post-Collision",
@@ -173,6 +251,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         default=2,
         min=0,
         soft_max=16,
+        update=_quality_to_custom,
     )
 
     # --- 外力 ---

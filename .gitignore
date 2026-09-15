@@ -12,3 +12,6 @@
 /addon/**/*.pyc
 /addon/**/*.pyc.tmp.*
 /dist-ci/
+
+# 参照用に置いた他社製アドオン。読むだけで、再配布はしない
+/Reference/

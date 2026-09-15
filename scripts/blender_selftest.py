@@ -595,6 +595,76 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("Quality の段")
+
+    from muslin.properties import QUALITY_PRESETS
+
+    clear_scene()
+    obj = make_grid("QualityGrid")
+    props = obj.muslin
+
+    check("既定は Normal", props.quality == 'NORMAL', props.quality)
+    normal = QUALITY_PRESETS['NORMAL']
+    check(
+        "既定値が Normal の中身と一致する",
+        (props.iterations, props.substeps, props.cache_broadphase)
+        == (normal["iterations"], normal["substeps"], normal["cache"])
+        and abs(props.chebyshev_radius - normal["chebyshev"]) < 1e-6,
+        f"it={props.iterations} sub={props.substeps} "
+        f"cheb={props.chebyshev_radius:.2f} cache={props.cache_broadphase}",
+    )
+
+    for name, want in QUALITY_PRESETS.items():
+        props.quality = name
+        got = (props.iterations, props.substeps, props.post_collision_iterations,
+               props.cache_broadphase)
+        expect = (want["iterations"], want["substeps"], want["post"], want["cache"])
+        check(
+            f"{name} が各値に反映される",
+            got == expect and abs(props.chebyshev_radius - want["chebyshev"]) < 1e-6,
+            f"{got} / cheb={props.chebyshev_radius:.2f}",
+        )
+        # 段を適用しただけで Custom に落ちてはいけない
+        check(f"{name} を選んでも Custom に落ちない", props.quality == name,
+              props.quality)
+
+    # 段の間に意味のある差があること(同じ設定が 2 段あったら畳むべき)
+    signatures = {
+        name: (v["iterations"], v["substeps"], v["chebyshev"], v["post"])
+        for name, v in QUALITY_PRESETS.items()
+    }
+    check("段どうしの中身が重複していない",
+          len(set(signatures.values())) == len(signatures))
+    # Substeps は段が上がるほど増える
+    order = ['DRAFT', 'NORMAL', 'HIGH', 'FINAL']
+    subs = [QUALITY_PRESETS[n]["substeps"] for n in order]
+    check("段が上がるほど Substeps が増える", subs == sorted(subs), str(subs))
+    # High 以上なら硬い生地の硬さが出る
+    check(
+        f"High 以上は Substeps {mesh_io.SUBSTEPS_FOR_STIFF_FABRIC} 以上",
+        all(QUALITY_PRESETS[n]["substeps"] >= mesh_io.SUBSTEPS_FOR_STIFF_FABRIC
+            for n in ('HIGH', 'FINAL')),
+    )
+
+    # 手で値を変えたら Custom に落ちる(段の表示と中身が食い違わないこと)
+    props.quality = 'HIGH'
+    props.substeps = QUALITY_PRESETS['HIGH']["substeps"] + 1
+    check("手で変えると Custom に落ちる", props.quality == 'CUSTOM', props.quality)
+    props.quality = 'NORMAL'
+    check("段を選び直すと戻る", props.quality == 'NORMAL'
+          and props.substeps == normal["substeps"],
+          f"{props.quality} / sub={props.substeps}")
+
+    # 硬い生地の警告が Quality と噛み合っているか
+    props.bending_compliance = 0.001       # 硬い生地
+    props.quality = 'NORMAL'
+    check("Normal + 硬い生地では警告が出る",
+          mesh_io.needs_more_substeps_for_bending(props))
+    props.quality = 'HIGH'
+    check("High にすると警告が消える",
+          not mesh_io.needs_more_substeps_for_bending(props))
+
+    # ------------------------------------------------------------------
     section("UI の作法")
 
     # 押せないボタンは、なぜ押せないのかをツールチップに出す(Blender 3.0+)。
