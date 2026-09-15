@@ -1,6 +1,7 @@
 import bpy
 
 from . import mesh_io
+from . import pin_ops
 from . import sim_state
 
 
@@ -219,8 +220,20 @@ class MUSLIN_PT_pinning(_MuslinSettingsPanel, bpy.types.Panel):
         return context.mode in {'OBJECT', 'EDIT_MESH'}
 
     def draw_cloth(self, context, layout, props):
-        layout.prop_search(props, "pin_vertex_group", context.active_object,
-                           "vertex_groups")
+        obj = context.active_object
+        layout.prop_search(props, "pin_vertex_group", obj, "vertex_groups")
+
+        col = self.buttons(layout)
+        if obj.mode == 'EDIT':
+            # 選択した頂点からグループを作れるようにする。標準機能だと
+            # オブジェクトデータのプロパティとの往復になる。
+            row = col.row(align=True)
+            row.operator("muslin.pin_selected", icon='PINNED')
+            row.operator("muslin.unpin_selected", text="", icon='UNPINNED')
+            col.operator("muslin.select_pinned", icon='RESTRICT_SELECT_OFF')
+            col.label(text=f"ピン留め: {pin_ops.pinned_count(obj)} 頂点")
+        else:
+            col.label(text="編集モードで選択して作れます", icon='INFO')
 
 
 class MUSLIN_UL_seams(bpy.types.UIList):

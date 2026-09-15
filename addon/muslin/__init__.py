@@ -28,13 +28,14 @@ from . import previews
 from . import properties
 from . import sim_state
 from . import operators
+from . import pin_ops
 from . import sewing_ops
 from . import bake_ops
 from . import overlay
 from . import panels
 
 # previews は properties より先に。生地の items がアイコン ID を引くため。
-_modules = (previews, properties, sim_state, operators, sewing_ops, bake_ops, overlay, panels)
+_modules = (previews, properties, sim_state, operators, pin_ops, sewing_ops, bake_ops, overlay, panels)
 
 
 def register():

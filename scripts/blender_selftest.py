@@ -595,6 +595,145 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("選択からピン留めを作る")
+
+    from muslin import pin_ops
+
+    clear_scene()
+    obj = make_grid("PinOpsGrid", side=9, z=1.0)
+    props = obj.muslin
+    props.collision_enabled = False
+    check("最初はグループが無い", props.pin_vertex_group == "",
+          repr(props.pin_vertex_group))
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+
+    # 何も選んでいなければ断る。
+    # report({'ERROR'}) は Python から呼ぶと例外になるので、そちらも受ける。
+    try:
+        res = bpy.ops.muslin.pin_selected()
+        check("未選択では中止される", res == {'CANCELLED'}, str(res))
+    except RuntimeError as exc:
+        check("未選択では中止される", "選択されていません" in str(exc), str(exc))
+
+    # 上端の一列を選んでピン留め
+    bpy.ops.object.mode_set(mode='OBJECT')
+    top = [i for i, v in enumerate(obj.data.vertices) if v.co.y > 0.99]
+    for i in top:
+        obj.data.vertices[i].select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    res = bpy.ops.muslin.pin_selected()
+    check("Pin Selected が通る", res == {'FINISHED'}, str(res))
+    check("グループが作られる", props.pin_vertex_group in obj.vertex_groups,
+          repr(props.pin_vertex_group))
+    check("選んだ頂点が入る", pin_ops.pinned_count(obj) == len(top),
+          f"{pin_ops.pinned_count(obj)} / {len(top)} 頂点")
+
+    # 選択を変えて足すと、既存のグループに追加される(作り直さない)
+    name = props.pin_vertex_group
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bottom = [i for i, v in enumerate(obj.data.vertices) if v.co.y < 0.01]
+    for i in bottom:
+        obj.data.vertices[i].select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.muslin.pin_selected()
+    check("同じグループに足される", props.pin_vertex_group == name, props.pin_vertex_group)
+    check("グループが増えない", len(obj.vertex_groups) == 1, f"{len(obj.vertex_groups)} 個")
+    check("合計が両方ぶんになる",
+          pin_ops.pinned_count(obj) == len(top) + len(bottom),
+          f"{pin_ops.pinned_count(obj)} / {len(top) + len(bottom)} 頂点")
+
+    # 外す
+    res = bpy.ops.muslin.unpin_selected()
+    check("Unpin Selected が通る", res == {'FINISHED'}, str(res))
+    check("外したぶんだけ減る", pin_ops.pinned_count(obj) == len(top),
+          f"{pin_ops.pinned_count(obj)} / {len(top)} 頂点")
+
+    # ピン留めされている頂点を選び直せる
+    bpy.ops.mesh.select_all(action='DESELECT')
+    res = bpy.ops.muslin.select_pinned()
+    check("Select Pinned が通る", res == {'FINISHED'}, str(res))
+    bpy.ops.object.mode_set(mode='OBJECT')
+    selected = [i for i, v in enumerate(obj.data.vertices) if v.select]
+    check("ピン留めした頂点が選択される", sorted(selected) == sorted(top),
+          f"{len(selected)} / {len(top)} 頂点")
+
+    # 作ったグループが実際にシミュレーションで効く
+    bpy.ops.muslin.start_sim()
+    check("開始時にピンとして認識される",
+          sim_state.get_state(obj)["info"]["pinned"] == len(top),
+          f"{sim_state.get_state(obj)['info']['pinned']} / {len(top)} 頂点")
+    rest = positions_of(obj)
+    advance(15, start=1)
+    now = positions_of(obj)
+    pin_move = max(
+        max(abs(now[i][k] - rest[i][k]) for k in range(3)) for i in top
+    )
+    check("ピン留めした頂点が動かない", pin_move < 1e-6, f"最大 {pin_move:.2e} m")
+    bpy.ops.muslin.stop_sim()
+
+    # 走らせたまま編集モードで足した分も、抜けたあと効く
+    bpy.ops.muslin.start_sim()
+    advance(5, start=1)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.muslin.pin_selected()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    advance(1, start=7)
+    check("編集中に足したピンが抜けたあと効く",
+          sim_state.get_state(obj)["info"]["pinned"] == len(obj.data.vertices),
+          f"{sim_state.get_state(obj)['info']['pinned']} / {len(obj.data.vertices)} 頂点")
+    bpy.ops.muslin.stop_sim()
+
+    # オブジェクトモードでは押せない(編集モードの選択を使うため)
+    for idname in ("pin_selected", "unpin_selected", "select_pinned"):
+        op = getattr(bpy.ops.muslin, idname)
+        check(f"muslin.{idname} はオブジェクトモードで押せない", not op.poll())
+
+    # 編集モード以外の経路(ウェイトペイント、オブジェクトデータのパネル)で
+    # グループの中身を変えた場合は、名前が同じままなので自動では気付けない。
+    # invalidate_pinning() を呼べば読み直す、というところまでを確かめる。
+    clear_scene()
+    obj = make_grid("WeightGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+    group = obj.vertex_groups.new(name="Pin")
+    corner = [0]
+    group.add(corner, 1.0, 'REPLACE')
+    obj.muslin.pin_vertex_group = "Pin"
+
+    bpy.ops.muslin.start_sim()
+    advance(3, start=1)
+    check("開始時のピンは1頂点",
+          sim_state.get_state(obj)["info"]["pinned"] == 1,
+          str(sim_state.get_state(obj)["info"]["pinned"]))
+
+    # オブジェクトモードのまま中身だけ増やす
+    more = [i for i, v in enumerate(obj.data.vertices) if v.co.y > 0.99]
+    group.add(more, 1.0, 'REPLACE')
+    advance(1, start=5)
+    check(
+        "名前が同じだけでは気付けない(既知の限界)",
+        sim_state.get_state(obj)["info"]["pinned"] == 1,
+        f"{sim_state.get_state(obj)['info']['pinned']} 頂点のまま",
+    )
+
+    sim_state.invalidate_pinning(obj)
+    advance(1, start=6)
+    # 最初に入れた1頂点は残るので、合計は和集合になる
+    expected = len(set(more) | set(corner))
+    check(
+        "invalidate_pinning を呼べば読み直す",
+        sim_state.get_state(obj)["info"]["pinned"] == expected,
+        f"{sim_state.get_state(obj)['info']['pinned']} / {expected} 頂点",
+    )
+    bpy.ops.muslin.stop_sim()
+
+    # ------------------------------------------------------------------
     section("生地のサムネイル")
 
     from muslin import previews as muslin_previews

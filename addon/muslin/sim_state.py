@@ -156,6 +156,19 @@ def restart_reasons(obj, props):
     return reasons
 
 
+def invalidate_pinning(obj):
+    """ピン留めを次のフレームで読み直させる。
+
+    `_material_signature` が見ているのは頂点グループの**名前**なので、
+    同じグループの中身が変わっただけでは差し替えが起きない。編集モードや
+    ウェイトペイントで頂点を足し引きしたときがこれにあたる。
+    印を消して、次のフレームで必ず読み直させる。
+    """
+    state = get_state(obj)
+    if state is not None:
+        state["material"] = None
+
+
 def start_simulation(obj, props):
     """シミュレーションを開始し、フレーム変更ハンドラの管理下に置く。"""
     state = create_state(obj, props)
@@ -347,7 +360,13 @@ def _frame_change_handler(scene, depsgraph=None):
         # 止めている間に進んだフレームは、抜けたあとキャッシュか開始
         # フレームから追いつく(_simulate_to がジャンプを扱う)。
         if obj.mode == 'EDIT':
+            state["was_editing"] = True
             continue
+
+        # 編集から戻ってきた直後は、ピン留めの中身が変わっている可能性が
+        # ある。グループ名が同じだと差し替えが起きないので、ここで印を消す。
+        if state.pop("was_editing", False):
+            state["material"] = None
         # 設定は布ごとなので、オブジェクトから取る
         props = obj.muslin
 
