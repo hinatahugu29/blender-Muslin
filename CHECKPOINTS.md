@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(66項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(201項目)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -17,6 +17,19 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 ```
 
 自動化できないのは、**画面に出るものと操作の感触**だけです。
+
+### UI 改修(2026-09-15)で増えた確認項目
+
+ヘッドレスでは仕組みまでしか見られず、見え方は確認できていません。
+
+| 残件 | 何を見るか | なぜ自動で見られないか |
+|------|-----------|----------------------|
+| 2カラム配置 | 設定パネルのラベルが右揃えになり、N パネルの幅で詰まって見えないか | `use_property_split` が立っていることまでしか確認できない。Blender 純正の N パネルでも使う/使わないが割れており(5枚対10枚)、詰まるようなら戻す |
+| Play / Pause の切り替え | 再生中にボタンが Pause になり、押すとその場で止まるか | `context.screen` がヘッドレスでは None |
+| 生地のサムネイル | Fabric に7種類の絵が並び、押して選べるか | `icon_id` はヘッドレスでは常に 0(アイコンの割り当てに UI が要る)。画像が 128x128 で読めていることまでは確認済み |
+| 組み立て直しの警告 | コライダーを差し替えたとき、赤い箱と Restart ボタンが出るか | 検出とオペレータは自動で確認済み。見え方だけ未確認 |
+
+### 以前からの残件
 
 | 残件 | 内容 |
 |------|------|
@@ -36,7 +49,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
 作り直し・収束加速まで。M4 未着手）
 
-自動テストの規模: cargo test 53 / verify_core.py 77 / blender_selftest.py 66
+自動テストの規模: cargo test 55 / verify_core.py 77 / blender_selftest.py 201
 
 ---
 
