@@ -346,6 +346,44 @@ def main():
     props.self_collision_enabled = False
 
     # ----------------------------------------------------------------
+    section("硬い生地と Substeps の不整合を知らせる")
+    # 曲げ剛性は solver の反復数に依存するので、Substeps が低いと
+    # Bending Compliance を 0 にしても硬くならない。黙って柔らかい布が
+    # 出ると「プリセットが効いていない」と見えるため警告する。
+    props.substeps = 4
+    props.bending_compliance = 0.0          # 完全剛体 = 最も硬い設定
+    warns = mesh_io.check_bending_stiffness(props)
+    check(
+        "硬い生地 + 低 Substeps を警告する",
+        any("Substeps" in w for w in warns),
+        f"{len(warns)} 件",
+    )
+
+    props.substeps = mesh_io.SUBSTEPS_FOR_STIFF_FABRIC
+    check(
+        "Substeps を上げると警告が消える",
+        not mesh_io.check_bending_stiffness(props),
+        f"substeps={props.substeps}",
+    )
+
+    props.substeps = 4
+    props.bending_compliance = 0.3          # 柔らかい生地なら低 Substeps でよい
+    check(
+        "柔らかい生地では警告しない",
+        not mesh_io.check_bending_stiffness(props),
+    )
+
+    # 常に出る警告は読まれなくなるので、既定値では黙っていること
+    defaults = obj.muslin.bl_rna.properties
+    props.bending_compliance = defaults["bending_compliance"].default
+    props.substeps = defaults["substeps"].default
+    check(
+        "既定値では警告しない",
+        not mesh_io.check_bending_stiffness(props),
+        f"compliance={props.bending_compliance:.4g} / substeps={props.substeps}",
+    )
+
+    # ----------------------------------------------------------------
     section("ベイクと .blend をまたいだ再生 (CP-B14)")
     clear_scene()
     blend_dir = tempfile.mkdtemp(prefix="muslin_selftest_")

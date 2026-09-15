@@ -324,13 +324,59 @@ def check_thickness(obj, props):
     return warnings
 
 
+# 硬い生地が硬く見えるのに要る Substeps。下回ると Bending Compliance を
+# どう設定しても差が出ない(実測は check_bending_stiffness の説明を参照)。
+SUBSTEPS_FOR_STIFF_FABRIC = 16
+
+# これ**未満**の Bending Compliance を「硬さが売りの生地」とみなす。
+# 常に出る警告は読まれなくなるので、Wool / Denim / Leather のように硬さ
+# そのものが特徴の生地だけに絞る。
+#
+# 値は Cotton (0.02) と Wool (0.005) の間に置く。既定値そのものを境界に
+# すると、FloatProperty が単精度なせいで 0.02 が 0.0199999995 として
+# 読めてしまい、既定のまま警告が出る。
+STIFF_BENDING_COMPLIANCE = 0.01
+
+
+def check_bending_stiffness(props):
+    """曲げの設定が Substeps に対して意味を持つかを調べ、警告文を返す。
+
+    曲げ剛性は solver の反復数に依存する(PBD 系に共通の性質)。既定の
+    Substeps 4 では**曲げ制約が収束しないため**、Bending Compliance を 0
+    (完全剛体)にしても布は垂れきる。片持ちの短冊で測ると:
+
+        substeps  4 -> compliance 0〜0.3 のどれでも 垂れ比 1.02〜1.04
+        substeps 16 -> 硬い側が 0.89 まで下がる
+        substeps 32 -> 硬い側が 0.70 まで下がる
+
+    つまり**硬さの上限を決めているのは生地の設定ではなく solver** で、
+    Substeps を上げる以外に硬くする手段が無い。黙って柔らかい布が出ると
+    「プリセットが効いていない」と見えるので、選んだ時点で知らせる。
+    """
+    if props.bending_compliance >= STIFF_BENDING_COMPLIANCE:
+        return []
+    if props.substeps >= SUBSTEPS_FOR_STIFF_FABRIC:
+        return []
+
+    return [
+        f"Bending Compliance ({props.bending_compliance:.4g}) は硬い生地の設定ですが、"
+        f"Substeps が {props.substeps} では曲げ剛性がほとんど出ません"
+        f"(この設定ではどの生地もほぼ同じように垂れます)。"
+        f"硬さを出すには Substeps を {SUBSTEPS_FOR_STIFF_FABRIC} 以上にしてください"
+    ]
+
+
 def build_cloth_sim(obj, props):
     """obj(メッシュオブジェクト)から ClothSim を構築する。座標はワールド座標系。
 
     戻り値: (sim, info) info には頂点数・制約数などの診断情報が入る。
     """
     mesh = obj.data
-    warnings = validate_mesh(obj) + check_thickness(obj, props)
+    warnings = (
+        validate_mesh(obj)
+        + check_thickness(obj, props)
+        + check_bending_stiffness(props)
+    )
     positions = get_world_positions(obj)
     edges, bending_quads, triangles = _collect_topology(mesh)
     pinned = find_vertex_group_indices(obj, props.pin_vertex_group)
