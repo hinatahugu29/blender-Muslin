@@ -1,5 +1,6 @@
 import bpy
 
+from . import mesh_io
 from . import sim_state
 
 
@@ -92,6 +93,18 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
         col.prop(props, "stretch_compliance")
         col.prop(props, "bending_compliance")
         col.prop(props, "damping")
+
+        # 硬い生地を選んでも Substeps が低いと曲げ制約が収束せず、どの生地も
+        # 同じように垂れる。Start Simulation でも警告するが、生地を選んだ
+        # その場で分からないと「プリセットが効いていない」としか見えない。
+        # N パネルは幅が狭いので、ここでは短く出す。
+        if mesh_io.needs_more_substeps_for_bending(props):
+            box = layout.box()
+            box.alert = True
+            box.label(text="この硬さは出ません", icon='ERROR')
+            box.label(
+                text=f"Solver の Substeps を {mesh_io.SUBSTEPS_FOR_STIFF_FABRIC} 以上に"
+            )
 
 
 class MUSLIN_PT_forces(_MuslinSettingsPanel, bpy.types.Panel):

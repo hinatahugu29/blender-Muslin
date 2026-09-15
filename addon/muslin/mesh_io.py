@@ -338,6 +338,18 @@ SUBSTEPS_FOR_STIFF_FABRIC = 16
 STIFF_BENDING_COMPLIANCE = 0.01
 
 
+def needs_more_substeps_for_bending(props):
+    """硬い生地を選んでいるのに Substeps が足りていないか。
+
+    表示の仕方が場所ごとに違う(パネルは狭いので短く、オペレータは詳しく)
+    ので、条件だけをここに置いて文面は呼び出し側に任せる。
+    """
+    return (
+        props.bending_compliance < STIFF_BENDING_COMPLIANCE
+        and props.substeps < SUBSTEPS_FOR_STIFF_FABRIC
+    )
+
+
 def check_bending_stiffness(props):
     """曲げの設定が Substeps に対して意味を持つかを調べ、警告文を返す。
 
@@ -353,9 +365,7 @@ def check_bending_stiffness(props):
     Substeps を上げる以外に硬くする手段が無い。黙って柔らかい布が出ると
     「プリセットが効いていない」と見えるので、選んだ時点で知らせる。
     """
-    if props.bending_compliance >= STIFF_BENDING_COMPLIANCE:
-        return []
-    if props.substeps >= SUBSTEPS_FOR_STIFF_FABRIC:
+    if not needs_more_substeps_for_bending(props):
         return []
 
     return [
