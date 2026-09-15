@@ -17,6 +17,12 @@ class _MuslinSettingsPanel(_MuslinPanelBase):
     プロパティを出しようがない。その旨だけ表示する。
     """
 
+    @classmethod
+    def poll(cls, context):
+        # 編集中は計算結果がメッシュに書き戻らないので、ここをいじっても
+        # 何も起きない。代わりに Pattern / Sewing が前に出る。
+        return context.mode == 'OBJECT'
+
     def draw(self, context):
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
@@ -63,6 +69,18 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
             row.operator("muslin.stop_sim", icon='SNAP_FACE')
         else:
             row.operator("muslin.start_sim", icon='PHYSICS')
+
+        # 走らせたままでは効かない設定を変えたときに知らせる。
+        # 黙って効かないままだと「設定が壊れている」としか見えない。
+        if obj is not None:
+            reasons = sim_state.restart_reasons(obj, obj.muslin)
+            if reasons:
+                box = layout.box()
+                box.alert = True
+                box.label(text="組み立て直すまで反映されません", icon='ERROR')
+                for reason in reasons:
+                    box.label(text=reason)
+                box.operator("muslin.restart_sim", icon='FILE_REFRESH')
 
         state = sim_state.get_state(obj)
         if state is not None:
@@ -190,6 +208,11 @@ class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):
 class MUSLIN_PT_pinning(_MuslinSettingsPanel, bpy.types.Panel):
     bl_label = "Pinning"
     bl_parent_id = "MUSLIN_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        # 頂点グループは編集モードで作るので、ここだけは編集中も出す
+        return context.mode in {'OBJECT', 'EDIT_MESH'}
 
     def draw_cloth(self, context, layout, props):
         layout.prop_search(props, "pin_vertex_group", context.active_object,

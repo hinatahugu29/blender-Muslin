@@ -291,6 +291,30 @@ class MUSLIN_OT_stop_sim(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_restart_sim(bpy.types.Operator):
+    """シミュレーションを組み立て直す(コライダーや縫い目の変更を反映する)
+
+    布は開始時の形に戻る。
+    """
+
+    bl_idname = "muslin.restart_sim"
+    bl_label = "Restart Simulation"
+
+    @classmethod
+    def poll(cls, context):
+        return ui_poll.sim_running(cls, context, sim_state.is_running)
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        res = bpy.ops.muslin.start_sim()
+        if res != {'FINISHED'}:
+            return res
+        # 開始し直すと start_frame が現在フレームになるので、そこへ揃える
+        context.scene.frame_set(sim_state.get_state(obj)["start_frame"])
+        return {'FINISHED'}
+
+
 def _is_playing(context):
     screen = getattr(context, "screen", None)
     return bool(screen is not None and screen.is_animation_playing)
@@ -370,6 +394,7 @@ _classes = (
     MUSLIN_OT_stop_sim,
     MUSLIN_OT_play,
     MUSLIN_OT_rewind,
+    MUSLIN_OT_restart_sim,
 )
 
 

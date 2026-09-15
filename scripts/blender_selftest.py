@@ -595,6 +595,120 @@ def main():
         bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("組み立て直しが要る変更")
+
+    # コライダーと縫い目は組み立て時に登録されるので、走らせたままでは
+    # 差し替えられない。黙って効かないのではなく、パネルで知らせる。
+    clear_scene()
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.3, location=(0.5, 0.5, 0.0))
+    sphere = bpy.context.active_object
+    sphere.name = "Ball"
+    bpy.ops.mesh.primitive_cube_add(size=0.4, location=(0.5, 0.5, -0.6))
+    cube = bpy.context.active_object
+    cube.name = "Box"
+
+    obj = make_grid("RestartGrid", side=11, z=0.8)
+    bpy.context.view_layer.objects.active = obj
+    props = obj.muslin
+    props.collision_enabled = True
+    props.collider_object = sphere
+
+    bpy.ops.muslin.start_sim()
+    check("開始直後は組み立て直し不要", sim_state.restart_reasons(obj, props) == [],
+          str(sim_state.restart_reasons(obj, props)))
+
+    props.collider_object = cube
+    reasons = sim_state.restart_reasons(obj, props)
+    check("コライダーを変えると知らせる", len(reasons) == 1, str(reasons))
+
+    res = bpy.ops.muslin.restart_sim()
+    check("Restart が通る", res == {'FINISHED'}, str(res))
+    check("Restart で警告が消える", sim_state.restart_reasons(obj, props) == [])
+    check(
+        "Restart で新しいコライダーが登録される",
+        sim_state.get_state(obj)["info"]["colliders"] == ["Box"],
+        str(sim_state.get_state(obj)["info"]["colliders"]),
+    )
+
+    # 縫い目の本数が変わった場合も知らせる
+    obj.muslin_seams.add()
+    reasons = sim_state.restart_reasons(obj, props)
+    check("縫い目を足すと知らせる",
+          any("縫い目" in r for r in reasons), str(reasons))
+    # 無効な縫い目は数に入れない
+    obj.muslin_seams[0].enabled = False
+    check("無効な縫い目は数えない", sim_state.restart_reasons(obj, props) == [],
+          str(sim_state.restart_reasons(obj, props)))
+
+    # 生地の変更は組み立て直し不要(走らせたまま効くので)
+    props.fabric_preset = 'DENIM'
+    check("生地の変更では知らせない", sim_state.restart_reasons(obj, props) == [],
+          str(sim_state.restart_reasons(obj, props)))
+    bpy.ops.muslin.stop_sim()
+    check("停止中は何も挙げない", sim_state.restart_reasons(obj, props) == [])
+
+    # ----------------------------------------------------------------
+    section("編集モードでの出し分け")
+
+    # 編集中は計算を止める。
+    #
+    # 最初は「編集モードでは obj.data.vertices に書き戻らないから安全」と
+    # 考えていたが、実際は**書き込めてしまう**ことがこのテストで分かった。
+    # 表示されているのは編集用の BMesh の方なので、抜けるときにそちらが
+    # 書き戻され、計算した結果は捨てられて布が飛ぶ。
+    clear_scene()
+    obj = make_grid("EditGrid", side=9, z=1.0)
+    obj.muslin.collision_enabled = False
+    bpy.ops.muslin.start_sim()
+    advance(5, start=1)
+    state = sim_state.get_state(obj)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    before = positions_of(obj)
+    frozen_frame = state["current_frame"]
+    advance(10, start=6)
+    after = positions_of(obj)
+    moved = max(
+        max(abs(a[k] - b[k]) for k in range(3)) for a, b in zip(before, after)
+    )
+    check("編集中はメッシュに書き込まない", moved < 1e-9, f"最大差 {moved:.2e} m")
+    check("編集中はフレームも進めない",
+          state["current_frame"] == frozen_frame,
+          f"{frozen_frame} -> {state['current_frame']}")
+    check("編集中も走行状態は保たれる", sim_state.is_running(obj))
+
+    # --- ここまで編集モード。パネルの出し分けもこの状態で見る ---
+    settings = ("MUSLIN_PT_solver", "MUSLIN_PT_material",
+                "MUSLIN_PT_forces", "MUSLIN_PT_collision")
+    for name in settings:
+        cls = getattr(bpy.types, name)
+        check(f"{name} は編集モードで隠れる", not cls.poll(bpy.context))
+    # ピン留めだけは頂点グループを作る場所なので出したまま
+    check("MUSLIN_PT_pinning は編集モードでも出る",
+          bpy.types.MUSLIN_PT_pinning.poll(bpy.context))
+    # 縫製とパターンは編集モードでこそ使う
+    for name in ("MUSLIN_PT_sewing", "MUSLIN_PT_pattern"):
+        cls = getattr(bpy.types, name)
+        check(f"{name} は編集モードでも出る",
+              not hasattr(cls, "poll") or cls.poll(bpy.context))
+
+    # 抜けたら追いつく
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for name in settings:
+        cls = getattr(bpy.types, name)
+        check(f"{name} はオブジェクトモードで戻る", cls.poll(bpy.context))
+
+    advance(1, start=16)
+    check("編集を抜けると追いつく", state["current_frame"] == 16,
+          f"frame {state['current_frame']}")
+    resumed = positions_of(obj)
+    caught_up = max(
+        max(abs(a[k] - b[k]) for k in range(3)) for a, b in zip(before, resumed)
+    )
+    check("抜けたあと布が動き出す", caught_up > 1e-4, f"{caught_up:.4f} m")
+    bpy.ops.muslin.stop_sim()
+
+    # ------------------------------------------------------------------
     section("走らせたまま生地を変える")
 
     # density / compliance / ピン留めは組み立て時に焼き込まれるので、

@@ -74,7 +74,13 @@ def create_state(obj, props):
         "last_contacts": 0,
         "name": obj.name,
         "material": _material_signature(props),
+        "seam_count": _enabled_seam_count(obj),
     }
+
+
+def _enabled_seam_count(obj):
+    """有効になっている縫い目の本数(info["seams"] は頂点ペア数なので別物)。"""
+    return sum(1 for s in getattr(obj, "muslin_seams", []) if s.enabled)
 
 
 def _material_signature(props):
@@ -109,6 +115,45 @@ def _sync_material(state, props, obj=None):
     if state["cache"] is not None:
         state["cache"] = {state["start_frame"]: state["rest_positions"]}
     return True
+
+
+def restart_reasons(obj, props):
+    """走行中に変えたが、開始し直さないと効かない設定を挙げる。
+
+    生地とピン留めは `_sync_material` が走らせたまま反映する。一方
+    コライダーと縫い目は ClothSim の組み立て時に登録され、差し替えるには
+    形状を取り直す必要がある。黙って効かないままだと「設定が壊れている」
+    としか見えないので、パネルで知らせる。
+    """
+    state = get_state(obj)
+    if state is None:
+        return []
+
+    reasons = []
+    info = state["info"]
+
+    registered = list(info.get("colliders", []))
+    current = [o.name for o in mesh_io.collect_collider_objects(props)]
+    if props.collision_enabled and current != registered:
+        # 数だけ出すと入れ替えたときに「1 → 1 個」になって何も伝わらない。
+        # 短ければ名前を、多ければ数を出す。
+        def describe(names):
+            if not names:
+                return "なし"
+            if len(names) <= 2:
+                return " / ".join(names)
+            return f"{len(names)} 個"
+
+        reasons.append(
+            f"コライダーが変わりました ({describe(registered)} → {describe(current)})"
+        )
+
+    # info["seams"] は縫い合わせる頂点ペアの数なので、本数とは別に数える
+    seams = _enabled_seam_count(obj)
+    if seams != state["seam_count"]:
+        reasons.append(f"縫い目の本数が変わりました ({state['seam_count']} → {seams} 本)")
+
+    return reasons
 
 
 def start_simulation(obj, props):
@@ -290,6 +335,19 @@ def _frame_change_handler(scene, depsgraph=None):
             continue
         state["name"] = obj.name  # リネームに追従する
         obj_name = obj.name
+
+        # 編集中の布には手を出さない。
+        #
+        # 編集モードでも obj.data.vertices への書き込み自体は通る(実測で
+        # 確認済み)。しかし表示されているのは編集用の BMesh の方で、編集を
+        # 抜けるときにそちらが書き戻される。つまり計算した結果は捨てられ、
+        # かつシミュレーション側だけがフレームを進めるので、抜けた瞬間に
+        # 布が飛ぶ。Blender 標準のクロスも編集中は計算しない。
+        #
+        # 止めている間に進んだフレームは、抜けたあとキャッシュか開始
+        # フレームから追いつく(_simulate_to がジャンプを扱う)。
+        if obj.mode == 'EDIT':
+            continue
         # 設定は布ごとなので、オブジェクトから取る
         props = obj.muslin
 
