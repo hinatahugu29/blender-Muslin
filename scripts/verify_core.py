@@ -810,6 +810,122 @@ def test_cache_io():
         shutil.rmtree(os.path.dirname(directory), ignore_errors=True)
 
 
+def test_step_call_matches_signature():
+    """sim_state.py の sim.step(...) が Rust 側の引数の並びと一致すること。
+
+    **この呼び出しは全部位置引数**なので、並びがずれても例外にならない。
+    friction が floor_z に入る、というような形で黙って間違った値が渡る。
+    しかも sim_state.py は bpy に依存するので import できず、構文チェック
+    しか掛かっていない = Blender で再生するまで誰も気づけない。
+
+    Rust 側(pyo3)は __text_signature__ を持っているので、呼び出し側を
+    AST で読んで突き合わせれば、Blender 無しでもここだけは確かめられる。
+    """
+    import ast
+
+    sig = cloth_core.ClothSim.step.__text_signature__
+    if not sig:
+        skip("step の引数の並びが呼び出し側と一致する", "__text_signature__ が無い")
+        return
+    # "($self, dt, gravity=..., ...)" -> 名前だけ取り出す
+    inner = sig[sig.index("(") + 1:sig.rindex(")")]
+    params = [p.split("=")[0].strip() for p in inner.split(",")]
+    params = [p for p in params if p not in ("$self", "self")]
+
+    tree = ast.parse((ADDON_DIR / "sim_state.py").read_text(encoding="utf-8"))
+
+    def props_attr(node):
+        """式の中から props.X の X を1つ取り出す(-abs(props.gravity) など)"""
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Attribute)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id == "props"):
+                return sub.attr
+        return None
+
+    call = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "step"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sim"):
+            call = node
+            break
+
+    if call is None:
+        check("step の引数の並びが呼び出し側と一致する", False)
+        print("       sim_state.py に sim.step(...) が見つからない")
+        return
+
+    # 第1引数は dt(ローカル変数)。残りは props.X のはず
+    actual = ["dt"] + [props_attr(a) for a in call.args[1:]]
+
+    ok = actual == params
+    check("step の引数の並びが呼び出し側と一致する", ok)
+    if not ok:
+        for i, (want, got) in enumerate(zip(params, actual)):
+            if want != got:
+                print(f"       {i} 番目: Rust は {want} / 呼び出しは {got}")
+        if len(params) != len(actual):
+            print(f"       引数の数が違う: Rust {len(params)} / 呼び出し {len(actual)}")
+
+
+def test_panel_properties_exist():
+    """panels.py が名前で参照しているプロパティが properties.py に在ること。
+
+    `col.prop(props, "xxx")` の第2引数は**ただの文字列**なので、綴りを
+    間違えても構文チェックは通る。Blender がパネルを描画したときに
+    初めて壊れる = こちらも Blender 無しでは踏めない類。
+
+    properties.py は bpy に依存して import できないので、両方 AST で読む。
+    """
+    import ast
+
+    # properties.py 側: `name: bpy.props.XxxProperty(...)` の name を集める
+    prop_tree = ast.parse((ADDON_DIR / "properties.py").read_text(encoding="utf-8"))
+    defined = set()
+    for node in ast.walk(prop_tree):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            ann = node.annotation
+            # bpy.props.XxxProperty(...) の形だけ拾う
+            if isinstance(ann, ast.Call):
+                fn = ann.func
+                if isinstance(fn, ast.Attribute) and fn.attr.endswith("Property"):
+                    defined.add(node.target.id)
+
+    if not defined:
+        check("パネルが参照するプロパティが実在する", False)
+        print("       properties.py からプロパティを1つも拾えなかった")
+        return
+
+    # panels.py 側: prop(props, "name") / prop_search なども含めて拾う
+    panel_tree = ast.parse((ADDON_DIR / "panels.py").read_text(encoding="utf-8"))
+    missing = []
+    for node in ast.walk(panel_tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not (isinstance(fn, ast.Attribute) and fn.attr in ("prop", "prop_search")):
+            continue
+        if len(node.args) < 2:
+            continue
+        target, name = node.args[0], node.args[1]
+        # props を対象にしたものだけ見る(scene や obj は対象外)
+        if not (isinstance(target, ast.Name) and target.id == "props"):
+            continue
+        if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+            continue
+        if name.value not in defined:
+            missing.append((name.value, node.lineno))
+
+    ok = not missing
+    check("パネルが参照するプロパティが実在する", ok,
+          f"{len(defined)} 定義 / panels.py から参照")
+    for name, line in missing:
+        print(f"       panels.py:{line} の \"{name}\" が properties.py に無い")
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -849,6 +965,8 @@ def main():
     test_seam_logic()
     test_cache_io()
     test_transform()
+    test_step_call_matches_signature()
+    test_panel_properties_exist()
     compile_addon_modules()
 
     if args.bench:
