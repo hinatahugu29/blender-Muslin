@@ -56,8 +56,12 @@ Windows はロード中の DLL を削除できません。Blender を起動し�
 `.pyd` が新しくなったかは Debug > `Test Rust Core` のコンソール出力
 (`core_version`)で確認できます。
 
-動作確認環境: Blender 5.2 LTS / Windows。
+動作確認環境: Blender 5.2.1 LTS / Windows。
 拡張モジュールは abi3-py311 でビルドしているため Python 3.11 以降で動きます。
+
+**物理コアは Linux / macOS でも CI で毎回テストしています**(`cargo test` と
+wheel のビルド + 検証ハーネス)。ただし Blender に入れての動作確認は
+Windows でしかしていません。
 
 ## サンプル
 
@@ -155,6 +159,25 @@ Blender 自身に検証させ、**一時領域にインストールして実際�
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/package_zip.ps1
+```
+
+### 全プラットフォームぶんをまとめる
+
+`package_extension.ps1` は手元の Windows 用 wheel を1つ入れるだけです。
+Linux や macOS の wheel は手元では作れないので、**GitHub Actions の
+`Release` ワークフロー**で各 OS が作った wheel を集めて1つの zip にします。
+
+Actions タブから `Release` を手動実行するか、`v` で始まるタグを push します。
+`muslin-extension` という成果物に、4プラットフォーム
+(windows-x64 / linux-x64 / macos-arm64 / macos-x64)の wheel を同梱した
+zip が出ます。
+
+集める部分は [scripts/build_extension.py](scripts/build_extension.py) で、
+wheel のファイル名からプラットフォームを判別してマニフェストの
+`platforms` / `wheels` を書き換えます。手元でも使えます:
+
+```bash
+python scripts/build_extension.py --out dist/muslin.zip path/to/*.whl
 ```
 
 ## 検証

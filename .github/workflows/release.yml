@@ -1,0 +1,97 @@
+# 各 OS で wheel を作り、まとめて1つの Extensions 形式 zip にする。
+#
+# ローカルの scripts/package_extension.ps1 は Windows の wheel を1つだけ
+# 入れる(手元で Blender に検証させられるのが利点)。こちらは Windows を
+# 含む全プラットフォームを1つの配布物にするためのもので、
+# **他の OS の wheel は手元では作れない**ので CI でしか成立しない。
+#
+# 手動実行(Actions タブの Run workflow)か、v から始まるタグを押すと走る。
+
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  wheels:
+    name: wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-latest
+            platform: linux-x64
+          # macos-latest は arm64。x64 も要るので macos-13 を併用する
+          - os: macos-latest
+            platform: macos-arm64
+          - os: macos-13
+            platform: macos-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: maturin を入れる
+        run: python -m pip install --upgrade pip maturin
+
+      # abi3-py311 なので、Python 3.11 で作った wheel が 3.11 以降で使える
+      - name: wheel を作る
+        shell: bash
+        run: |
+          set -euo pipefail
+          maturin build --release --manifest-path rust/cloth_core/Cargo.toml --out wheels
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: wheels/*.whl
+          if-no-files-found: error
+
+  package:
+    name: Extensions 形式にまとめる
+    needs: wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: collected
+          merge-multiple: true
+
+      - name: 集まった wheel を確認する
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l collected
+          # 4プラットフォームぶん揃っていること(欠けたまま配布しない)
+          count=$(ls collected/*.whl | wc -l)
+          if [ "$count" -ne 4 ]; then
+            echo "wheel が $count 個しかありません (4 個必要)" >&2
+            exit 1
+          fi
+
+      - name: zip を作る
+        shell: bash
+        run: python scripts/build_extension.py --out dist/muslin-multiplatform.zip collected/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muslin-extension
+          path: dist/muslin-multiplatform.zip
+          if-no-files-found: error
