@@ -413,7 +413,7 @@ impl SpatialHash {
 
     /// セル座標のハッシュ値。乗算とシフトだけで混ぜる。
     #[inline]
-    fn hash_cell(cell: (i64, i64, i64)) -> u64 {
+    pub(crate) fn hash_cell(cell: (i64, i64, i64)) -> u64 {
         let (x, y, z) = cell;
         let h = (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ (y as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
@@ -500,6 +500,210 @@ impl SpatialHash {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// 三角形上の点 `q` を重心座標で表す。`q` は三角形の平面上にある前提。
+///
+/// `closest_point_on_triangle` が返した点に使い、押し出しを3頂点へ配分する。
+pub fn barycentric_on_triangle(q: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f64, f64, f64) {
+    let v0 = b.sub(a);
+    let v1 = c.sub(a);
+    let v2 = q.sub(a);
+
+    let d00 = v0.dot(v0);
+    let d01 = v0.dot(v1);
+    let d11 = v1.dot(v1);
+    let d20 = v2.dot(v0);
+    let d21 = v2.dot(v1);
+
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-20 {
+        // 縮退した三角形。均等に配分する
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    }
+
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    (1.0 - v - w, v, w)
+}
+
+/// 三角形用の空間ハッシュ。頂点-三角形の自己衝突で使う。
+///
+/// 頂点用の [`SpatialHash`] と違い、**挿入時に厚みぶん広げて** AABB が跨る
+/// セル全部に入れる。こうすると引くときは頂点のいるセル1つを見るだけで済み、
+/// 27セルを走査しなくてよい。三角形は頂点より数が少ないので、挿入を厚くして
+/// 参照を薄くするほうが釣り合う。
+///
+/// セルの大きさは「最も大きい三角形が収まる」ように決める。こうすると
+/// 1つの三角形が跨るセルが軸あたり高々2つ(+ 余白で 3つ)に収まる。
+pub struct TriangleHash {
+    cell_size: f64,
+    mask: usize,
+    starts: Vec<u32>,
+    entries: Vec<u32>,
+    /// セルのハッシュ値の下位32ビット。
+    ///
+    /// 同じバケットに落ちた別セルの三角形を弾くためだけに使うので、
+    /// 取りこぼしが無ければ足りる。衝突しても余計な候補が1つ増えるだけで、
+    /// そのあとの距離判定で落ちる。u64 で持つと 14,641頂点で 900KB になり、
+    /// **毎サブステップ触るせいで伸び制約と曲げ制約までキャッシュから
+    /// 追い出していた**(計測で stretch が 9.7 → 21.1ms に膨らんだ)。
+    keys: Vec<u32>,
+    cursor: Vec<u32>,
+}
+
+impl Default for TriangleHash {
+    fn default() -> Self {
+        TriangleHash::new()
+    }
+}
+
+impl TriangleHash {
+    pub fn new() -> Self {
+        TriangleHash {
+            cell_size: 1.0,
+            mask: 0,
+            starts: Vec::new(),
+            entries: Vec::new(),
+            keys: Vec::new(),
+            cursor: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn cell_index(&self, v: f64) -> i64 {
+        (v / self.cell_size).floor() as i64
+    }
+
+    /// 三角形の AABB を margin ぶん広げ、跨るセルの範囲を返す。
+    fn cell_range(
+        &self,
+        positions: &[Vec3],
+        tri: [usize; 3],
+        margin: f64,
+    ) -> ((i64, i64, i64), (i64, i64, i64)) {
+        let (a, b, c) = (positions[tri[0]], positions[tri[1]], positions[tri[2]]);
+        let lo = Vec3::new(
+            a.x.min(b.x).min(c.x) - margin,
+            a.y.min(b.y).min(c.y) - margin,
+            a.z.min(b.z).min(c.z) - margin,
+        );
+        let hi = Vec3::new(
+            a.x.max(b.x).max(c.x) + margin,
+            a.y.max(b.y).max(c.y) + margin,
+            a.z.max(b.z).max(c.z) + margin,
+        );
+        (
+            (self.cell_index(lo.x), self.cell_index(lo.y), self.cell_index(lo.z)),
+            (self.cell_index(hi.x), self.cell_index(hi.y), self.cell_index(hi.z)),
+        )
+    }
+
+    /// 三角形を入れ直す。`margin` は自己衝突の厚み。
+    pub fn rebuild(&mut self, positions: &[Vec3], triangles: &[[usize; 3]], margin: f64) {
+        let n = triangles.len();
+        if n == 0 {
+            self.mask = 0;
+            self.starts.clear();
+            self.entries.clear();
+            self.keys.clear();
+            return;
+        }
+
+        // セルの大きさは「広げたあとの三角形が軸あたり高々2セルに収まる」
+        // ように決める。ここを最大辺そのものにすると、平らな布では1三角形が
+        // 18セルほどに跨り、**書き込みだけで 18.29ms/frame** かかった
+        // (14,641頂点、substeps 4)。広げた幅に合わせると 1/4 以下になる。
+        //
+        // 大きくするほど書き込みは減るが、1セルあたりの三角形が増えて
+        // 参照時の最近接点の計算が増える。両者の釣り合いで決めた値。
+        let mut extent: f64 = 0.0;
+        for t in triangles {
+            let (a, b, c) = (positions[t[0]], positions[t[1]], positions[t[2]]);
+            extent = extent
+                .max(a.x.max(b.x).max(c.x) - a.x.min(b.x).min(c.x))
+                .max(a.y.max(b.y).max(c.y) - a.y.min(b.y).min(c.y))
+                .max(a.z.max(b.z).max(c.z) - a.z.min(b.z).min(c.z));
+        }
+        self.cell_size = (extent + 2.0 * margin).max(1e-6);
+
+        // バケット数は控えめにする。毎サブステップ全体を舐めるので、
+        // 大きく取るとゼロ埋めと累積和だけでキャッシュを潰す。
+        let buckets = (2 * n).next_power_of_two().max(64);
+        self.mask = buckets - 1;
+
+        self.starts.clear();
+        self.starts.resize(buckets + 1, 0);
+
+        // 1回目: セルごとの個数を数える。
+        // 範囲を配列に取っておく案も試したが、14,641頂点で 1.35MB になり、
+        // キャッシュを潰して逆に遅くなった。作り直すほうが速い。
+        for t in triangles {
+            let (lo, hi) = self.cell_range(positions, *t, margin);
+            for x in lo.0..=hi.0 {
+                for y in lo.1..=hi.1 {
+                    for z in lo.2..=hi.2 {
+                        let b = (SpatialHash::hash_cell((x, y, z)) as usize) & self.mask;
+                        self.starts[b + 1] += 1;
+                    }
+                }
+            }
+        }
+        for i in 0..buckets {
+            self.starts[i + 1] += self.starts[i];
+        }
+
+        let total = self.starts[buckets] as usize;
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&self.starts[..buckets]);
+        self.entries.clear();
+        self.entries.resize(total, 0);
+        self.keys.clear();
+        self.keys.resize(total, 0);
+
+        // 2回目: 書き込む
+        for (ti, t) in triangles.iter().enumerate() {
+            let (lo, hi) = self.cell_range(positions, *t, margin);
+            for x in lo.0..=hi.0 {
+                for y in lo.1..=hi.1 {
+                    for z in lo.2..=hi.2 {
+                        let hash = SpatialHash::hash_cell((x, y, z));
+                        let b = (hash as usize) & self.mask;
+                        let slot = self.cursor[b] as usize;
+                        self.entries[slot] = ti as u32;
+                        self.keys[slot] = hash as u32;
+                        self.cursor[b] += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 点 `p` のセルに入っている三角形を列挙する。
+    ///
+    /// 挿入時に厚みぶん広げてあるので、`p` から厚み以内にある三角形は
+    /// 必ず `p` のセルに入っている。1セルだけ見れば足りる。
+    pub fn for_each_triangle<F: FnMut(usize)>(&self, p: Vec3, mut f: F) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let cell = (
+            self.cell_index(p.x),
+            self.cell_index(p.y),
+            self.cell_index(p.z),
+        );
+        let hash = SpatialHash::hash_cell(cell);
+        let b = (hash as usize) & self.mask;
+        let from = self.starts[b] as usize;
+        let to = self.starts[b + 1] as usize;
+        let key = hash as u32;
+        for slot in from..to {
+            // 同じバケットに落ちた別セルの三角形を弾く
+            if self.keys[slot] == key {
+                f(self.entries[slot] as usize);
             }
         }
     }

@@ -202,8 +202,18 @@ pub struct ClothSim {
     constrained_pairs: crate::hashing::FastSet<(u32, u32)>,
     /// コリジョンオブジェクト(BVH付き三角形メッシュ)
     colliders: Vec<TriangleBvh>,
+    /// 布自身の三角形。頂点-三角形の自己衝突に使う。
+    ///
+    /// 頂点同士の反発だけでは、**頂点の並びがずれた2枚が素通りする**。
+    /// 格子間隔 h の2枚を半セルずらすと頂点間の面内距離が 0.707h になり、
+    /// 推奨の厚み 0.4h では一度も反応しない(実測で 81頂点すべてが貫通した)。
+    triangles: Vec<[usize; 3]>,
     /// 自己衝突用の空間ハッシュ(毎サブステップ再構築)
     hash: SpatialHash,
+    /// 頂点-三角形用の空間ハッシュ
+    tri_hash: crate::collision::TriangleHash,
+    /// 頂点-三角形の衝突候補。列挙の結果をここに貯めてから逐次で解く。
+    self_tri_pairs: Vec<(u32, u32)>,
     /// 自己衝突の近傍列挙に使う作業領域。毎サブステップ確保し直さず使い回す。
     neighbor_scratch: Vec<usize>,
     /// 自己衝突で押し離す頂点対。列挙の結果をここに貯めてから逐次で解く。
@@ -310,7 +320,14 @@ impl ClothSim {
             vertex_area,
             constrained_pairs,
             colliders: Vec::new(),
+            triangles: triangles
+                .iter()
+                .filter(|&&(a, b, c)| a < n && b < n && c < n && a != b && b != c && a != c)
+                .map(|&(a, b, c)| [a, b, c])
+                .collect(),
             hash: SpatialHash::new(0.01),
+            tri_hash: crate::collision::TriangleHash::new(),
+            self_tri_pairs: Vec::new(),
             neighbor_scratch: Vec::new(),
             self_pairs: Vec::new(),
             last_collision_count: 0,
@@ -1032,6 +1049,147 @@ impl ClothSim {
         self.hash = hash;
         self.neighbor_scratch = neighbors;
         self.self_pairs = pairs;
+
+        self.resolve_self_vertex_triangle(params, contacts);
+    }
+
+    /// 頂点-三角形の自己衝突。
+    ///
+    /// 頂点同士の反発だけでは、頂点の並びがずれた2枚が素通りする(格子間隔 h の
+    /// 2枚を半セルずらすと頂点間距離が 0.707h になり、推奨の厚み 0.4h では
+    /// 一度も反応しない)。面との距離を直接見て押し離す。
+    ///
+    /// 自分を含む三角形は除く。それ以外の近傍三角形は、厚みが推奨どおり
+    /// エッジ長の 0.4倍以下なら誤検出しない(平らな格子で最も近い非隣接面まで
+    /// 0.707h あるため)。
+    fn resolve_self_vertex_triangle(
+        &mut self,
+        params: &SimParams,
+        contacts: &mut Vec<(usize, Vec3, f64)>,
+    ) {
+        if self.triangles.is_empty() {
+            return;
+        }
+        let thickness = params.self_collision_thickness;
+
+        use rayon::prelude::*;
+
+        let mut hash = std::mem::take(&mut self.tri_hash);
+        let mut pairs = std::mem::take(&mut self.self_tri_pairs);
+
+        let t_hash = std::time::Instant::now();
+        hash.rebuild(&self.positions, &self.triangles, thickness);
+        self.timings.hash_rebuild += ms_since(t_hash);
+
+        let n = self.positions.len();
+        let positions = &self.positions;
+        let inv_mass = &self.inv_mass;
+        let triangles = &self.triangles;
+
+        let collect_for = |i: usize, out: &mut Vec<(u32, u32)>| {
+            if inv_mass[i] == 0.0 {
+                return;
+            }
+            let p = positions[i];
+            hash.for_each_triangle(p, |ti| {
+                let t = triangles[ti];
+                // 自分を含む面は対象外
+                if t[0] == i || t[1] == i || t[2] == i {
+                    return;
+                }
+                if inv_mass[i] + inv_mass[t[0]] + inv_mass[t[1]] + inv_mass[t[2]] == 0.0 {
+                    return;
+                }
+                let q = crate::collision::closest_point_on_triangle(
+                    p,
+                    positions[t[0]],
+                    positions[t[1]],
+                    positions[t[2]],
+                );
+                if p.sub(q).length() < thickness {
+                    out.push((i as u32, ti as u32));
+                }
+            });
+        };
+
+        pairs.clear();
+        if n >= PARALLEL_MIN_VERTICES {
+            // 頂点同士のときと同じ理由で、区切り方を自分で決めて順序を固定する
+            let starts: Vec<usize> = (0..n).step_by(SELF_COLLISION_CHUNK).collect();
+            let chunks: Vec<Vec<(u32, u32)>> = starts
+                .into_par_iter()
+                .map(|start| {
+                    let end = (start + SELF_COLLISION_CHUNK).min(n);
+                    let mut out = Vec::new();
+                    for i in start..end {
+                        collect_for(i, &mut out);
+                    }
+                    out
+                })
+                .collect();
+            for chunk in chunks {
+                pairs.extend(chunk);
+            }
+        } else {
+            for i in 0..n {
+                collect_for(i, &mut pairs);
+            }
+        }
+
+        // --- 押し出し。互いに書き込むので逐次で解く ---
+        for idx in 0..pairs.len() {
+            let (vi, ti) = pairs[idx];
+            let (vi, ti) = (vi as usize, ti as usize);
+            let t = self.triangles[ti];
+
+            let p = self.positions[vi];
+            let (a, b, c) = (self.positions[t[0]], self.positions[t[1]], self.positions[t[2]]);
+            let q = crate::collision::closest_point_on_triangle(p, a, b, c);
+
+            let delta = p.sub(q);
+            let dist = delta.length();
+            if dist >= thickness {
+                continue;
+            }
+
+            let (u, v, w) = crate::collision::barycentric_on_triangle(q, a, b, c);
+            let wp = self.inv_mass[vi];
+            let (wa, wb, wc) = (
+                self.inv_mass[t[0]],
+                self.inv_mass[t[1]],
+                self.inv_mass[t[2]],
+            );
+            // 三角形側の実効的な逆質量。重心座標の重みで配分する
+            let wt = u * u * wa + v * v * wb + w * w * wc;
+            let denom = wp + wt;
+            if denom <= 1e-12 {
+                continue;
+            }
+
+            // 完全に面上にある場合は面法線へ逃がす
+            let dir = match delta.normalized() {
+                Some(d) => d,
+                None => match b.sub(a).cross(c.sub(a)).normalized() {
+                    Some(nrm) => nrm,
+                    None => continue,
+                },
+            };
+
+            let correction = (thickness - dist) / denom;
+            self.positions[vi] = self.positions[vi].add(dir.scale(correction * wp));
+            self.positions[t[0]] = self.positions[t[0]].sub(dir.scale(correction * u * wa));
+            self.positions[t[1]] = self.positions[t[1]].sub(dir.scale(correction * v * wb));
+            self.positions[t[2]] = self.positions[t[2]].sub(dir.scale(correction * w * wc));
+
+            let back = dir.scale(-1.0);
+            contacts.push((vi, dir, params.collision_friction));
+            contacts.push((t[0], back, params.collision_friction));
+            contacts.push((t[1], back, params.collision_friction));
+            contacts.push((t[2], back, params.collision_friction));
+        }
+
+        self.tri_hash = hash;
+        self.self_tri_pairs = pairs;
     }
 
     /// 位置を強制設定し、速度をリセットする(巻き戻し用)。
@@ -1521,26 +1679,37 @@ mod tests {
     /// 衝突後の伸び補正は、貫通を増やさずに伸び誤差を減らす
     #[test]
     fn post_collision_pass_reduces_stretch_without_penetration() {
+        let center = Vec3::new(0.5, 0.5, -0.35);
+        let radius = 0.3;
+        let floor_z = -0.8;
+
         let drape = |post: u32| {
             let (positions, edges, bending, tris, _) = build_grid(21, 21, 0.05);
             let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
-            let (sphere_pos, sphere_tris) = build_sphere(Vec3::new(0.5, 0.5, -0.35), 0.3, 16, 12);
+            let (sphere_pos, sphere_tris) = build_sphere(center, radius, 16, 12);
             sim.add_collider(sphere_pos, sphere_tris);
             let params = SimParams {
+                // 床が無いと布が球から滑り落ちて自由落下し、
+                // 「遠いから貫通していない」という無意味な判定になる
+                floor_enabled: true,
+                floor_z,
                 collision_enabled: true,
                 collision_thickness: 0.01,
                 self_collision_enabled: true,
-                self_collision_thickness: 0.02,
+                // 伸び補正は「厚みを大きく取ったとき」のための機能なので、
+                // 効果が出る領域で測る。推奨の 0.4 x エッジ長(0.02)では
+                // 押し出し自体が小さく、差が雑音に埋もれる
+                self_collision_thickness: 0.05,
                 post_collision_iterations: post,
                 ..Default::default()
             };
-            for _ in 0..150 {
+            for _ in 0..220 {
                 sim.step(1.0 / 60.0, &params);
             }
             let deepest = sim
                 .positions
                 .iter()
-                .map(|p| p.sub(Vec3::new(0.5, 0.5, -0.35)).length())
+                .map(|p| p.sub(center).length())
                 .fold(f64::INFINITY, f64::min);
             (sim.average_stretch_error(), deepest, sim.is_finite())
         };
@@ -1550,13 +1719,19 @@ mod tests {
 
         assert!(finite_off && finite_on, "発散した");
         assert!(
-            err_on < err_off,
+            err_on < err_off * 0.8,
             "伸び補正が効いていない: {err_off} -> {err_on}"
         );
-        // 補正を入れたことで球に潜り込んでいないこと(半径 0.3 を割らない)
+        // 球に潜り込んでいないこと
         assert!(
-            deepest_on > 0.3 - 1e-3,
+            deepest_on > radius - 1e-3,
             "補正で貫通した: 中心からの最小距離 {deepest_on} (補正なしでは {deepest_off})"
+        );
+        // かつ、球の上に載っていること。飛んで行っても「遠いから貫通なし」に
+        // なってしまうので、近いことも確かめる
+        assert!(
+            deepest_on < radius * 1.5,
+            "布が球から離れている。試験が成立していない: {deepest_on}"
         );
     }
 
@@ -1689,6 +1864,106 @@ mod tests {
 
     /// 自己衝突が実際に頂点同士を押し離す
     #[test]
+    /// 頂点の並びがずれた2枚が、互いを突き抜けないこと。
+    ///
+    /// 頂点同士の反発しか無かった頃は**素通りしていた**。格子間隔 h の2枚を
+    /// 半セルずらすと、頂点間の面内距離が h√2/2 = 0.707h になる。推奨の厚み
+    /// 0.4h はこれより小さいので、頂点同士は一度も反応しない。実測では上の層の
+    /// 81頂点すべてが下の層を抜けて z = -53 まで落ちた。
+    ///
+    /// 実際に折り重なった布で頂点が揃うことはまずないので、ここが素通りすると
+    /// 自己衝突は「効いているように見えて効いていない」状態になる。
+    #[test]
+    fn offset_layers_do_not_pass_through_each_other() {
+        let n = 9usize;
+        let h = 0.05;
+        let thickness = h * 0.4; // 推奨どおり
+        let gap = 0.06;
+
+        let layer = |offset: f64, z: f64, base: usize| {
+            let mut pos = Vec::new();
+            let mut edges = Vec::new();
+            let mut tris = Vec::new();
+            for y in 0..n {
+                for x in 0..n {
+                    pos.push(Vec3::new(x as f64 * h + offset, y as f64 * h + offset, z));
+                }
+            }
+            for y in 0..n {
+                for x in 0..n {
+                    let i = base + y * n + x;
+                    if x + 1 < n {
+                        edges.push((i, i + 1));
+                    }
+                    if y + 1 < n {
+                        edges.push((i, i + n));
+                    }
+                    if x + 1 < n && y + 1 < n {
+                        tris.push((i, i + 1, i + n + 1));
+                        tris.push((i, i + n + 1, i + n));
+                    }
+                }
+            }
+            (pos, edges, tris)
+        };
+
+        // shift だけずらした2枚を落として、上が下を抜けるかを見る
+        let run = |shift: f64| -> (usize, f64) {
+            let (mut pos, mut edges, mut tris) = layer(0.0, 0.0, 0);
+            let (p1, e1, t1) = layer(shift, gap, n * n);
+            pos.extend(p1);
+            edges.extend(e1);
+            tris.extend(t1);
+            let quads = crate::bending::quads_from_triangles(&tris);
+
+            let half = n * n;
+            // 下の層を固定し、上の層だけを落とす
+            let pinned: Vec<usize> = (0..half).collect();
+            let mut sim =
+                ClothSim::new(pos, &edges, &quads, &tris, &pinned, 0.2, 0.0, 0.02);
+            let params = SimParams {
+                substeps: 8,
+                damping: 0.02,
+                collision_enabled: false,
+                self_collision_enabled: true,
+                self_collision_thickness: thickness,
+                ..SimParams::default()
+            };
+            sim.untangle(&params, 8);
+            for _ in 0..200 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            assert!(sim.is_finite(), "発散した");
+
+            let lowest = (0..half)
+                .map(|i| sim.positions[i].z)
+                .fold(f64::INFINITY, f64::min);
+            let through = (half..2 * half)
+                .filter(|&i| sim.positions[i].z < lowest - 1e-6)
+                .count();
+            let mean_upper =
+                (half..2 * half).map(|i| sim.positions[i].z).sum::<f64>() / half as f64;
+            (through, mean_upper)
+        };
+
+        let (aligned_through, aligned_z) = run(0.0);
+        assert_eq!(aligned_through, 0, "頂点が揃っているのに抜けた");
+        assert!(
+            (aligned_z - thickness).abs() < thickness * 0.5,
+            "厚みの位置で止まっていない: {aligned_z}"
+        );
+
+        let (offset_through, offset_z) = run(h / 2.0);
+        assert_eq!(
+            offset_through, 0,
+            "半セルずらした層が突き抜けた: {offset_through} 頂点 (平均 z = {offset_z})"
+        );
+        assert!(
+            (offset_z - thickness).abs() < thickness * 0.5,
+            "厚みの位置で止まっていない: {offset_z}"
+        );
+    }
+
     /// 最初から食い込んでいる布が、開始と同時に吹き飛ばないこと。
     ///
     /// 速度は「位置の差 ÷ dt」から作るので、深い食い込みをそのまま押し出すと

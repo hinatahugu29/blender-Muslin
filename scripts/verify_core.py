@@ -465,9 +465,13 @@ def test_post_collision_correction():
     def drape(post):
         sim = cloth_core.ClothSim(list(positions), edges, bending, tris, [], 0.2, 0.0, 1e-4)
         sim.add_collider(sphere_pos, sphere_tris)
-        for _ in range(150):
+        for _ in range(220):
+            # 床が無いと布が球から滑り落ちて自由落下し、「遠いから貫通して
+            # いない」という無意味な判定になる。
+            # 厚みは 0.05。伸び補正は厚みを大きく取ったときのための機能で、
+            # 推奨の 0.4 x エッジ長(0.02)では押し出しが小さく差が出ない。
             sim.step(1.0 / 60.0, -9.81, 10, 4, 0.01, (0.0, 0.0, 0.0),
-                     False, 0.0, 0.3, True, 0.01, 0.3, True, 0.02, post)
+                     True, -0.80, 0.3, True, 0.01, 0.3, True, 0.05, post)
         p = sim.get_positions()
         deepest = min(
             math.dist(p[k * 3:k * 3 + 3], sphere_center) for k in range(len(p) // 3)
@@ -478,10 +482,13 @@ def test_post_collision_correction():
     err_on, deepest_on, finite_on = drape(4)
 
     check("衝突後補正を渡せる(pyo3 の引数)", finite_off and finite_on)
-    check("衝突後補正で伸び誤差が減る", err_on < err_off,
+    check("衝突後補正で伸び誤差が減る", err_on < err_off * 0.8,
           f"{err_off:.5f} -> {err_on:.5f}")
     check("衝突後補正で球に潜り込まない", deepest_on > radius - 1e-3,
           f"最小距離 {deepest_on:.5f} (補正なし {deepest_off:.5f} / 半径 {radius})")
+    # 飛んで行っても「遠いから貫通なし」になるので、載っていることも見る
+    check("布が球の上に載っている(試験の成立条件)", deepest_on < radius * 1.5,
+          f"最小距離 {deepest_on:.5f} / 半径 {radius}")
 
 
 def test_broadphase_cache():
