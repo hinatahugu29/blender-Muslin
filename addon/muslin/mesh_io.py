@@ -379,7 +379,7 @@ def check_bending_stiffness(props):
         f"硬さを出すには Substeps を {SUBSTEPS_FOR_STIFF_FABRIC} 以上にしてください"
     )
     if props.chebyshev_radius <= 0.0:
-        hint += "。あわせて Convergence Boost を 0.95 にすると効果が大きくなります"
+        hint += "。あわせて Convergence Boost を 0.98 にすると効果が大きくなります"
     return [hint]
 
 

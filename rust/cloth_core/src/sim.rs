@@ -133,9 +133,23 @@ pub const MARGIN_SAFETY: f64 = 1.5;
 /// 自分で区切ることで結合順を固定し、結果を決定的に保つ。
 const SELF_COLLISION_CHUNK: usize = 512;
 
-/// Chebyshev 加速を始めるまでに素の反復を回す回数。
+/// Chebyshev 加速を始めるまでに素の反復を回す回数(Wang 2015 の S)。
 ///
-/// 反復の初期は残差が大きく、そのまま増幅すると跳ねる。Wang 2015 の S。
+/// 反復の初期は残差が大きく、そのまま増幅すると跳ねる。
+///
+/// **2 では壊れる組み合わせがあった。** ω の列は「最後まで回しきる」前提の
+/// もので、途中で打ち切ると特定の長さで誤差を増幅する。substeps 32 で測ると、
+/// ρ=0.95 かつ反復 5〜6 のときだけ片持ちの先端が**固定端より上に反り返った**
+/// (垂れ比 -0.28)。反復 4 でも 7 以上でも無事という、帯状の不安定だった。
+/// 発散判定には掛からないので、黙って誤った布が出る。
+///
+/// 5 にすると、反復が 5 以下なら加速が一度も走らない = 素の反復と同じになり、
+/// **構造的に安全**。6 以上でも単調に改善し、測った範囲(反復 6〜20 x
+/// ρ 0.9/0.95/0.97/0.98)で反り返りは出なかった。
+///
+/// 遅延を伸ばしたぶん効きは落ちるが、ρ を上げれば取り戻せる。
+/// 反復10・ρ0.98 で垂れ比 0.4078 と、危険だった頃の設定(遅延2・ρ0.95 で
+/// 0.3986)とほぼ同じところまで戻る。
 const CHEBYSHEV_DELAY: u32 = 5;
 
 /// 摩擦を較正する基準のサブステップ数。
@@ -2336,6 +2350,97 @@ mod tests {
             (soft_cheb - soft_plain).abs() < 0.05,
             "柔らかい生地の垂れ方が変わった: {soft_plain:.4} -> {soft_cheb:.4}"
         );
+    }
+
+    /// Chebyshev 加速が、どの反復数でも布を反り返らせないこと。
+    ///
+    /// ω の列は最後まで回しきる前提のもので、途中で打ち切ると特定の長さで
+    /// 誤差を増幅する。遅延が 2 だった頃は、ρ=0.95 かつ反復 5〜6 のときだけ
+    /// **片持ちの先端が固定端より上に反り返った**(垂れ比 -0.28)。反復 4 でも
+    /// 7 以上でも無事という帯状の不安定で、しかも発散判定には掛からないので
+    /// 黙って誤った布が出ていた。
+    ///
+    /// 「速くなった」ばかり見て、壊れる組み合わせを探していなかった。
+    #[test]
+    fn chebyshev_never_curls_cloth_upward() {
+        let (nx, ny, edge, clamp) = (31usize, 5usize, 0.005, 5usize);
+        let idx = |x: usize, y: usize| y * nx + x;
+        let overhang = (nx - clamp) as f64 * edge;
+
+        let mut positions = Vec::new();
+        for y in 0..ny {
+            for x in 0..nx {
+                positions.push(Vec3::new(x as f64 * edge, y as f64 * edge, 0.0));
+            }
+        }
+        let mut edges = Vec::new();
+        let mut tris = Vec::new();
+        for y in 0..ny {
+            for x in 0..nx {
+                if x + 1 < nx {
+                    edges.push((idx(x, y), idx(x + 1, y)));
+                }
+                if y + 1 < ny {
+                    edges.push((idx(x, y), idx(x, y + 1)));
+                }
+                if x + 1 < nx && y + 1 < ny {
+                    tris.push((idx(x, y), idx(x + 1, y), idx(x + 1, y + 1)));
+                    tris.push((idx(x, y), idx(x + 1, y + 1), idx(x, y + 1)));
+                }
+            }
+        }
+        let quads = crate::bending::quads_from_triangles(&tris);
+        let pinned: Vec<usize> = (0..ny)
+            .flat_map(|y| (0..clamp).map(move |x| idx(x, y)))
+            .collect();
+
+        let droop = |iterations: u32, rho: f64| -> f64 {
+            let mut sim = ClothSim::new(
+                positions.clone(), &edges, &quads, &tris, &pinned, 0.15, 0.0, 0.0,
+            );
+            let params = SimParams {
+                iterations,
+                substeps: 16,
+                damping: 0.6,
+                collision_enabled: false,
+                post_collision_iterations: 0,
+                chebyshev_radius: rho,
+                ..SimParams::default()
+            };
+            for _ in 0..150 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            assert!(sim.is_finite(), "iterations={iterations} rho={rho} で発散した");
+            let tip: f64 =
+                (0..ny).map(|y| sim.positions[idx(nx - 1, y)].z).sum::<f64>() / ny as f64;
+            -tip / overhang
+        };
+
+        // 5 と 6 が、遅延 2 の頃に壊れていた帯
+        for iterations in [4u32, 5, 6, 7, 8, 12] {
+            for rho in [0.0, 0.9, 0.95, 0.98] {
+                let d = droop(iterations, rho);
+                assert!(
+                    d > 0.0,
+                    "反り返った: iterations={iterations} rho={rho} 垂れ比={d:.4}"
+                );
+                // 重力で垂れているのだから、上限も外れないこと
+                assert!(
+                    d < 1.5,
+                    "垂れすぎ(発散しかけ): iterations={iterations} rho={rho} 垂れ比={d:.4}"
+                );
+            }
+        }
+
+        // 反復が遅延以下なら加速は一度も走らない = 素の反復と完全に一致する
+        for iterations in [4u32, 5] {
+            let plain = droop(iterations, 0.0);
+            let boosted = droop(iterations, 0.98);
+            assert_eq!(
+                plain, boosted,
+                "反復 {iterations} (遅延 {CHEBYSHEV_DELAY} 以下) で加速が走っている"
+            );
+        }
     }
 
     /// 摩擦の強さが Substeps に依らないこと。
