@@ -76,6 +76,7 @@ class MUSLIN_PG_tools(bpy.types.PropertyGroup):
         default=1.0 / 24.0,
         min=0.0001,
         soft_max=0.1,
+        unit='TIME_ABSOLUTE',
     )
 
     # --- 表示 ---
@@ -181,6 +182,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         default=9.81,
         min=0.0,
         soft_max=20.0,
+        unit='ACCELERATION',
     )
     wind: bpy.props.FloatVectorProperty(
         name="Wind",
@@ -258,6 +260,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         name="Floor Z",
         description="床面の高さ(ワールドZ)",
         default=0.0,
+        unit='LENGTH',
     )
     friction: bpy.props.FloatProperty(
         name="Friction",

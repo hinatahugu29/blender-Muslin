@@ -17,6 +17,7 @@ import bpy
 from . import cache_io
 from . import mesh_io
 from . import sim_state
+from . import ui_poll
 
 
 def cache_directory(obj):
@@ -75,8 +76,7 @@ class MUSLIN_OT_bake(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH'
+        return ui_poll.mesh_selected(cls, context)
 
     def execute(self, context):
         scene = context.scene
@@ -184,8 +184,12 @@ class MUSLIN_OT_free_bake(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
+        if obj is None:
+            return ui_poll.reject(cls, "オブジェクトが選択されていません")
         # 再生を停止した(シェイプキー変換後の)状態でも、キャッシュは削除できるようにする
-        return obj is not None and bool(obj.get("muslin_cache_dir", ""))
+        if not obj.get("muslin_cache_dir", ""):
+            return ui_poll.reject(cls, "このオブジェクトにはキャッシュがありません")
+        return True
 
     def execute(self, context):
         obj = context.active_object
@@ -213,7 +217,9 @@ class MUSLIN_OT_bake_to_shape_keys(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return is_baked(context.active_object)
+        if not is_baked(context.active_object):
+            return ui_poll.reject(cls, "先に Bake to Disk を実行してください")
+        return True
 
     def execute(self, context):
         obj = context.active_object

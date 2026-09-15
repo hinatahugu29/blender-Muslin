@@ -6,6 +6,7 @@ from mathutils import Vector
 
 from . import mesh_io
 from . import seams
+from . import ui_poll
 
 
 # ---------------------------------------------------------- ヘルパー
@@ -94,8 +95,7 @@ class MUSLIN_OT_fill_outline(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+        return ui_poll.in_edit_mode(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -150,8 +150,14 @@ class MUSLIN_OT_join_pieces(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
         meshes = [o for o in context.selected_objects if o.type == 'MESH']
-        return context.mode == 'OBJECT' and len(meshes) >= 2
+        if len(meshes) < 2:
+            return ui_poll.reject(
+                cls, f"統合するメッシュを2つ以上選択してください (現在 {len(meshes)})"
+            )
+        return True
 
     def execute(self, context):
         meshes = [o for o in context.selected_objects if o.type == 'MESH']
@@ -187,8 +193,7 @@ class MUSLIN_OT_add_seam(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+        return ui_poll.in_edit_mode(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -246,8 +251,7 @@ class MUSLIN_OT_remove_seam(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
+        return ui_poll.has_seams(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -267,8 +271,7 @@ class MUSLIN_OT_clear_seams(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
+        return ui_poll.has_seams(cls, context)
 
     def execute(self, context):
         count = len(context.active_object.muslin_seams)
@@ -285,12 +288,7 @@ class MUSLIN_OT_select_seam(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return (
-            obj is not None
-            and obj.mode == 'EDIT'
-            and len(getattr(obj, "muslin_seams", [])) > 0
-        )
+        return ui_poll.in_edit_mode(cls, context) and ui_poll.has_seams(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -321,8 +319,7 @@ class MUSLIN_OT_validate_seams(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and len(getattr(obj, "muslin_seams", [])) > 0
+        return ui_poll.has_seams(cls, context)
 
     def execute(self, context):
         obj = context.active_object

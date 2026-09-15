@@ -11,6 +11,8 @@ CHECKPOINTS.md の CP-B のうち、GUI 操作を伴わない項目を自動化�
 ビューポート描画(overlay)だけはヘッドレスで確認できないため対象外。
 """
 
+import functools
+import inspect
 import os
 import sys
 import tempfile
@@ -591,6 +593,203 @@ def main():
             not mesh_io.check_thickness(cloth, cloth.muslin),
         )
         bpy.ops.muslin.stop_sim()
+
+    # ------------------------------------------------------------------
+    section("UI の作法")
+
+    # 押せないボタンは、なぜ押せないのかをツールチップに出す(Blender 3.0+)。
+    # poll が False を返しただけでは灰色になるだけで理由が出ない。
+    clear_scene()
+    ops_with_reason = [
+        ("muslin.bake_to_shape_keys", "ベイク前の Convert to Shape Keys"),
+        ("muslin.join_pieces", "選択が足りない Join Pattern Pieces"),
+        ("muslin.add_seam", "オブジェクトモードでの Add Seam"),
+        ("muslin.print_timings", "停止中の Print Timings"),
+    ]
+    for idname, label in ops_with_reason:
+        group, name = idname.split(".")
+        op = getattr(getattr(bpy.ops, group), name)
+        # 設定された理由は Python 側から読めないので、ここでは
+        # 「押せないこと」だけを見る。文言は下の ui_poll 直接呼び出しで確かめる。
+        check(f"{label} は押せない", not op.poll())
+
+    from muslin import ui_poll
+
+    class _FakeOp:
+        message = None
+
+        @classmethod
+        def poll_message_set(cls, text):
+            cls.message = text
+
+    class _Ctx:
+        active_object = None
+
+    _FakeOp.message = None
+    ui_poll.mesh_selected(_FakeOp, _Ctx)
+    check(
+        "理由が日本語で設定される",
+        _FakeOp.message == "オブジェクトが選択されていません",
+        repr(_FakeOp.message),
+    )
+
+    obj = make_grid("UIGrid")
+    _Ctx.active_object = obj
+    _FakeOp.message = None
+    ui_poll.in_edit_mode(_FakeOp, _Ctx)
+    check(
+        "編集モードでない理由が出る",
+        _FakeOp.message is not None and "編集モード" in _FakeOp.message,
+        repr(_FakeOp.message),
+    )
+    _FakeOp.message = None
+    ui_poll.has_seams(_FakeOp, _Ctx)
+    check(
+        "縫い目が無い理由が出る",
+        _FakeOp.message is not None and "縫い目" in _FakeOp.message,
+        repr(_FakeOp.message),
+    )
+    # poll_message_set を持たない古い Blender でも落ちないこと
+    class _Old:
+        pass
+    check("poll_message_set が無くても落ちない", ui_poll.mesh_selected(_Old, _Ctx) is True)
+
+    # 物理量には単位を付ける。付いていれば Blender が "9.81 m/s2" と表示し、
+    # "9.81" のような裸の数字にならない。
+    rna = obj.muslin.bl_rna.properties
+    tools_rna = bpy.types.Scene.bl_rna.properties["muslin_tools"].fixed_type.properties
+    units = [
+        (rna["gravity"], "ACCELERATION", "Gravity"),
+        (rna["floor_z"], "LENGTH", "Floor Z"),
+        (rna["collision_thickness"], "LENGTH", "Thickness"),
+        (rna["self_collision_thickness"], "LENGTH", "Self Thickness"),
+        (tools_rna["dt"], "TIME_ABSOLUTE", "Time Step"),
+    ]
+    for prop, want, label in units:
+        check(f"{label} に単位 {want} が付いている", prop.unit == want, prop.unit)
+
+    # ------------------------------------------------------------------
+    section("パネルの描画")
+
+    # パネルの draw() はヘッドレスでは呼ばれないので、プロパティ名を打ち
+    # 間違えても GUI を開くまで気づけない。layout と同じ形をした偽物を
+    # 渡して draw() を実際に走らせ、存在しない名前を使っていたら落とす。
+    class _FakeLayout:
+        """bpy の UILayout のうち、このアドオンが使う分だけを真似る。"""
+
+        def __init__(self, log):
+            self.log = log
+            self.use_property_split = False
+            self.use_property_decorate = True
+            self.alert = False
+            self.enabled = True
+
+        def _child(self, *_args, **_kw):
+            child = _FakeLayout(self.log)
+            child.use_property_split = self.use_property_split
+            child.use_property_decorate = self.use_property_decorate
+            return child
+
+        row = column = box = split = column_flow = grid_flow = _child
+
+        def prop(self, data, name, **_kw):
+            if name not in data.bl_rna.properties:
+                raise AttributeError(
+                    f"{data.bl_rna.identifier} に '{name}' というプロパティは無い"
+                )
+            self.log.append(("prop", data.bl_rna.identifier, name))
+
+        def prop_search(self, data, name, search_data, search_prop, **_kw):
+            self.prop(data, name)
+            if search_prop not in search_data.bl_rna.properties:
+                raise AttributeError(f"検索先に '{search_prop}' が無い")
+
+        def operator(self, idname, **_kw):
+            group, _, name = idname.partition(".")
+            if not hasattr(getattr(bpy.ops, group, None), name):
+                raise AttributeError(f"{idname} というオペレータは無い")
+            self.log.append(("operator", idname))
+            return _FakeLayout(self.log)
+
+        def template_list(self, listtype, _id, data, propname, active_data,
+                          active_propname, **_kw):
+            if not hasattr(bpy.types, listtype):
+                raise AttributeError(f"{listtype} という UIList は無い")
+            self.prop(data, propname)
+            self.prop(active_data, active_propname)
+
+        def label(self, **_kw):
+            pass
+
+        def separator(self, **_kw):
+            pass
+
+    class _PanelShim:
+        """パネルの draw() を bpy 抜きで呼ぶための代理。
+
+        bpy.types.Panel は Python から直接インスタンス化できないので、
+        メソッドだけクラスから借りて self の代わりを務める。
+        """
+
+        def __init__(self, cls, layout):
+            object.__setattr__(self, "_cls", cls)
+            object.__setattr__(self, "layout", layout)
+
+        def __getattr__(self, name):
+            cls = object.__getattribute__(self, "_cls")
+            attr = getattr(cls, name)
+            # staticmethod / classmethod は既に束ねられているので触らない。
+            # MRO をたどって、定義そのものがどちらでもない場合だけ self を渡す。
+            raw = next(
+                (c.__dict__[name] for c in cls.__mro__ if name in c.__dict__), None
+            )
+            if inspect.isfunction(attr) and not isinstance(
+                raw, (staticmethod, classmethod)
+            ):
+                return functools.partial(attr, self)
+            return attr
+
+    panel_classes = [
+        getattr(bpy.types, n) for n in dir(bpy.types)
+        if n.startswith("MUSLIN_PT_")
+    ]
+    check("パネルが登録されている", len(panel_classes) >= 9, f"{len(panel_classes)} 枚")
+
+    clear_scene()
+    obj = make_grid("PanelGrid")
+    bpy.context.view_layer.objects.active = obj
+    ctx = bpy.context
+
+    # 縫い目とベイク済みキャッシュが無い分岐・ある分岐の両方を通す
+    for label, prepare in (("素の状態", lambda: None),
+                           ("縫い目あり", lambda: obj.muslin_seams.add())):
+        prepare()
+        for cls in panel_classes:
+            log = []
+            layout = _FakeLayout(log)
+            try:
+                _PanelShim(cls, layout).draw(ctx)
+            except Exception as exc:
+                check(f"{cls.__name__} を描ける({label})", False, f"{type(exc).__name__}: {exc}")
+            else:
+                check(f"{cls.__name__} を描ける({label})", True, f"{len(log)} 項目")
+
+    # 設定パネルは純正と同じ 2 カラム配置にしてある
+    settings = [c for c in panel_classes
+                if c.__name__ in ("MUSLIN_PT_solver", "MUSLIN_PT_material",
+                                  "MUSLIN_PT_forces", "MUSLIN_PT_collision",
+                                  "MUSLIN_PT_pinning")]
+    for cls in settings:
+        layout = _FakeLayout([])
+        _PanelShim(cls, layout).draw(ctx)
+        check(f"{cls.__name__} が use_property_split を使う", layout.use_property_split)
+
+    # メッシュが選ばれていないときは、プロパティを出さずに案内だけ出す
+    bpy.context.view_layer.objects.active = None
+    for cls in settings:
+        log = []
+        _PanelShim(cls, _FakeLayout(log)).draw(ctx)
+        check(f"{cls.__name__} は非メッシュで何も出さない", log == [], str(log))
 
     section("片付け")
     muslin.unregister()

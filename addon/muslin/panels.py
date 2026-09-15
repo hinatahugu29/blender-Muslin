@@ -22,7 +22,18 @@ class _MuslinSettingsPanel(_MuslinPanelBase):
         if obj is None or obj.type != 'MESH':
             self.layout.label(text="メッシュを選択してください", icon='INFO')
             return
+        # 純正のプロパティパネルと同じ 2 カラム配置にする。
+        # アニメーション不可のプロパティばかりなのでデコレータ(右端の◇)は消す。
+        self.layout.use_property_split = True
+        self.layout.use_property_decorate = False
         self.draw_cloth(context, self.layout, obj.muslin)
+
+    @staticmethod
+    def buttons(layout):
+        """オペレータを全幅で置くための、分割を切った列を返す。"""
+        col = layout.column()
+        col.use_property_split = False
+        return col
 
     def draw_cloth(self, context, layout, props):
         raise NotImplementedError
@@ -100,7 +111,7 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
         # その場で分からないと「プリセットが効いていない」としか見えない。
         # N パネルは幅が狭いので、ここでは短く出す。
         if mesh_io.needs_more_substeps_for_bending(props):
-            box = layout.box()
+            box = self.buttons(layout).box()
             box.alert = True
             box.label(text="この硬さは出ません", icon='ERROR')
             box.label(
@@ -125,7 +136,7 @@ class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):
 
     def draw_cloth(self, context, layout, props):
 
-        layout.operator("muslin.fit_thickness", icon='DRIVER_DISTANCE')
+        self.buttons(layout).operator("muslin.fit_thickness", icon='DRIVER_DISTANCE')
 
         col = layout.column(align=True)
         col.prop(props, "collision_enabled")
@@ -183,9 +194,12 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
         tools = context.scene.muslin_tools
 
         col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
         col.prop(tools, "pattern_width")
         col.prop(tools, "pattern_height")
         col.prop(tools, "pattern_resolution")
+        layout.separator()
 
         layout.operator("muslin.add_pattern_piece", icon='MESH_GRID')
         layout.operator("muslin.fill_outline", icon='MOD_TRIANGULATE')
@@ -222,7 +236,10 @@ class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
 
         layout.operator("muslin.validate_seams", icon='CHECKMARK')
 
+        layout.separator()
         col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
         col.prop(tools, "show_seams")
         col.prop(props, "seam_close_frames")
         col.prop(props, "seam_compliance")

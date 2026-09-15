@@ -5,6 +5,7 @@ import bpy
 from . import cloth_core
 from . import mesh_io
 from . import sim_state
+from . import ui_poll
 
 
 class MUSLIN_OT_test_rust(bpy.types.Operator):
@@ -178,7 +179,7 @@ class MUSLIN_OT_print_timings(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return sim_state.is_running(context.active_object)
+        return ui_poll.sim_running(cls, context, sim_state.is_running)
 
     def execute(self, context):
         obj = context.active_object
@@ -212,8 +213,7 @@ class MUSLIN_OT_fit_thickness(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH'
+        return ui_poll.mesh_selected(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -245,8 +245,7 @@ class MUSLIN_OT_start_sim(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH'
+        return ui_poll.mesh_selected(cls, context)
 
     def execute(self, context):
         obj = context.active_object
@@ -283,7 +282,7 @@ class MUSLIN_OT_stop_sim(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return sim_state.is_running(context.active_object)
+        return ui_poll.sim_running(cls, context, sim_state.is_running)
 
     def execute(self, context):
         obj = context.active_object
