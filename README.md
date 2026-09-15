@@ -130,6 +130,44 @@ Cloth モディファイアと同じで、1つのシーンでシルクのブラ�
 `.blend` を閉じても残り、スクラブが即座に効きます。
 `Convert to Shape Keys` を使うと、アドオン無しで再生できる形になります。
 
+## 別の PC で続きから始める
+
+`cloth_core.pyd` と wheel は **git に入っていません**(`.gitignore`)。
+clone / pull しただけでは物理コアが無いので、**まずビルドが要ります**。
+
+```bash
+git clone https://github.com/hinatahugu29/blender-Muslin.git
+cd blender-Muslin
+powershell -ExecutionPolicy Bypass -File scripts/build.ps1
+powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1
+```
+
+`verify_core.ps1` が 77/77 通れば環境は揃っています。
+
+必要なもの:
+
+| 要るもの | 用途 | 無いとどうなるか |
+|---|---|---|
+| Rust (rustup/cargo) | 物理コアのビルド | `build.ps1` が動かない |
+| Python 3.11 以降 | wheel のビルドと検証 | 同上 |
+| maturin | wheel のビルド | 同上(`python -m pip install maturin`) |
+| numpy | 座標変換の検証 | その項目が `[SKIP]` になる(集計には残る) |
+| Blender 4.2 以降 | アドオン層の検証 | `blender_selftest.py` が走らない |
+
+**Windows の注意**: PATH 先頭にある WindowsApps のスタブ `python.exe` は
+pyo3 から見えません。`build.ps1` と `verify_core.ps1` は実体の Python を
+自分で探すので、**スクリプト経由なら意識不要**です。`cargo` や `maturin` を
+直接叩く場合は `PYO3_PYTHON` に実体のパスを入れてください。
+
+**`blender_selftest.py` は `blender` が PATH に無いと走りません。**
+Blender をインストールしていても PATH に入っていないことがあるので、
+その場合は実行ファイルのフルパスで呼んでください。
+
+いまどこまで進んでいるか、何を試して**退けた**かは
+[ROADMAP.md](ROADMAP.md)、手作業で残っている確認は
+[CHECKPOINTS.md](CHECKPOINTS.md) にあります。**退けた案は理由と実測値ごと
+残してあります**。同じ案を再検討するときは先にそちらを読んでください。
+
 ## ビルド
 
 必要なもの: Rust (rustup/cargo)、maturin、Python 3.11 以降
@@ -484,22 +522,26 @@ Iterations を 1〜2 に下げてください。** 着せ替えのように最�
 
 ## ドキュメント
 
-- [ROADMAP.md](ROADMAP.md) — マイルストーンと進捗
-- [CHECKPOINTS.md](CHECKPOINTS.md) — 自動テストの内容と、Blender 実機での確認手順
+- [ROADMAP.md](ROADMAP.md) — マイルストーンと進捗。**試して退けた案も、理由と
+  実測値ごと残してあります**(曲げの梯子、彩色 Gauss-Seidel、空間ハッシュの
+  遅延再構築、エッジ同士の自己衝突、押し出しの解き直し)。同じ案を
+  再検討するときは先にここを読んでください
+- [CHECKPOINTS.md](CHECKPOINTS.md) — 自動テストの内容と、Blender 実機での
+  確認手順。**CP-B15 に「壊れる値の境界」を表でまとめてあります**
 
 ## 既知の制約
 
-- 連続衝突判定(CCD)がありません。コライダー相手は対処済みで、球を 60 m/s、
-  直径 2cm の棒を 30 m/s で通しても布に当たります。**ただし布どうしは
-  速いと抜けます。** 抜けない上限は次の式で決まります:
+- 完全な連続衝突判定(CCD)はありません。ただし主な失敗は塞いであります:
 
-  ```
-  上限速度 = Self Thickness x fps x Substeps
-  ```
+  - **コライダー相手**: 対処済み。球を 60 m/s、直径 2cm の棒を 30 m/s で
+    通しても布に当たります(サブステップ補間 + 移動量ぶん広げた探索半径)
+  - **布どうし**: `Catch Fast Motion`(既定で有効)が前後の位置を結ぶ線分で
+    判定します。素の上限は `Self Thickness x fps x Substeps` で、
+    厚み 0.016 / 60fps / `Substeps 4` なら 3.84 m/s ですが、**掃過判定で
+    12 m/s まで伸びます**。費用は 14,641頂点・`Substeps 4` で +10%
 
-  厚み 0.016 / 60fps / `Substeps 4` なら 3.84 m/s。実測でも 3.13 m/s では
-  抜けず、4.43 m/s で貫通しました。`Substeps` を 16 にすれば 15.4 m/s まで
-  保ちます。速く動く布を重ねる場合は `Substeps` を上げてください
+  残っているのは、**布どうしが互いに高速ですれ違う**場合だけです。
+  三角形の側は現在位置で見ているためで、そこは `Substeps` を上げてください
 - 自己衝突は頂点同士の反発と頂点-三角形の判定まで。エッジ同士の交差は
   見ていませんが、崩落した布で数えると**エッジ同士でしか拾えない違反は
   0.1%**でした(実測は ROADMAP)。既定の `Substeps 4` では潰れた接触が

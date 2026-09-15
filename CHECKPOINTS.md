@@ -24,6 +24,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 | パネルの見た目 | 各サブパネルが読めるか、メッシュ未選択時の案内が出るか |
 | 操作の感触 | スクラブの反応、再生の滑らかさ、警告メッセージの分かりやすさ |
 | ~~実機の Blender 版~~ | **済み**。Blender 5.2.1 LTS でヘッドレステスト 66項目すべて通過 (2026-09-15) |
+| **未実施**: 掃過判定の追加ぶん | `Catch Fast Motion` を足したときに properties / panels / sim_state に触れたが、**その後 `blender_selftest.py` を回せていない**(作業環境に Blender が無かった)。配線のずれ(引数の並び・プロパティ名の綴り)は `verify_core.py` が AST で見るようにしたので機械的には確認済み。残るのは実際に描画・実行したときの挙動 |
 
 下の CP-B の各項目は、ヘッドレステストが何を見ているかを人間向けに書いた
 ものとして残してあります。自動テストが通っていれば、改めて手で追う必要は
@@ -35,7 +36,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
 作り直し・収束加速まで。M4 未着手）
 
-自動テストの規模: cargo test 48 / verify_core.py 75 / blender_selftest.py 66
+自動テストの規模: cargo test 53 / verify_core.py 77 / blender_selftest.py 66
 
 ---
 
@@ -90,7 +91,7 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1 -Bench
 ```
 
-75項目すべて PASS(2026-09-15 時点)。A-1 に加えて以下も確認している:
+77項目すべて PASS(2026-09-15 時点)。A-1 に加えて以下も確認している:
 
 - `core_version()` が取れる = `.pyd` の更新漏れを検出できる
 - 巻き戻し(`set_positions`)後の再計算が**ビット一致**(決定的)
