@@ -259,8 +259,11 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
     )
     friction: bpy.props.FloatProperty(
         name="Friction",
-        description="床面の摩擦(0で滑る、1で止まる)",
-        default=0.3,
+        description=(
+            "床面の摩擦(0で滑る、1で止まる)。"
+            "Substeps を変えても強さは変わらない"
+        ),
+        default=0.8,
         min=0.0,
         max=1.0,
     )
@@ -298,8 +301,12 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
     )
     collision_friction: bpy.props.FloatProperty(
         name="Surface Friction",
-        description="コライダー表面の摩擦(0で滑る、1で貼り付く)",
-        default=0.3,
+        description=(
+            "コライダー表面と自己衝突の摩擦(0で滑る、1で貼り付く)。"
+            "Substeps を変えても強さは変わらない。"
+            "0.7 を下回ると、球に落とした布が留まらず滑り落ちる"
+        ),
+        default=0.8,
         min=0.0,
         max=1.0,
     )

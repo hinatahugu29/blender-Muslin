@@ -109,10 +109,10 @@ impl Default for SimParams {
             substeps: 4,
             floor_enabled: false,
             floor_z: 0.0,
-            friction: 0.3,
+            friction: 0.8,
             collision_enabled: true,
             collision_thickness: 0.005,
-            collision_friction: 0.3,
+            collision_friction: 0.8,
             self_collision_enabled: false,
             self_collision_thickness: 0.01,
             post_collision_iterations: 2,
@@ -137,6 +137,14 @@ const SELF_COLLISION_CHUNK: usize = 512;
 ///
 /// 反復の初期は残差が大きく、そのまま増幅すると跳ねる。Wang 2015 の S。
 const CHEBYSHEV_DELAY: u32 = 2;
+
+/// 摩擦を較正する基準のサブステップ数。
+///
+/// 摩擦はサブステップごとに1回掛かるので、1フレームの接線速度の残存率は
+/// `(1-f)^substeps` になる。ここを基準に正規化して、Substeps を変えても
+/// 摩擦の強さが変わらないようにする。値は既定の Substeps に合わせてあるので、
+/// 既定のシーンの結果は変わらない。
+const REFERENCE_SUBSTEPS: u32 = 4;
 
 /// これ以上の頂点数なら並列化する。
 ///
@@ -782,7 +790,7 @@ impl ClothSim {
         // 5.8% まで落ちていた(実測値が (1-f)^K に一致することを確認済み)。
         // 摩擦の強さが「たまたま何対に含まれたか」= メッシュ密度と局所配置で
         // 決まってしまい、折り重なった布が不自然に固着する。
-        self.apply_contact_friction(&contacts);
+        self.apply_contact_friction(&contacts, params.substeps.max(1));
 
         self.timings.velocity += ms_since(t_velocity);
         self.last_collision_count = contacts.len();
@@ -799,7 +807,7 @@ impl ClothSim {
     /// 代表の法線は接触法線の和を正規化したもの。接触が1つなら従来と同じ。
     /// 上下から挟まれて法線が打ち消し合う場合は向きを決められないので、
     /// 速度全体を摩擦分だけ落とす。
-    fn apply_contact_friction(&mut self, contacts: &[(usize, Vec3, f64)]) {
+    fn apply_contact_friction(&mut self, contacts: &[(usize, Vec3, f64)], substeps: u32) {
         if contacts.is_empty() {
             return;
         }
@@ -833,22 +841,33 @@ impl ClothSim {
             }
         }
 
+        // サブステップ数で正規化する。摩擦はサブステップごとに1回掛かるので、
+        // そのままだと1フレームの残存率が (1-f)^substeps になり、**摩擦の
+        // 強さが Substeps で変わってしまう**。既定の 0.3 は substeps 4 で
+        // 0.24、substeps 16 で 0.0033 と 70倍違い、球に落とした布が
+        // substeps 4 では滑り落ちるのに 16 では留まる、という状態だった。
+        //
+        // 基準を既定の Substeps (= 4) に置くので、**既定のシーンの結果は
+        // 変わらない**(指数がちょうど 1 になる)。他のサブステップ数が
+        // 既定と同じ摩擦になる。
+        let exponent = REFERENCE_SUBSTEPS as f64 / substeps as f64;
+
         for &idx in self.friction_touched.iter() {
             let i = idx as usize;
             let friction = self.friction_coeff[i].clamp(0.0, 1.0);
             if friction <= 0.0 {
                 continue;
             }
+            let keep = (1.0 - friction).powf(exponent);
             let v = self.velocities[i];
             match self.friction_normal[i].normalized() {
                 Some(n) => {
                     let vn = v.dot(n);
                     let v_tangent = v.sub(n.scale(vn));
-                    self.velocities[i] =
-                        n.scale(vn.max(0.0)).add(v_tangent.scale(1.0 - friction));
+                    self.velocities[i] = n.scale(vn.max(0.0)).add(v_tangent.scale(keep));
                 }
                 // 法線が打ち消し合った = 挟まれている。接線を決められない
-                None => self.velocities[i] = v.scale(1.0 - friction),
+                None => self.velocities[i] = v.scale(keep),
             }
         }
     }
@@ -2319,6 +2338,63 @@ mod tests {
         );
     }
 
+    /// 摩擦の強さが Substeps に依らないこと。
+    ///
+    /// 摩擦はサブステップごとに1回掛かるので、正規化しないと1フレームでの
+    /// 残存率が `(1-f)^substeps` になる。既定の f=0.3 では substeps 4 で
+    /// 0.24、substeps 16 で 0.0033 と **70倍**違い、球に落とした布が
+    /// substeps 4 では滑り落ちるのに 16 では留まる、という状態だった。
+    /// 品質のための設定が摩擦という別物を動かしてしまっていた。
+    #[test]
+    fn friction_does_not_depend_on_substeps() {
+        let thickness = 0.02;
+        let friction = 0.3;
+        let dt = 1.0 / 60.0;
+
+        // 床の上を滑らせて、1フレームでどれだけ減速するかを見る
+        let retention = |substeps: u32| -> f64 {
+            let mut sim = ClothSim::new(
+                vec![Vec3::new(0.0, 0.0, 0.0)],
+                &[], &[], &[], &[], 0.0, 0.0, 0.0,
+            );
+            let base = SimParams {
+                gravity: Vec3::zero(),
+                damping: 0.0,
+                iterations: 1,
+                substeps,
+                collision_enabled: false,
+                post_collision_iterations: 0,
+                floor_enabled: true,
+                // 頂点をちょうど床の上に置き、接触し続ける状態にする
+                floor_z: 0.0,
+                friction,
+                ..SimParams::default()
+            };
+
+            // 接線方向(+x)に速度を作る。床には触れたまま
+            sim.step(dt, &SimParams { wind: Vec3::new(1.0 / dt, 0.0, 0.0), ..base });
+            let before = sim.positions[0].x;
+            sim.step(dt, &base);
+            let during = sim.positions[0].x - before;
+
+            // 摩擦を受けたあとの速度は、次のフレームの移動量に現れる
+            let after = sim.positions[0].x;
+            sim.step(dt, &SimParams { friction: 0.0, ..base });
+            let moved = sim.positions[0].x - after;
+            let _ = during;
+            moved / dt
+        };
+
+        let reference = retention(REFERENCE_SUBSTEPS);
+        for substeps in [1u32, 2, 8, 16, 32] {
+            let got = retention(substeps);
+            assert!(
+                (got - reference).abs() < reference.abs() * 0.1 + 1e-6,
+                "substeps {substeps} で摩擦が変わった: {reference:.4} -> {got:.4}"
+            );
+        }
+    }
+
     /// 速く動くコライダーが布を素通りしないこと。
     ///
     /// コライダーはフレーム頭で1回しか更新されないので、1フレームの移動が
@@ -2480,10 +2556,13 @@ mod tests {
             (sim.positions[0].x - before) / (1.0 * dt)
         };
 
+        // 摩擦は Substeps で正規化してあるので、1フレームでの残存率は
+        // サブステップ数に依らず (1-f)^REFERENCE_SUBSTEPS になる
+        let expected = (1.0 - friction).powi(REFERENCE_SUBSTEPS as i32);
         let one = retention(1);
         assert!(
-            (one - (1.0 - friction)).abs() < 0.02,
-            "接触1つのときに (1-friction) にならない: {one}"
+            (one - expected).abs() < 0.02,
+            "接触1つのときの残存率が想定と違う: {one} (期待 {expected})"
         );
         for count in [2usize, 4, 8] {
             let many = retention(count);
