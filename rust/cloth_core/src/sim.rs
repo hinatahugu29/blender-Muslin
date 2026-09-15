@@ -1517,6 +1517,84 @@ fn solve_distance(
 mod tests {
     use super::*;
 
+    /// 自己衝突が「離す」ついでに布を膨らませないこと。
+    ///
+    /// **既存の自己衝突テストはこの向きを見ていない。** どれも「離れたか」と
+    /// `is_finite()` しか確かめないので、押しすぎて布が伸びても通ってしまう。
+    /// 加速の件(`CHEBYSHEV_RESTART`)と同じ形の穴。
+    ///
+    /// 厚みが辺長に近づくと、制約で結ばれていない頂点対(2つ隣)が押し合って
+    /// 布が自分で膨らむ。0.30m 角・辺長 0.01m を床に堆積させて測ると:
+    ///
+    /// | 厚み/辺長 | 最長辺/静止長 | 広がり |
+    /// |---|---|---|
+    /// | 0.2〜0.7 | 1.000 | 0.300m(変化なし) |
+    /// | 0.8      | 1.000 | 0.341m |
+    /// | 1.0      | 1.053 | 0.370m |
+    /// | 2.0      | 2.677 | 0.418m |
+    /// | 4.0      | 8.107 | 0.333m |
+    ///
+    /// アドオンは `suggest_thickness` で辺長の 0.4倍を薦め、0.6倍を超えると
+    /// 警告する(`check_thickness`)。この測定はその閾値に余裕があることの裏付け。
+    /// ここでは薦めている 0.4倍で膨らまないことを固定する。
+    #[test]
+    fn self_collision_does_not_inflate_cloth_at_recommended_thickness() {
+        let (nx, ny, edge) = (25usize, 25usize, 0.01);
+        let (positions, edges, quads, tris, _) = build_grid(nx, ny, edge);
+        let rest_span = (nx - 1) as f64 * edge;
+
+        let mut sim = ClothSim::new(positions, &edges, &quads, &tris, &[], 0.2, 0.0, 0.01);
+        let params = SimParams {
+            iterations: 10,
+            substeps: 8,
+            damping: 0.02,
+            floor_enabled: true,
+            floor_z: -0.05,
+            collision_enabled: false,
+            self_collision_enabled: true,
+            // suggest_thickness が薦める値 (辺長 x 0.4)
+            self_collision_thickness: edge * 0.4,
+            ..Default::default()
+        };
+        for _ in 0..150 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        assert!(sim.is_finite(), "発散した");
+
+        // 最も伸びた辺。静止長を大きく超えていたら押し合っている
+        let longest = edges
+            .iter()
+            .map(|&(a, b)| sim.positions[a].sub(sim.positions[b]).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            longest < edge * 1.15,
+            "自己衝突が辺を引き伸ばした: 最長 {:.5}m (静止長 {:.5}m)",
+            longest,
+            edge
+        );
+
+        // 平面内の広がり。膨らむと静止時より横に広がる
+        let width = {
+            let xs: Vec<f64> = sim.positions.iter().map(|p| p.x).collect();
+            let ys: Vec<f64> = sim.positions.iter().map(|p| p.y).collect();
+            let sx = xs.iter().cloned().fold(f64::MIN, f64::max)
+                - xs.iter().cloned().fold(f64::MAX, f64::min);
+            let sy = ys.iter().cloned().fold(f64::MIN, f64::max)
+                - ys.iter().cloned().fold(f64::MAX, f64::min);
+            sx.max(sy)
+        };
+        assert!(
+            width < rest_span * 1.1,
+            "自己衝突で布が膨らんだ: 広がり {width:.4}m (静止時 {rest_span:.4}m)"
+        );
+
+        assert!(
+            sim.average_stretch_error() < 0.01,
+            "伸びが壊れた: {:.5}",
+            sim.average_stretch_error()
+        );
+    }
+
     /// Chebyshev 加速が、反復数を上げても布を吹き飛ばさないこと。
     ///
     /// **この穴で一度出荷している。** 以前は垂れ比(曲げ)だけを見て安全だと
