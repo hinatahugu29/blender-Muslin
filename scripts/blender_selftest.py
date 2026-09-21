@@ -13,6 +13,7 @@ CHECKPOINTS.md の CP-B のうち、GUI 操作を伴わない項目を自動化�
 
 import functools
 import inspect
+import math
 import os
 import sys
 import tempfile
@@ -20,6 +21,7 @@ import traceback
 from pathlib import Path
 
 import bpy
+import numpy as np
 
 # Windows のコンソールは既定が cp932 / cp1252 なので、日本語を print した
 # 時点で UnicodeEncodeError で落ちる。呼び出し側の PYTHONIOENCODING に
@@ -731,6 +733,103 @@ def main():
     bpy.ops.object.mode_set(mode='OBJECT')
 
     # ----------------------------------------------------------------
+    section("着せ付け(M7)")
+    from muslin import dress as dress_mod
+    from muslin import rest_shape
+
+    def make_dress_scene():
+        """上端をピン留めした1枚を筒に縫い、円柱のまわりに着せる場面。"""
+        clear_scene()
+        scene = bpy.context.scene
+        scene.frame_start = 1
+        scene.frame_set(1)
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.1, 0.0))
+        body = bpy.context.active_object
+        body.name = "Body"
+        piece = make_tube_piece("Shirt", 0.0)
+        bpy.context.scene.cursor.location = (0.0, 0.0, 0.0)
+        piece.location = (0.0, 0.0, 0.0)
+        bpy.context.view_layer.update()     # matrix_world を今の位置にそろえる
+        top = max(v.co.z for v in piece.data.vertices)
+        group = piece.vertex_groups.new(name="Pin")
+        # 上端の中央だけを留める。端まで留めると縫い目の一番上が閉じようがない
+        group.add([v.index for v in piece.data.vertices
+                   if v.co.z > top - 1e-5 and abs(v.co.x) < 0.1], 1.0, "REPLACE")
+        props = piece.muslin
+        props.pin_vertex_group = "Pin"
+        props.collider_object = body
+        props.collision_enabled = True
+        props.self_collision_enabled = False
+        props.seam_close_frames = 20
+        for o in bpy.context.scene.objects:
+            o.select_set(o is piece)
+        bpy.context.view_layer.objects.active = piece
+        return piece
+
+    def seam_gap(o):
+        pos = mesh_io.get_world_positions(o)
+        gaps = [math.dist(pos[a * 3:a * 3 + 3], pos[b * 3:b * 3 + 3])
+                for a, b in mesh_io.build_seam_pairs(o)]
+        return max(gaps) if gaps else float("inf")
+
+    piece = make_dress_scene()
+    open_gap = seam_gap(piece)
+    res = bpy.ops.muslin.dress()
+    check("Dress が通る", res == {'FINISHED'}, str(res))
+    check("タイムラインは進まない", bpy.context.scene.frame_current == 1,
+          str(bpy.context.scene.frame_current))
+    check("着せた段階になる", rest_shape.is_dressed(piece))
+    closed_gap = seam_gap(piece)
+    check("縫い目が閉じている", closed_gap < 0.002,
+          f"{open_gap * 100:.1f}cm → {closed_gap * 1000:.2f}mm")
+    check("型紙は変わらない",
+          abs(float(np.ptp(rest_shape.load_pattern(piece)[1::3]))) < 1e-6)
+    check("シミュレーションを走らせたままにしない", not sim_state.is_running(piece))
+
+    # 以後のアニメーションは着せた姿勢から始まる(縫い目の閉じる数十フレームが入らない)
+    dressed_pos = positions_of(piece)
+    bpy.ops.muslin.start_sim()
+    started = positions_of(piece)
+    check("開始時の形が着せた姿勢", max(math.dist(a, b) for a, b in zip(dressed_pos, started)) < 1e-5)
+    advance(3, start=2)
+    check("最初のフレームから縫い目は閉じたまま", seam_gap(piece) < 0.002,
+          f"{seam_gap(piece) * 1000:.2f}mm")
+    bpy.ops.muslin.stop_sim()
+    bpy.context.scene.frame_set(1)
+    check("フレーム1で着せた姿勢に戻る",
+          max(math.dist(a, b) for a, b in zip(dressed_pos, positions_of(piece))) < 1e-5)
+
+    # 落ち着いたことを判定して止まる(上限まで回らない)
+    piece = make_dress_scene()
+    d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene))
+    while not d.step():
+        pass
+    check("落ち着いたと判定して止まる", d.settled and d.steps < dress_mod.DEFAULT_MAX_STEPS,
+          d.summary())
+    check("縫い目が閉じる前には止まらない", d.steps > piece.muslin.seam_close_frames,
+          f"{d.steps} ステップ")
+
+    # 中止すると元の形に戻る
+    piece = make_dress_scene()
+    before = positions_of(piece)
+    d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene))
+    for _ in range(10):
+        d.step()
+    d.show()
+    moved = max(math.dist(a, b) for a, b in zip(before, positions_of(piece)))
+    d.cancel()
+    back = max(math.dist(a, b) for a, b in zip(before, positions_of(piece)))
+    check("中止すると着せ付け前の形に戻る", moved > 0.01 and back < 1e-6,
+          f"途中 {moved:.3f}m / 戻した後 {back:.2e}m")
+    check("中止しても着せた段階にならない", not rest_shape.is_dressed(piece))
+
+    # 上限で打ち切っても保存はする(途中でも着せた形が要ることがある)
+    piece = make_dress_scene()
+    res = bpy.ops.muslin.dress(max_steps=5)
+    check("上限で打ち切っても保存する", res == {'FINISHED'} and rest_shape.is_dressed(piece),
+          str(res))
+
+    # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)
@@ -985,7 +1084,6 @@ def main():
     # 着せた形から始め直しても、布の寸法は型紙のまま変わらないこと。
     # 以前は「今の形を元の形に」するたびに伸びが寸法に焼き込まれ、
     # 服が少しずつ大きくなっていった(ROADMAP M7 の実測)。
-    import numpy as np
 
     def edge_total(o):
         me = o.data

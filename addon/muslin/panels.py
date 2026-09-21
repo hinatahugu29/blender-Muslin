@@ -80,12 +80,15 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
         # 変わらないので、今どちらにいるかが見えないと混乱する。
         if obj is not None and obj.type == 'MESH':
             from . import rest_shape
+            # 着せ付けは時間軸の外で回す。タイムラインで回した結果を
+            # 保存したいときのために Save Dressed Pose も残す
             row = layout.row(align=True)
+            row.operator("muslin.dress", icon='MOD_CLOTH')
             if rest_shape.is_dressed(obj):
-                row.label(text="着せた姿勢から開始(寸法は型紙)", icon='MOD_CLOTH')
                 row.operator("muslin.restore_pattern", text="", icon='MESH_GRID')
+                layout.label(text="着せた姿勢から開始(寸法は型紙)", icon='CHECKMARK')
             else:
-                row.operator("muslin.set_rest_shape", icon='MOD_CLOTH')
+                row.operator("muslin.set_rest_shape", text="", icon='PINNED')
 
         # 走らせたままでは効かない設定を変えたときに知らせる。
         # 黙って効かないままだと「設定が壊れている」としか見えない。
