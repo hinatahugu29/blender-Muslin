@@ -275,6 +275,11 @@ pub struct ClothSim {
     /// 標準の HashSet(SipHash)では候補ペアごとの参照が重い。
     /// 自己衝突の内側ループで毎回引くので軽量ハッシャを使う。
     constrained_pairs: crate::hashing::FastSet<(u32, u32)>,
+    /// 縫い目で結ばれた頂点対。これも自己衝突から除外する。
+    /// 縫い目は閉じると距離が 0 になるので、除外しないと厚みの分だけ
+    /// 押し返されて、縫製と自己衝突が綱引きになる。
+    /// `set_seams` で差し替わるので `constrained_pairs` とは分けて持つ。
+    seam_pairs: crate::hashing::FastSet<(u32, u32)>,
     /// コリジョンオブジェクト(BVH付き三角形メッシュ)
     colliders: Vec<TriangleBvh>,
     /// このフレームの終点となるコライダー頂点。サブステップごとに補間する。
@@ -417,6 +422,7 @@ impl ClothSim {
             base_inv_mass,
             vertex_area,
             constrained_pairs,
+            seam_pairs: Default::default(),
             colliders: Vec::new(),
             collider_targets: Vec::new(),
             collider_motion: 0.0,
@@ -671,6 +677,11 @@ impl ClothSim {
                 DistanceConstraint::new(a, b, len, compliance)
             })
             .collect();
+        self.seam_pairs = self
+            .seam_constraints
+            .iter()
+            .map(|c| (c.i0.min(c.i1) as u32, c.i0.max(c.i1) as u32))
+            .collect();
         self.lambda_seam = vec![0.0; self.seam_constraints.len()];
         self.apply_seam_closure();
     }
@@ -855,6 +866,9 @@ impl ClothSim {
 
         // 押し出しで壊れた伸びを同じサブステップ内で回収する。
         // λ はリセットせず継続させる(サブステップ内での XPBD の一貫性を保つ)。
+        //
+        // 縫製も一緒に解く。伸びだけを戻すと、辺の長さを保とうとする力で
+        // 縫い目の頂点が引き離され、閉じたはずの縫い目に隙間が残る。
         let t_post = std::time::Instant::now();
         for _ in 0..params.post_collision_iterations {
             solve_distance(
@@ -862,6 +876,13 @@ impl ClothSim {
                 &self.inv_mass,
                 &self.stretch_constraints,
                 &mut self.lambda_stretch,
+                inv_dt2,
+            );
+            solve_distance(
+                &mut self.positions,
+                &self.inv_mass,
+                &self.seam_constraints,
+                &mut self.lambda_seam,
                 inv_dt2,
             );
         }
@@ -1236,6 +1257,7 @@ impl ClothSim {
         let positions = &self.positions;
         let inv_mass = &self.inv_mass;
         let constrained = &self.constrained_pairs;
+        let seam_pairs = &self.seam_pairs;
 
         let collect_for = |i: usize, out: &mut Vec<(u32, u32)>, buf: &mut Vec<usize>| {
             buf.clear();
@@ -1246,7 +1268,8 @@ impl ClothSim {
             });
             for &j in buf.iter() {
                 // 制約で直接結ばれている頂点対は自己衝突から除外する
-                if constrained.contains(&(i as u32, j as u32)) {
+                let key = (i as u32, j as u32);
+                if constrained.contains(&key) || seam_pairs.contains(&key) {
                     continue;
                 }
                 if inv_mass[i] + inv_mass[j] == 0.0 {
@@ -2242,6 +2265,132 @@ mod tests {
             "縫い目が閉じていない: {initial_gap} -> {final_gap}"
         );
         assert!(sim.is_finite());
+    }
+
+    /// 胴(円柱)の前後に布を置いて両脇を縫う。戻り値の縫い目はピン留めした
+    /// 上端付近を含まない(前後 32cm 離して固定しているので、閉じようがない)。
+    fn build_sewn_tube(
+        n: usize,
+        spacing: f64,
+        radius: f64,
+    ) -> (ClothSim, Vec<(usize, usize)>) {
+        let half = spacing * (n - 1) as f64 / 2.0;
+        let mut positions = Vec::new();
+        let (mut edges, mut tris) = (Vec::new(), Vec::new());
+        for (panel, y) in [(0usize, -0.16), (1, 0.16)] {
+            let base = panel * n * n;
+            let idx = |x: usize, z: usize| base + z * n + x;
+            for z in 0..n {
+                for x in 0..n {
+                    positions.push(Vec3::new(-half + x as f64 * spacing, y, z as f64 * spacing));
+                }
+            }
+            for z in 0..n {
+                for x in 0..n {
+                    if x + 1 < n {
+                        edges.push((idx(x, z), idx(x + 1, z)));
+                    }
+                    if z + 1 < n {
+                        edges.push((idx(x, z), idx(x, z + 1)));
+                    }
+                    if x + 1 < n && z + 1 < n {
+                        tris.push((idx(x, z), idx(x + 1, z), idx(x + 1, z + 1)));
+                        tris.push((idx(x, z), idx(x + 1, z + 1), idx(x, z + 1)));
+                    }
+                }
+            }
+        }
+        let pinned: Vec<usize> = (0..n)
+            .flat_map(|x| [(n - 1) * n + x, n * n + (n - 1) * n + x])
+            .collect();
+        let seams: Vec<(usize, usize)> = (0..n - 5)
+            .flat_map(|z| [0, n - 1].map(|x| (z * n + x, n * n + z * n + x)))
+            .collect();
+
+        let quads = crate::bending::quads_from_triangles(&tris);
+        let mut sim = ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.15, 0.0, 2e-2);
+        sim.set_seams(&seams, 0.0);
+
+        let seg = 32;
+        let mut cv = Vec::new();
+        for k in 0..seg {
+            let a = k as f64 / seg as f64 * std::f64::consts::TAU;
+            cv.push(Vec3::new(radius * a.cos(), radius * a.sin(), -0.3));
+            cv.push(Vec3::new(radius * a.cos(), radius * a.sin(), 0.7));
+        }
+        let mut ct = Vec::new();
+        for k in 0..seg {
+            let (a0, a1) = (2 * k, 2 * k + 1);
+            let (b0, b1) = (2 * ((k + 1) % seg), 2 * ((k + 1) % seg) + 1);
+            ct.push([a0, b0, b1]);
+            ct.push([a0, b1, a1]);
+        }
+        sim.add_collider(cv, ct);
+        (sim, seams)
+    }
+
+    /// 衝突の後で縫い目が開き直らない。
+    ///
+    /// 以前は衝突後の緩和で伸びだけを解いていたため、辺の長さを戻す力で
+    /// 縫い目が引き離され、自己衝突 ON で平均 13.8mm(最大 60mm)の隙間が
+    /// 残っていた(40cm 四方 × 2枚、辺長 2cm、胴の半径 10cm)。
+    /// 先行事例 Taremin Cloth が同じ現象を約 10mm と報告している。
+    #[test]
+    fn seams_stay_closed_after_collisions() {
+        let (mut sim, seams) = build_sewn_tube(21, 0.02, 0.10);
+        let params = SimParams {
+            iterations: 10,
+            substeps: 8,
+            chebyshev_radius: 0.98,
+            damping: 0.05,
+            self_collision_enabled: true,
+            self_collision_thickness: 0.008,
+            collision_thickness: 0.005,
+            ..SimParams::default()
+        };
+        for f in 0..96 {
+            sim.set_seam_closure((f as f64 / 47.0).min(1.0));
+            sim.step(1.0 / 24.0, &params);
+        }
+        assert!(sim.is_finite());
+        let worst = seams
+            .iter()
+            .map(|&(a, b)| sim.positions[a].sub(sim.positions[b]).length())
+            .fold(0.0, f64::max);
+        assert!(worst < 0.001, "縫い目が開いている: 最大 {:.2}mm", worst * 1e3);
+    }
+
+    /// 縫い目の頂点対は自己衝突の対象にならない(閉じると距離 0 になるため)。
+    #[test]
+    fn seam_pairs_are_excluded_from_self_collision() {
+        let build = || {
+            let positions = vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.1, 0.0, 0.0),
+                Vec3::new(0.001, 0.0, 0.0),
+                Vec3::new(0.101, 0.0, 0.0),
+            ];
+            ClothSim::new(positions, &[(0, 1), (2, 3)], &[], &[], &[], 0.0, 0.0, 0.0)
+        };
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            self_collision_enabled: true,
+            self_collision_thickness: 0.01,
+            post_collision_iterations: 0,
+            ..SimParams::default()
+        };
+
+        // 縫い目なし: 1mm しか離れていない 0-2 は押し離される
+        let mut free = build();
+        free.step(1.0 / 60.0, &params);
+        assert!(free.positions[0].sub(free.positions[2]).length() > 0.002);
+
+        // 縫い目あり(closure 0 = いまの距離を保つ): 押し離されない
+        let mut sim = build();
+        sim.set_seams(&[(0, 2), (1, 3)], 0.0);
+        sim.step(1.0 / 60.0, &params);
+        let gap = sim.positions[0].sub(sim.positions[2]).length();
+        assert!(gap < 0.0015, "縫い目の頂点が自己衝突で押し離された: {gap}");
     }
 
     /// 床面衝突: 布が床を突き抜けない
