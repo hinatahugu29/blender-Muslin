@@ -665,6 +665,29 @@ def test_seam_logic():
           isinstance(seams.pair_chains([0, 1], [1, 2], degenerate), list))
 
 
+def test_seam_codes():
+    """辺の属性値から縫い目の頂点列を作り直す(bpy 非依存)"""
+    import seams
+
+    check("属性値は uid と側で決まり 0 と重ならない",
+          seams.seam_code(1, 0) == 3 and seams.seam_code(1, 1) == 4
+          and seams.seam_code(0, 0) != 0)
+    # 辺の並びも向きもばらばら(統合・細分化の後はそうなる)
+    edges = [(5, 4), (0, 1), (6, 5), (2, 1), (8, 9)]
+    codes = [seams.seam_code(7, 1), seams.seam_code(7, 0), seams.seam_code(7, 1),
+             seams.seam_code(7, 0), 0]
+    side_a = seams.chains_from_codes(codes, edges, 7, 0)
+    side_b = seams.chains_from_codes(codes, edges, 7, 1)
+    check("A 側を1本の列にできる", side_a == [[0, 1, 2]], str(side_a))
+    check("B 側を1本の列にできる", side_b == [[4, 5, 6]], str(side_b))
+    check("ほかの縫い目の辺は混ざらない",
+          seams.chains_from_codes(codes, edges, 8, 0) == [])
+    # 4頂点の列の真ん中の辺が消えると2本に分かれる → 呼び出し側は壊れたとみなす
+    b = seams.seam_code(7, 1)
+    cut = seams.chains_from_codes([b, b], [(10, 11), (12, 13)], 7, 1)
+    check("途切れた側は2本になる", len(cut) == 2, str(cut))
+
+
 def test_pattern_mismatch():
     """型紙と今のメッシュの対応を調べる(bpy 非依存)"""
     if not has_numpy():
@@ -991,6 +1014,7 @@ def main():
     test_bending_stiffness()
     test_timings()
     test_seam_logic()
+    test_seam_codes()
     test_pattern_mismatch()
     test_cache_io()
     test_transform()

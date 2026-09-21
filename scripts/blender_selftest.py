@@ -539,6 +539,178 @@ def main():
     check("壊れた縫い目を報告する", len(broken) == 1, f"{broken}")
 
     # ----------------------------------------------------------------
+    section("縫い目を辺の属性で持つ(M7)")
+    from muslin import seams as seams_mod
+
+    def select_side_edges(o):
+        """左右の端のエッジ列を選んだ状態で編集モードに入る。"""
+        bpy.ops.object.mode_set(mode='OBJECT')
+        for e in o.data.edges:
+            e.select = False
+        for v in o.data.vertices:
+            v.select = False
+        xs_ = [v.co.x for v in o.data.vertices]
+        lo, hi = min(xs_), max(xs_)
+        for e in o.data.edges:
+            a = o.data.vertices[e.vertices[0]].co
+            b = o.data.vertices[e.vertices[1]].co
+            if (abs(a.x - lo) < 1e-5 and abs(b.x - lo) < 1e-5) or \
+               (abs(a.x - hi) < 1e-5 and abs(b.x - hi) < 1e-5):
+                e.select = True
+        bpy.ops.object.mode_set(mode='EDIT')
+
+    def pair_set(o):
+        return {tuple(sorted(p)) for p in mesh_io.build_seam_pairs(o)}
+
+    def make_tube_piece(name, x):
+        bpy.ops.object.select_all(action='DESELECT') if bpy.context.object else None
+        bpy.context.scene.cursor.location = (x, 0.0, 1.0)
+        bpy.ops.muslin.add_pattern_piece()
+        o = bpy.context.active_object
+        o.name = name
+        select_side_edges(o)
+        bpy.ops.muslin.add_seam()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return o
+
+    clear_scene()
+    piece_a = make_tube_piece("TubeA", 0.0)
+    seam = piece_a.muslin_seams[0]
+    check("新しい縫い目は uid を持つ", seam.uid > 0, str(seam.uid))
+    check("頂点番号は持たない", len(seam.chain_a) == 0 and len(seam.chain_b) == 0)
+    before = pair_set(piece_a)
+    check("属性から縫い合わせるペアが作られる", len(before) > 0, f"{len(before)} 組")
+
+    # 別のピースを足して統合しても縫い目が残る(以前は全部消えていた)
+    piece_b = make_tube_piece("TubeB", 2.0)
+    piece_c_obj = None
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.context.scene.objects:
+        o.select_set(o in (piece_a, piece_b))
+    bpy.context.view_layer.objects.active = piece_a
+    res = bpy.ops.muslin.join_pieces()
+    check("Join Pattern Pieces が通る", res == {'FINISHED'}, str(res))
+    check("統合しても両方の縫い目が残る", len(piece_a.muslin_seams) == 2,
+          f"{len(piece_a.muslin_seams)} 本")
+    broken = []
+    after = pair_set(piece_a)
+    mesh_io.build_seam_pairs(piece_a, report=broken)
+    check("統合後も壊れていない", broken == [], str(broken))
+    check("アクティブ側のペアは統合前と同じ", before <= after,
+          f"統合前 {len(before)} / 統合後 {len(after)}")
+    check("統合したピースのペアも作られる", len(after) == 2 * len(before),
+          f"{len(after)} 組")
+
+    # 細分化しても辺と一緒に属性が運ばれる
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.subdivide()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    broken = []
+    subdivided = mesh_io.build_seam_pairs(piece_a, report=broken)
+    check("細分化しても縫い目が壊れない", broken == [], str(broken))
+    check("細分化で縫い合わせる頂点が増える", len(subdivided) > len(after),
+          f"{len(after)} → {len(subdivided)} 組")
+
+    # 縫い目と関係ない頂点を消しても残る(頂点番号が詰まっても平気)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for v in piece_a.data.vertices:
+        v.select = v.co.x > 1.0          # 統合した2つめのピースだけ
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.delete(type='VERT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    broken = []
+    remaining = mesh_io.build_seam_pairs(piece_a, report=broken)
+    check("前のピースの縫い目は残る", len(remaining) > 0 and
+          broken == [piece_a.muslin_seams[1].name], f"{len(remaining)} 組 / 壊れた {broken}")
+
+    # 縫い目を消すと属性からも消える
+    piece_a.muslin_seam_active = 0
+    uid0 = piece_a.muslin_seams[0].uid
+    bpy.ops.muslin.remove_seam()
+    codes, _ = mesh_io.read_seam_codes(piece_a.data)
+    check("Remove Seam で属性からも消える",
+          codes is not None and seams_mod.seam_code(uid0, 0) not in codes
+          and seams_mod.seam_code(uid0, 1) not in codes)
+
+    # 複製したピース(uid が重なる)を統合しても、両方の縫い目が使える
+    clear_scene()
+    original = make_tube_piece("Orig", 0.0)
+    copy = original.copy()
+    copy.data = original.data.copy()
+    copy.location.x += 2.0
+    bpy.context.collection.objects.link(copy)
+    check("複製は uid が重なる", copy.muslin_seams[0].uid == original.muslin_seams[0].uid)
+    for o in bpy.context.scene.objects:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = original
+    bpy.ops.muslin.join_pieces()
+    uids = [s.uid for s in original.muslin_seams]
+    broken = []
+    pairs = mesh_io.build_seam_pairs(original, report=broken)
+    check("複製を統合すると uid が振り直される", len(set(uids)) == 2, str(uids))
+    check("振り直した縫い目も両方使える", broken == [] and len(pairs) > 0,
+          f"{len(pairs)} 組 / 壊れた {broken}")
+
+    # 旧形式(頂点番号)の縫い目は、統合のときに属性へ移して引き継ぐ
+    clear_scene()
+    bpy.ops.muslin.add_pattern_piece()
+    legacy = bpy.context.active_object
+    xs = [v.co.x for v in legacy.data.vertices]
+    left_ids = sorted((v.index for v in legacy.data.vertices if abs(v.co.x - min(xs)) < 1e-5),
+                      key=lambda i: legacy.data.vertices[i].co.z)
+    right_ids = sorted((v.index for v in legacy.data.vertices if abs(v.co.x - max(xs)) < 1e-5),
+                       key=lambda i: -legacy.data.vertices[i].co.z)   # わざと逆向き
+    old = legacy.muslin_seams.add()
+    old.name = "Legacy"
+    for i in left_ids:
+        old.chain_a.add().index = i
+    for i in right_ids:
+        old.chain_b.add().index = i
+    old.flipped = True                    # 逆向きに持っているので反転して縫う
+    legacy_pairs = pair_set(legacy)
+    check("旧形式の縫い目もそのまま使える", len(legacy_pairs) == len(left_ids),
+          f"{len(legacy_pairs)} 組")
+    bpy.context.scene.cursor.location = (3.0, 0.0, 0.0)
+    bpy.ops.muslin.add_pattern_piece()
+    other = bpy.context.active_object
+    for o in bpy.context.scene.objects:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = legacy
+    bpy.ops.muslin.join_pieces()
+    check("旧形式は統合で属性へ移る", legacy.muslin_seams[0].uid > 0)
+    check("移しても同じ頂点どうしが縫われる", pair_set(legacy) == legacy_pairs,
+          f"{len(pair_set(legacy))} 組")
+
+    # 縫い目リストの1行を描けること(新旧どちらの形式でも)
+    from muslin import panels as panels_mod
+
+    class _RowLog:
+        def __init__(self):
+            self.props = []
+
+        def row(self, **_kw):
+            return self
+
+        def prop(self, _data, name, **_kw):
+            self.props.append(name)
+
+        def label(self, **_kw):
+            pass
+
+    ui_list = panels_mod.MUSLIN_UL_seams
+    row = _RowLog()
+    ui_list.draw_item(None, bpy.context, row, legacy, legacy.muslin_seams[0], 0, legacy,
+                      "muslin_seam_active", 0)
+    check("新形式の行は Flip に invert を出す", "invert" in row.props, str(row.props))
+    old2 = legacy.muslin_seams.add()
+    row = _RowLog()
+    ui_list.draw_item(None, bpy.context, row, legacy, old2, 0, legacy, "muslin_seam_active", 1)
+    check("旧形式の行は flipped を出す", "flipped" in row.props, str(row.props))
+
+    # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)

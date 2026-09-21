@@ -258,8 +258,23 @@ class MUSLIN_UL_seams(bpy.types.UIList):
         row = layout.row(align=True)
         row.prop(item, "enabled", text="")
         row.prop(item, "name", text="", emboss=False, icon='OUTLINER_DATA_GP_LAYER')
-        row.label(text=f"{len(item.chain_a)}↔{len(item.chain_b)}")
-        row.prop(item, "flipped", text="", icon='ARROW_LEFTRIGHT')
+        if item.uid:
+            # 新形式は辺の属性から数える。統合や細分化の後でも今の数が出る
+            from . import seams
+            codes, edges = mesh_io.read_seam_codes(data.data)
+            if codes is None:
+                row.label(text="!", icon='ERROR')
+            else:
+                side_a = seams.chains_from_codes(codes, edges, item.uid, 0)
+                side_b = seams.chains_from_codes(codes, edges, item.uid, 1)
+                if len(side_a) == 1 and len(side_b) == 1:
+                    row.label(text=f"{len(side_a[0])}↔{len(side_b[0])}")
+                else:
+                    row.label(text="!", icon='ERROR')
+            row.prop(item, "invert", text="", icon='ARROW_LEFTRIGHT')
+        else:
+            row.label(text=f"{len(item.chain_a)}↔{len(item.chain_b)}")
+            row.prop(item, "flipped", text="", icon='ARROW_LEFTRIGHT')
 
 
 class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):

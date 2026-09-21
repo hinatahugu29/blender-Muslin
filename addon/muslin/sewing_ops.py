@@ -23,14 +23,120 @@ def _bm_world_positions(bm, matrix_world):
     return positions
 
 
-def _store_chain(collection, indices):
-    collection.clear()
-    for i in indices:
-        item = collection.add()
-        item.index = i
+# ------------------------------------------------------ 縫い目の属性の操作
+
+def _edge_index_map(mesh):
+    return {tuple(sorted(e.vertices)): e.index for e in mesh.edges}
+
+
+def _object_mode_codes(mesh, create=False):
+    """オブジェクトモードのメッシュの縫い目属性を (attr, codes ndarray) で返す。"""
+    import numpy as np
+    attr = mesh.attributes.get(seams.SEAM_ATTRIBUTE)
+    if attr is None:
+        if not create:
+            return None, None
+        attr = mesh.attributes.new(seams.SEAM_ATTRIBUTE, 'INT', 'EDGE')
+    codes = np.zeros(len(mesh.edges), dtype=np.int32)
+    attr.data.foreach_get("value", codes)
+    return attr, codes
+
+
+def _clear_seam_codes(obj, uids):
+    """指定した uid の縫い目を辺の属性から消す。編集モードでも動く。"""
+    wanted = {seams.seam_code(u, s) for u in uids for s in (0, 1)}
+    if not wanted:
+        return
+    if obj.mode == 'EDIT':
+        bm = bmesh.from_edit_mesh(obj.data)
+        layer = bm.edges.layers.int.get(seams.SEAM_ATTRIBUTE)
+        if layer is not None:
+            for e in bm.edges:
+                if e[layer] in wanted:
+                    e[layer] = 0
+            bmesh.update_edit_mesh(obj.data)
+        return
+    attr, codes = _object_mode_codes(obj.data)
+    if attr is None:
+        return
+    for c in wanted:
+        codes[codes == c] = 0
+    attr.data.foreach_set("value", codes)
+    obj.data.update()
+
+
+def migrate_legacy_seams(obj):
+    """頂点番号で持つ旧形式の縫い目を、辺の属性へ移す(オブジェクトモード)。
+
+    移せなかった(頂点番号が壊れている)縫い目の名前を返す。向きは
+    「移す前と同じ頂点どうしが縫われる」ように `invert` を決める。
+    """
+    positions = mesh_io.get_world_positions(obj)
+    edge_map = _edge_index_map(obj.data)
+    failed = []
+    attr = None
+    codes = None
+    for seam in obj.muslin_seams:
+        if seam.uid != 0:
+            continue
+        resolved = mesh_io.resolve_seam(obj, seam, positions)
+        if resolved is None:
+            failed.append(seam.name)
+            continue
+        stored_a, stored_b, flipped = resolved
+        edge_ids = []
+        for chain in (stored_a, stored_b):
+            ids = [edge_map.get(tuple(sorted(p))) for p in zip(chain, chain[1:])]
+            if None in ids:
+                break
+            edge_ids.append(ids)
+        if len(edge_ids) != 2:
+            failed.append(seam.name)
+            continue
+        if attr is None:
+            attr, codes = _object_mode_codes(obj.data, create=True)
+        uid = mesh_io.next_seam_uid()
+        for side, ids in enumerate(edge_ids):
+            for i in ids:
+                codes[i] = seams.seam_code(uid, side)
+
+        # 属性から作り直す列は向きが保存時と逆のことがある。それを勘定に
+        # 入れて、同じ頂点どうしが縫われる向きを自動判定との差で持つ。
+        edges = [tuple(e.vertices) for e in obj.data.edges]
+        canon_a = seams.chains_from_codes(codes, edges, uid, 0)[0]
+        canon_b = seams.chains_from_codes(codes, edges, uid, 1)[0]
+        wanted = bool(flipped) ^ (canon_a[0] != stored_a[0]) ^ (canon_b[0] != stored_b[0])
+        auto = seams.should_flip(canon_a, canon_b, positions)
+        seam.uid = uid
+        seam.invert = wanted ^ bool(auto)
+        seam.chain_a.clear()
+        seam.chain_b.clear()
+    if attr is not None:
+        attr.data.foreach_set("value", codes)
+        obj.data.update()
+    return failed
+
+
+def _renumber_seams(obj, taken):
+    """obj の縫い目の uid が `taken` と重なっていたら振り直す(複製したピース向け)。"""
+    clash = [s for s in obj.muslin_seams if s.uid != 0 and s.uid in taken]
+    if not clash:
+        return
+    attr, codes = _object_mode_codes(obj.data)
+    start = max(mesh_io.next_seam_uid(), max(taken) + 1)
+    for k, seam in enumerate(clash):
+        new = start + k
+        if codes is not None:
+            for side in (0, 1):
+                codes[codes == seams.seam_code(seam.uid, side)] = seams.seam_code(new, side)
+        seam.uid = new
+    if attr is not None:
+        attr.data.foreach_set("value", codes)
+        obj.data.update()
 
 
 # ------------------------------------------------------ パターンピース作成
+
 
 class MUSLIN_OT_add_pattern_piece(bpy.types.Operator):
     """指定サイズの長方形パターンピースを作成する(3Dカーソル位置、正面向き)"""
@@ -140,8 +246,8 @@ class MUSLIN_OT_fill_outline(bpy.types.Operator):
 class MUSLIN_OT_join_pieces(bpy.types.Operator):
     """選択したパターンピースを1つのオブジェクトに統合する
 
-    縫い目は同一メッシュ内の頂点インデックスで定義されるため、
-    縫い合わせたいピースは事前に統合しておく必要がある。
+    縫い目は辺の属性で持つので、統合しても残る。ピースごとに縫い目を
+    定義してから統合しても、統合してから定義してもよい。
     """
 
     bl_idname = "muslin.join_pieces"
@@ -162,25 +268,51 @@ class MUSLIN_OT_join_pieces(bpy.types.Operator):
     def execute(self, context):
         meshes = [o for o in context.selected_objects if o.type == 'MESH']
 
-        # 統合すると頂点インデックスがずれるので、既存の縫い目は無効になる
-        existing = sum(len(getattr(o, "muslin_seams", [])) for o in meshes)
-
         active = context.view_layer.objects.active
         if active not in meshes:
             active = meshes[0]
             context.view_layer.objects.active = active
 
+        # 旧形式(頂点番号)の縫い目は統合で番号がずれるので、先に属性へ移す
+        lost = []
+        for obj in meshes:
+            lost += migrate_legacy_seams(obj)
+
+        # 複製したピースは uid が重なっているので、統合前に振り直す
+        taken = set()
+        for obj in meshes:
+            _renumber_seams(obj, taken)
+            taken |= {s.uid for s in obj.muslin_seams if s.uid}
+
+        # 統合で残るのはアクティブのカスタムプロパティだけなので、縫い目の
+        # 登録を先に写しておく(辺の属性は Blender が統合してくれる)
+        carried = [
+            (s.name, s.uid, s.invert, s.enabled)
+            for obj in meshes if obj is not active
+            for s in obj.muslin_seams if s.uid
+        ]
+
         bpy.ops.object.join()
 
-        if existing:
-            active.muslin_seams.clear()
+        # 統合後は旧形式の番号が使えないので、属性を持たない登録は捨てる
+        for i in reversed(range(len(active.muslin_seams))):
+            if active.muslin_seams[i].uid == 0:
+                active.muslin_seams.remove(i)
+        for name, uid, invert, enabled in carried:
+            seam = active.muslin_seams.add()
+            seam.name, seam.uid, seam.invert, seam.enabled = name, uid, invert, enabled
+
+        if lost:
             self.report(
                 {'WARNING'},
-                f"{len(meshes)} ピースを統合しました。"
-                f"頂点番号が変わるため既存の縫い目 {existing} 本は削除しました",
+                f"{len(meshes)} ピースを統合しました。壊れていた縫い目 {len(lost)} 本"
+                f"({', '.join(lost[:3])})は引き継げませんでした",
             )
         else:
-            self.report({'INFO'}, f"{len(meshes)} ピースを統合しました")
+            self.report(
+                {'INFO'},
+                f"{len(meshes)} ピースを統合しました(縫い目 {len(active.muslin_seams)} 本)",
+            )
         return {'FINISHED'}
 
 
@@ -199,12 +331,15 @@ class MUSLIN_OT_add_seam(bpy.types.Operator):
         obj = context.active_object
 
         bm = bmesh.from_edit_mesh(obj.data)
+        # 層を足すと BMesh の要素の参照が作り直されるので、先に作っておく
+        layer, _, _ = mesh_io.bmesh_seam_codes(bm, create=True)
         bm.verts.ensure_lookup_table()
 
-        selected = [(e.verts[0].index, e.verts[1].index) for e in bm.edges if e.select]
-        if not selected:
+        picked = [e for e in bm.edges if e.select]
+        if not picked:
             self.report({'ERROR'}, "エッジが選択されていません")
             return {'CANCELLED'}
+        selected = [(e.verts[0].index, e.verts[1].index) for e in picked]
 
         chains = seams.split_edges_into_chains(selected)
         if len(chains) != 2:
@@ -219,11 +354,21 @@ class MUSLIN_OT_add_seam(bpy.types.Operator):
         chain_a, chain_b = chains
         flipped = seams.should_flip(chain_a, chain_b, positions)
 
+        # 辺の属性に書く。すでに別の縫い目に使われていた辺は上書きになる
+        uid = mesh_io.next_seam_uid()
+        in_a = set(chain_a)
+        overwritten = 0
+        for e in picked:
+            if e[layer] != 0:
+                overwritten += 1
+            side = 0 if (e.verts[0].index in in_a and e.verts[1].index in in_a) else 1
+            e[layer] = seams.seam_code(uid, side)
+        bmesh.update_edit_mesh(obj.data)
+
         seam = obj.muslin_seams.add()
         seam.name = f"Seam {len(obj.muslin_seams)}"
-        _store_chain(seam.chain_a, chain_a)
-        _store_chain(seam.chain_b, chain_b)
-        seam.flipped = flipped
+        seam.uid = uid
+        seam.invert = False     # 向きは使うたびに自動で決める
         obj.muslin_seam_active = len(obj.muslin_seams) - 1
 
         length_a = seams.seam_length(chain_a, positions)
@@ -234,11 +379,14 @@ class MUSLIN_OT_add_seam(bpy.types.Operator):
             f"[muslin] シーム追加: {len(chain_a)}頂点({length_a:.3f}m) <-> "
             f"{len(chain_b)}頂点({length_b:.3f}m), ペア {len(pairs)}, flipped={flipped}"
         )
-        self.report(
-            {'INFO'},
-            f"{seam.name}: {len(chain_a)} <-> {len(chain_b)} 頂点 / {len(pairs)} ペア"
-            + (" (反転)" if flipped else ""),
-        )
+        message = f"{seam.name}: {len(chain_a)} <-> {len(chain_b)} 頂点 / {len(pairs)} ペア"
+        if overwritten:
+            self.report(
+                {'WARNING'},
+                message + f"。{overwritten} 本の辺は別の縫い目から付け替えました",
+            )
+        else:
+            self.report({'INFO'}, message)
         return {'FINISHED'}
 
 
@@ -257,6 +405,7 @@ class MUSLIN_OT_remove_seam(bpy.types.Operator):
         obj = context.active_object
         index = obj.muslin_seam_active
         if 0 <= index < len(obj.muslin_seams):
+            _clear_seam_codes(obj, [obj.muslin_seams[index].uid])
             obj.muslin_seams.remove(index)
             obj.muslin_seam_active = max(0, index - 1)
         return {'FINISHED'}
@@ -274,8 +423,10 @@ class MUSLIN_OT_clear_seams(bpy.types.Operator):
         return ui_poll.has_seams(cls, context)
 
     def execute(self, context):
-        count = len(context.active_object.muslin_seams)
-        context.active_object.muslin_seams.clear()
+        obj = context.active_object
+        count = len(obj.muslin_seams)
+        _clear_seam_codes(obj, [s.uid for s in obj.muslin_seams if s.uid])
+        obj.muslin_seams.clear()
         self.report({'INFO'}, f"{count} 本の縫い目を削除しました")
         return {'FINISHED'}
 
@@ -297,11 +448,17 @@ class MUSLIN_OT_select_seam(bpy.types.Operator):
             return {'CANCELLED'}
 
         seam = obj.muslin_seams[index]
-        chain_a, chain_b = mesh_io.seam_chains(seam)
-        wanted = set(chain_a) | set(chain_b)
-
         bm = bmesh.from_edit_mesh(obj.data)
         bm.verts.ensure_lookup_table()
+        if seam.uid:
+            # 編集中の BMesh の属性を読む(オブジェクトモードのメッシュは古い)
+            _, codes, edges = mesh_io.bmesh_seam_codes(bm)
+            mine = {seams.seam_code(seam.uid, 0), seams.seam_code(seam.uid, 1)}
+            wanted = {v for c, e in zip(codes or [], edges or []) if c in mine for v in e}
+        else:
+            chain_a, chain_b = mesh_io.seam_chains(seam)
+            wanted = set(chain_a) | set(chain_b)
+
         for v in bm.verts:
             v.select_set(v.index in wanted)
         bm.select_flush(True)
@@ -324,22 +481,25 @@ class MUSLIN_OT_validate_seams(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         positions = mesh_io.get_world_positions(obj)
-        vertex_count = len(obj.data.vertices)
+        codes, edges = mesh_io.read_seam_codes(obj.data)
 
         problems = []
         total_pairs = 0
 
         print("[muslin] ---- seam validation ----")
         for seam in obj.muslin_seams:
-            chain_a, chain_b = mesh_io.seam_chains(seam)
-
-            if any(i >= vertex_count for i in chain_a + chain_b):
-                problems.append(f"{seam.name}: 存在しない頂点を参照(メッシュ編集後は作り直しが必要)")
+            resolved = mesh_io.resolve_seam(obj, seam, positions, codes, edges)
+            if resolved is None:
+                problems.append(
+                    f"{seam.name}: 使えません(縫い目の辺が消えたか、片側が途切れて"
+                    "2本以上に分かれています。縫い直してください)"
+                )
                 continue
+            chain_a, chain_b, flipped = resolved
 
             length_a = seams.seam_length(chain_a, positions)
             length_b = seams.seam_length(chain_b, positions)
-            pairs = seams.pair_chains(chain_a, chain_b, positions, seam.flipped)
+            pairs = seams.pair_chains(chain_a, chain_b, positions, flipped)
             total_pairs += len(pairs) if seam.enabled else 0
 
             ratio = (max(length_a, length_b) / min(length_a, length_b)) if min(length_a, length_b) > 1e-9 else float('inf')
@@ -351,7 +511,7 @@ class MUSLIN_OT_validate_seams(bpy.types.Operator):
             print(
                 f"[muslin]  {seam.name}: {len(chain_a)}v/{length_a:.3f}m <-> "
                 f"{len(chain_b)}v/{length_b:.3f}m, ペア {len(pairs)}, "
-                f"flipped={seam.flipped}, enabled={seam.enabled} — {status}"
+                f"flipped={flipped}, enabled={seam.enabled} — {status}"
             )
 
         if problems:

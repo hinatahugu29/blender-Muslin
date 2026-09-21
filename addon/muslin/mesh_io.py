@@ -125,42 +125,115 @@ def find_vertex_group_indices(obj, group_name):
 # ------------------------------------------------------------------ シーム
 
 def seam_chains(seam):
-    """シームの2本のチェーンを頂点インデックスのリストで返す。"""
+    """旧形式(頂点番号で持つ)シームの2本のチェーンを返す。"""
     return (
         [v.index for v in seam.chain_a],
         [v.index for v in seam.chain_b],
     )
 
 
-def build_seam_pairs(obj, positions=None, report=None):
+def read_seam_codes(mesh):
+    """辺ごとの縫い目の属性値と、辺の頂点対を返す。属性が無ければ (None, None)。
+
+    オブジェクトモードのメッシュから読む。編集モード中は編集用の BMesh が
+    正しいので `bmesh_seam_codes` を使う。
+    """
+    attr = mesh.attributes.get(seams.SEAM_ATTRIBUTE)
+    if attr is None or attr.domain != 'EDGE' or attr.data_type != 'INT':
+        return None, None
+    count = len(mesh.edges)
+    codes = np.zeros(count, dtype=np.int32)
+    attr.data.foreach_get("value", codes)
+    edges = np.empty(count * 2, dtype=np.int32)
+    mesh.edges.foreach_get("vertices", edges)
+    return codes.tolist(), edges.reshape(-1, 2).tolist()
+
+
+def bmesh_seam_codes(bm, create=False):
+    """編集モード用。BMesh の縫い目の層と (属性値, 辺) を返す。"""
+    layer = bm.edges.layers.int.get(seams.SEAM_ATTRIBUTE)
+    if layer is None:
+        if not create:
+            return None, None, None
+        layer = bm.edges.layers.int.new(seams.SEAM_ATTRIBUTE)
+    codes = [e[layer] for e in bm.edges]
+    edges = [(e.verts[0].index, e.verts[1].index) for e in bm.edges]
+    return layer, codes, edges
+
+
+def resolve_seam(obj, seam, positions=None, codes=None, edges=None):
+    """シームの (chain_a, chain_b, flipped) を返す。壊れていれば None。
+
+    - 新形式(uid あり): 辺の属性から頂点の列を作り直す。向きは今の形で
+      自動判定し、`invert` が立っていれば反転する
+    - 旧形式(uid 0): 保存した頂点番号をそのまま使う(以前と同じ)
+
+    positions は向きの自動判定に使う今の形(ワールド座標)。
+    codes / edges を渡すとそれを使う(何本も解くときに読み直さないため)。
+    """
+    vertex_count = len(obj.data.vertices)
+    if seam.uid == 0:
+        chain_a, chain_b = seam_chains(seam)
+        if not chain_a or not chain_b or any(i >= vertex_count for i in chain_a + chain_b):
+            return None
+        return chain_a, chain_b, seam.flipped
+
+    if codes is None:
+        codes, edges = read_seam_codes(obj.data)
+    if codes is None:
+        return None
+    side_a = seams.chains_from_codes(codes, edges, seam.uid, 0)
+    side_b = seams.chains_from_codes(codes, edges, seam.uid, 1)
+    if len(side_a) != 1 or len(side_b) != 1:
+        return None
+    chain_a, chain_b = side_a[0], side_b[0]
+    if positions is None:
+        positions = get_world_positions(obj)
+    auto = seams.should_flip(chain_a, chain_b, positions)
+    return chain_a, chain_b, auto != seam.invert
+
+
+def next_seam_uid():
+    """全オブジェクトで重ならない縫い目の uid。統合しても衝突しないように。"""
+    used = 0
+    for obj in bpy.data.objects:
+        for seam in getattr(obj, "muslin_seams", []):
+            used = max(used, seam.uid)
+    return used + 1
+
+
+def build_seam_pairs(obj, positions=None, report=None, pose=None):
     """オブジェクトに登録された全シームから、縫い合わせる頂点ペアを作る。
 
     各シームは2本の頂点チェーンを弧長で対応付ける(頂点数が違ってもよい)。
+    positions は弧長を測る形(寸法の基準 = 型紙)、pose は向きの自動判定に
+    使う今の形。pose を省略すると positions を使う。
 
     `report` にリストを渡すと、壊れて使えなかった縫い目の名前が入る。
-    メッシュを編集して頂点番号が変わると縫い目は壊れるが、黙って飛ばすと
-    「縫ったはずなのに縫われない」が原因不明のまま起きる。
+    黙って飛ばすと「縫ったはずなのに縫われない」が原因不明のまま起きる。
     """
     if not getattr(obj, "muslin_seams", None):
         return []
 
     if positions is None:
         positions = get_world_positions(obj)
+    if pose is None:
+        pose = positions
 
-    vertex_count = len(obj.data.vertices)
+    codes, edges = read_seam_codes(obj.data)
     pairs = []
     seen = set()
 
     for seam in obj.muslin_seams:
         if not seam.enabled:
             continue
-        chain_a, chain_b = seam_chains(seam)
-        # メッシュ編集で頂点が減っている可能性があるので範囲を確認する
-        if any(i >= vertex_count for i in chain_a + chain_b):
+        resolved = resolve_seam(obj, seam, pose, codes, edges)
+        if resolved is None:
             if report is not None:
                 report.append(seam.name)
             continue
-        for ia, ib in seams.pair_chains(chain_a, chain_b, positions, seam.flipped):
+        chain_a, chain_b, flipped = resolved
+        for ia, ib in seams.pair_chains(chain_a, chain_b, positions, flipped):
             key = (ia, ib) if ia < ib else (ib, ia)
             if key in seen:
                 continue
@@ -457,13 +530,13 @@ def build_cloth_sim(obj, props):
 
     broken_seams = []
     # 縫い目の弧長による対応付けは寸法の問題なので、型紙の上で測る
-    seam_pairs = build_seam_pairs(obj, reference, report=broken_seams)
+    seam_pairs = build_seam_pairs(obj, reference, report=broken_seams, pose=positions)
     if broken_seams:
         warnings.append(
-            f"頂点番号が合わない縫い目が {len(broken_seams)} 本あります"
+            f"使えない縫い目が {len(broken_seams)} 本あります"
             f"({', '.join(broken_seams[:3])}"
             f"{' ほか' if len(broken_seams) > 3 else ''})。"
-            "メッシュを編集した後は縫い直してください"
+            "縫い目の辺を消したか、片側が途切れて2本以上に分かれています。縫い直してください"
         )
     if seam_pairs:
         sim.set_seams(seam_pairs, props.seam_compliance)

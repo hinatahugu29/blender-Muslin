@@ -28,10 +28,16 @@ def _seam_signature(obj):
     長さだけを見ていると、メッシュ編集で頂点番号がずれても指紋が変わらず、
     古いインデックスで描画して IndexError を起こす。
     """
+    # 新形式の縫い目は辺の属性にあるので、その中身も指紋に入れる
+    codes, _ = mesh_io.read_seam_codes(obj.data)
     return (
         len(obj.data.vertices),
+        len(obj.data.edges),
+        hash(tuple(codes)) if codes is not None else None,
         tuple(
             (
+                s.uid,
+                s.invert,
                 tuple(v.index for v in s.chain_a),
                 tuple(v.index for v in s.chain_b),
                 s.flipped,
@@ -55,14 +61,15 @@ def _get_pairs(obj):
         return cached[1]
 
     positions = mesh_io.get_world_positions(obj)
-    vertex_count = len(obj.data.vertices)
+    codes, edges = mesh_io.read_seam_codes(obj.data)
     per_seam = []
     for seam in obj.muslin_seams:
-        chain_a, chain_b = mesh_io.seam_chains(seam)
-        if not seam.enabled or any(i >= vertex_count for i in chain_a + chain_b):
+        resolved = mesh_io.resolve_seam(obj, seam, positions, codes, edges) if seam.enabled else None
+        if resolved is None:
             per_seam.append([])
             continue
-        per_seam.append(seams.pair_chains(chain_a, chain_b, positions, seam.flipped))
+        chain_a, chain_b, flipped = resolved
+        per_seam.append(seams.pair_chains(chain_a, chain_b, positions, flipped))
 
     _pair_cache[key] = (signature, per_seam)
     return per_seam

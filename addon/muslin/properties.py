@@ -169,6 +169,13 @@ class MUSLIN_PG_seam(bpy.types.PropertyGroup):
         description="この縫い目を有効にする",
         default=True,
     )
+    # 辺の属性 `muslin_seam` での識別子。0 は旧形式(chain_a / chain_b の頂点番号で持つ)
+    uid: bpy.props.IntProperty(name="UID", default=0, min=0)
+    invert: bpy.props.BoolProperty(
+        name="Flip",
+        description="縫い合わせる向きを反転する(自動で決めた向きが逆のときに切り替える)",
+        default=False,
+    )
 
 
 class MUSLIN_PG_tools(bpy.types.PropertyGroup):

@@ -169,3 +169,35 @@ def seam_length(chain, positions):
     return sum(
         _distance(positions, chain[k - 1], chain[k]) for k in range(1, len(chain))
     )
+
+
+# ---------------------------------------------------------------------------
+# 辺の属性による縫い目の保存(M7)
+#
+# 縫い目を頂点番号で持つと、ピースの統合・細分化・頂点の削除で番号が
+# ずれて壊れる。とくに `Join Pattern Pieces` は既存の縫い目を消すしかなく、
+# 「統合してから縫い目を定義する」順番が強制されていた。
+#
+# 辺の整数属性 `muslin_seam` に「どの縫い目の、どちら側か」を書いておけば、
+# Blender が統合・細分化・削除に合わせて辺と一緒に運ぶ。頂点の列は使う
+# たびに属性から作り直す。値は `uid * 2 + side + 1`(0 は縫い目なし)。
+# ---------------------------------------------------------------------------
+
+SEAM_ATTRIBUTE = "muslin_seam"
+
+
+def seam_code(uid, side):
+    """縫い目 uid の side(0 = A, 1 = B)を表す属性値。"""
+    return uid * 2 + side + 1
+
+
+def chains_from_codes(codes, edges, uid, side):
+    """属性値の列から、縫い目 uid の side にあたる頂点の列を作る。
+
+    codes は辺ごとの属性値、edges は辺ごとの (頂点, 頂点)。
+    縫い目の片側はちょうど1本の頂点列のはずなので、呼び出し側は
+    戻り値が1本でなければ壊れているとみなす。
+    """
+    code = seam_code(uid, side)
+    selected = [tuple(e) for c, e in zip(codes, edges) if c == code]
+    return split_edges_into_chains(selected)
