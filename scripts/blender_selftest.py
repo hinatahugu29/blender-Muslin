@@ -710,6 +710,26 @@ def main():
     ui_list.draw_item(None, bpy.context, row, legacy, old2, 0, legacy, "muslin_seam_active", 1)
     check("旧形式の行は flipped を出す", "flipped" in row.props, str(row.props))
 
+    # 編集モード中も描けること。メッシュの属性データが空になるので、
+    # そのまま読むと foreach_get が例外を投げていた(実機で報告された)
+    legacy.muslin_seams.remove(1)
+    bpy.context.view_layer.objects.active = legacy
+    bpy.ops.object.mode_set(mode='EDIT')
+    try:
+        row = _RowLog()
+        ui_list.draw_item(None, bpy.context, row, legacy, legacy.muslin_seams[0], 0, legacy,
+                          "muslin_seam_active", 0)
+        check("編集モードでも縫い目の行を描ける", "invert" in row.props, str(row.props))
+    except Exception as exc:
+        check("編集モードでも縫い目の行を描ける", False, repr(exc))
+    try:
+        mesh_io.read_seam_codes(legacy.data)
+        overlay_ok = True
+    except Exception as exc:
+        overlay_ok = repr(exc)
+    check("編集モードで属性を読んでも落ちない", overlay_ok is True, str(overlay_ok))
+    bpy.ops.object.mode_set(mode='OBJECT')
+
     # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()

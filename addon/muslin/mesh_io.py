@@ -142,11 +142,26 @@ def read_seam_codes(mesh):
     if attr is None or attr.domain != 'EDGE' or attr.data_type != 'INT':
         return None, None
     count = len(mesh.edges)
+    # 編集モード中は属性のデータが空になる(中身は編集用の BMesh にある)。
+    # 長さを確かめずに読むと foreach_get が例外を投げる
+    if len(attr.data) != count:
+        return None, None
     codes = np.zeros(count, dtype=np.int32)
     attr.data.foreach_get("value", codes)
     edges = np.empty(count * 2, dtype=np.int32)
     mesh.edges.foreach_get("vertices", edges)
     return codes.tolist(), edges.reshape(-1, 2).tolist()
+
+
+def object_seam_codes(obj):
+    """オブジェクトの今の縫い目の属性値と辺。編集モード中は BMesh から読む。
+
+    パネルや縫い線の描画は編集モード中にも走るので、こちらを使う。
+    """
+    if obj.mode == 'EDIT':
+        _, codes, edges = bmesh_seam_codes(bmesh.from_edit_mesh(obj.data))
+        return codes, edges
+    return read_seam_codes(obj.data)
 
 
 def bmesh_seam_codes(bm, create=False):

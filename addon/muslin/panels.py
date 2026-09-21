@@ -261,7 +261,7 @@ class MUSLIN_UL_seams(bpy.types.UIList):
         if item.uid:
             # 新形式は辺の属性から数える。統合や細分化の後でも今の数が出る
             from . import seams
-            codes, edges = mesh_io.read_seam_codes(data.data)
+            codes, edges = mesh_io.object_seam_codes(data)
             if codes is None:
                 row.label(text="!", icon='ERROR')
             else:

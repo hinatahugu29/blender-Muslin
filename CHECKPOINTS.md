@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(280項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(282項目)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -51,7 +51,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
 作り直し・収束加速まで。M4 未着手）
 
-自動テストの規模: cargo test 58 / verify_core.py 87 / blender_selftest.py 280
+自動テストの規模: cargo test 58 / verify_core.py 87 / blender_selftest.py 282
 
 ---
 
