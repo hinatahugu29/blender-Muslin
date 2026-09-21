@@ -665,6 +665,34 @@ def test_seam_logic():
           isinstance(seams.pair_chains([0, 1], [1, 2], degenerate), list))
 
 
+def test_pattern_mismatch():
+    """型紙と今のメッシュの対応を調べる(bpy 非依存)"""
+    if not has_numpy():
+        skip("型紙の照合", "numpy が無い")
+        return
+    import rest_shape  # addon/muslin/rest_shape.py(numpy だけに依存)
+
+    pattern = [0, 0, 0, 1, 0, 0, 1, 1, 0]
+    edges = [(0, 1), (1, 2)]
+    check("同じ形なら対応している",
+          rest_shape.pattern_mismatch(pattern, pattern, edges) is None)
+
+    draped = [0, 0, 0, 0.99, 0.1, 0, 1.0, 0.1, -1.0]   # 数 % の伸び縮みと曲がり
+    check("着せて数 % ずれた形も対応している",
+          rest_shape.pattern_mismatch(pattern, draped, edges) is None)
+
+    broken = [0, 0, 0, 0, 0, 0, 1, 1, 0]     # 頂点を足して属性が 0 で埋まった状態
+    check("長さ 0 の辺があれば対応していない",
+          rest_shape.pattern_mismatch(broken, pattern, edges) is not None)
+
+    stretched = [0, 0, 0, 3, 0, 0, 3, 1, 0]
+    check("辺が倍を超えて違えば対応していない",
+          rest_shape.pattern_mismatch(pattern, stretched, edges) is not None)
+
+    check("頂点数が違えば対応していない",
+          rest_shape.pattern_mismatch(pattern, pattern[:6], edges) is not None)
+
+
 def test_transform():
     """ローカル<->ワールドの座標変換(bpy 非依存)を検証する"""
     if not has_numpy():
@@ -963,6 +991,7 @@ def main():
     test_bending_stiffness()
     test_timings()
     test_seam_logic()
+    test_pattern_mismatch()
     test_cache_io()
     test_transform()
     test_step_call_matches_signature()

@@ -2393,6 +2393,51 @@ mod tests {
         assert!(gap < 0.0015, "縫い目の頂点が自己衝突で押し離された: {gap}");
     }
 
+    /// 着せた姿勢から始め直しても、型紙の寸法が変わらない(M7)。
+    ///
+    /// 型紙の形で組み立ててから `set_positions` で姿勢を置けば、伸び・曲げ・
+    /// 質量の基準は型紙のまま、位置だけが着せた姿勢になる。
+    /// 以前のように「今の形を元の形にし直す」と、収束しきらない伸び(0.3%)が
+    /// し直すたびに寸法へ焼き込まれ、6回で 1.8% 大きくなっていた。
+    #[test]
+    fn restarting_from_dressed_pose_keeps_pattern_size() {
+        let n = 31;
+        let (pattern, edges, bending, tris, _) = build_grid(n, n, 0.02);
+        let pinned: Vec<usize> = (0..n).map(|x| (n - 1) * n + x).collect();
+        let total = |p: &[Vec3]| -> f64 {
+            edges.iter().map(|&(a, b)| p[a].sub(p[b]).length()).sum()
+        };
+        let pattern_total = total(&pattern);
+        let params = SimParams {
+            // 格子は XY 平面なので、上端で吊るすように y 方向へ落とす
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            iterations: 10,
+            substeps: 8,
+            chebyshev_radius: 0.98,
+            damping: 0.05,
+            ..SimParams::default()
+        };
+        let build = || ClothSim::new(pattern.clone(), &edges, &bending, &tris, &pinned, 0.15, 0.0, 2e-2);
+
+        let mut pose = pattern.clone();
+        let mut ratios = Vec::new();
+        for _ in 0..6 {
+            let mut sim = build();
+            sim.set_positions(pose.clone()).unwrap();
+            for _ in 0..96 {
+                sim.step(1.0 / 24.0, &params);
+            }
+            pose = sim.positions.clone();
+            ratios.push(total(&pose) / pattern_total);
+        }
+        assert!(ratios[0] > 1.0005, "伸びが出ていない(計測の前提が崩れた): {ratios:?}");
+        let drift = ratios.last().unwrap() - ratios[0];
+        assert!(
+            drift.abs() < 0.0005,
+            "着せ直すたびに寸法が変わっている: {ratios:?}"
+        );
+    }
+
     /// 床面衝突: 布が床を突き抜けない
     #[test]
     fn floor_collision_stops_cloth() {

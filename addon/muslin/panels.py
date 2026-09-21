@@ -76,6 +76,17 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
         # 戻せることが分からないと「壊れた」ように見える。
         row.operator("muslin.reset_shape", text="", icon='LOOP_BACK')
 
+        # 型紙を作る段階か、着せた段階か。着せた段階では編集しても寸法が
+        # 変わらないので、今どちらにいるかが見えないと混乱する。
+        if obj is not None and obj.type == 'MESH':
+            from . import rest_shape
+            row = layout.row(align=True)
+            if rest_shape.is_dressed(obj):
+                row.label(text="着せた姿勢から開始(寸法は型紙)", icon='MOD_CLOTH')
+                row.operator("muslin.restore_pattern", text="", icon='MESH_GRID')
+            else:
+                row.operator("muslin.set_rest_shape", icon='MOD_CLOTH')
+
         # 走らせたままでは効かない設定を変えたときに知らせる。
         # 黙って効かないままだと「設定が壊れている」としか見えない。
         if obj is not None:
@@ -369,7 +380,11 @@ class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
                 text="元の形: " + ("記録あり" if rest_shape.has_rest(obj) else "未記録"),
                 icon='MESH_DATA',
             )
-            col.operator("muslin.set_rest_shape", icon='PINNED')
+            col.label(
+                text="型紙: " + ("記録あり" if rest_shape.has_pattern(obj) else "未記録")
+                + (" / 着せた段階" if rest_shape.is_dressed(obj) else ""),
+                icon='MESH_GRID',
+            )
             layout.separator()
 
         layout.operator("muslin.test_rust", icon='CONSOLE')

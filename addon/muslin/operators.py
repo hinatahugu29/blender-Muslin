@@ -318,13 +318,14 @@ class MUSLIN_OT_reset_shape(bpy.types.Operator):
 
 
 class MUSLIN_OT_set_rest_shape(bpy.types.Operator):
-    """今のメッシュの形を「元の形」として記録し直す
+    """今の形を着せた姿勢として保存し、次からはこの姿勢で始める
 
-    シミュレーション結果を出発点にしたいときに使う。
+    布の寸法(型紙)は変えない。着せた形を寸法ごと元の形にすると、
+    収束しきらない伸びが焼き込まれ、し直すたびに服が大きくなるため。
     """
 
     bl_idname = "muslin.set_rest_shape"
-    bl_label = "Set Current as Rest"
+    bl_label = "Save Dressed Pose"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -334,10 +335,45 @@ class MUSLIN_OT_set_rest_shape(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         sim_state.stop_simulation(obj)
+        # 一度も走らせていない形を保存する場合は、今の形が型紙になる
+        if not rest_shape.has_pattern(obj):
+            rest_shape.store_pattern(obj)
         if not rest_shape.store(obj):
             self.report({'ERROR'}, "メッシュに頂点がありません")
             return {'CANCELLED'}
-        self.report({'INFO'}, f"今の形を '{obj.name}' の元の形にしました")
+        rest_shape.mark_dressed(obj)
+        self.report(
+            {'INFO'},
+            f"今の形を '{obj.name}' の開始姿勢にしました(型紙の寸法はそのまま)",
+        )
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_restore_pattern(bpy.types.Operator):
+    """型紙の形に戻し、型紙を作る段階に戻る
+
+    着せた姿勢を捨てる。以後の編集は再び型紙の変更として扱われる。
+    """
+
+    bl_idname = "muslin.restore_pattern"
+    bl_label = "Restore Pattern"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        if not rest_shape.has_pattern(context.active_object):
+            return ui_poll.reject(cls, "型紙がまだ記録されていません(一度開始すると記録されます)")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        if not rest_shape.restore_pattern(obj):
+            self.report({'ERROR'}, "型紙と頂点数が合いません(メッシュを編集しましたか)")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"'{obj.name}' を型紙の形に戻しました")
         return {'FINISHED'}
 
 
@@ -447,6 +483,7 @@ _classes = (
     MUSLIN_OT_restart_sim,
     MUSLIN_OT_reset_shape,
     MUSLIN_OT_set_rest_shape,
+    MUSLIN_OT_restore_pattern,
 )
 
 

@@ -788,6 +788,106 @@ def main():
         pass
 
     # ------------------------------------------------------------------
+    section("型紙と着せた姿勢(M7)")
+
+    # 着せた形から始め直しても、布の寸法は型紙のまま変わらないこと。
+    # 以前は「今の形を元の形に」するたびに伸びが寸法に焼き込まれ、
+    # 服が少しずつ大きくなっていった(ROADMAP M7 の実測)。
+    import numpy as np
+
+    def edge_total(o):
+        me = o.data
+        co = np.empty(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+        me.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        return float(np.linalg.norm(co[ev[:, 0]] - co[ev[:, 1]], axis=1).sum())
+
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    obj = make_grid("DressGrid", side=13, size=0.6, z=1.0)
+    props = obj.muslin
+    props.collision_enabled = False
+    group = obj.vertex_groups.new(name="Pin")
+    group.add([v.index for v in obj.data.vertices if v.co.y > 0.59], 1.0, 'REPLACE')
+    props.pin_vertex_group = "Pin"
+    pattern_total = edge_total(obj)
+    check("最初は型紙を作る段階", not rest_shape.is_dressed(obj))
+
+    scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    check("開始すると型紙が記録される", rest_shape.has_pattern(obj))
+    advance(24, start=2)
+    res = bpy.ops.muslin.set_rest_shape()
+    check("Save Dressed Pose が通る", res == {'FINISHED'}, str(res))
+    check("着せた段階になる", rest_shape.is_dressed(obj))
+    first = edge_total(obj) / pattern_total
+    check("着せた姿勢は伸びている(計測の前提)", first > 1.0001, f"{first:.5f}")
+
+    ratios = [first]
+    for _ in range(3):
+        scene.frame_set(1)
+        bpy.ops.muslin.start_sim()
+        advance(24, start=2)
+        bpy.ops.muslin.set_rest_shape()
+        ratios.append(edge_total(obj) / pattern_total)
+    check(
+        "着せ直しても寸法が積み重ならない",
+        abs(ratios[-1] - ratios[0]) < 0.0005,
+        " / ".join(f"{r:.5f}" for r in ratios),
+    )
+    check("型紙は元の平面のまま",
+          abs(float(np.ptp(rest_shape.load_pattern(obj)[2::3]))) < 1e-6)
+
+    # 着せた段階での人の編集は姿勢の微調整。型紙は変えない
+    for v in obj.data.vertices:
+        v.co.z += 0.5
+    obj.data.update()
+    before = rest_shape.load_pattern(obj).copy()
+    scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    bpy.ops.muslin.stop_sim()
+    check("着せた段階の編集では型紙を取り直さない",
+          np.allclose(rest_shape.load_pattern(obj), before))
+
+    # 型紙が今のメッシュと食い違っていたら、警告して今の形を基準にする
+    attr = obj.data.attributes[rest_shape.PATTERN_ATTRIBUTE]
+    attr.data[0].vector = (0.0, 0.0, 0.0)
+    attr.data[1].vector = (0.0, 0.0, 0.0)
+    info = sim_state.start_simulation(obj, props)
+    sim_state.stop_simulation(obj)
+    check("食い違う型紙は警告される",
+          any("型紙が今のメッシュと合わない" in w for w in info["warnings"]),
+          " / ".join(info["warnings"])[:120])
+    attr.data.foreach_set("vector", before)
+
+    # 型紙に戻すと、型紙を作る段階に戻る
+    res = bpy.ops.muslin.restore_pattern()
+    check("Restore Pattern が通る", res == {'FINISHED'}, str(res))
+    check("型紙を作る段階に戻る", not rest_shape.is_dressed(obj))
+    check("メッシュが型紙の形になる",
+          abs(edge_total(obj) - pattern_total) < 1e-5,
+          f"{edge_total(obj):.6f} / {pattern_total:.6f}")
+
+    # 型紙を作る段階の編集は、以前どおり型紙の変更になる
+    for v in obj.data.vertices:
+        v.co.x *= 1.5
+    obj.data.update()
+    scene.frame_set(5)
+    scene.frame_set(1)
+    xs_now = [v.co.x for v in obj.data.vertices]
+    check("人の編集は先頭フレームに戻っても消えない",
+          abs(max(xs_now) - min(xs_now) - 0.9) < 1e-5, f"{max(xs_now) - min(xs_now):.4f}")
+    bpy.ops.muslin.start_sim()
+    bpy.ops.muslin.stop_sim()
+    xs = rest_shape.load_pattern(obj)[0::3]
+    check("型紙を作る段階の編集は型紙に入る",
+          abs(float(xs.max() - xs.min()) - 0.9) < 1e-5, f"{float(xs.max() - xs.min()):.4f}")
+
+    # ------------------------------------------------------------------
     section("選択からピン留めを作る")
 
     from muslin import pin_ops

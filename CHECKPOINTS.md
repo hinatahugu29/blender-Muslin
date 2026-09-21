@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(246項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(260項目)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -28,6 +28,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 | Play / Pause の切り替え | 再生中にボタンが Pause になり、押すとその場で止まるか | `context.screen` がヘッドレスでは None |
 | 生地のサムネイル | Fabric に7種類の絵が並び、押して選べるか | `icon_id` はヘッドレスでは常に 0(アイコンの割り当てに UI が要る)。画像が 128x128 で読めていることまでは確認済み |
 | 組み立て直しの警告 | コライダーを差し替えたとき、赤い箱と Restart ボタンが出るか | 検出とオペレータは自動で確認済み。見え方だけ未確認 |
+| 型紙と着せた姿勢 (M7) | 型紙を作る段階で Save Dressed Pose が出て、押すと「着せた姿勢から開始(寸法は型紙)」とグリッドのボタンに変わるか。ボタンで型紙の平らな形に戻るか。N パネルの幅で文言が切れないか | 段階の切り替え・寸法・警告は自動で確認済み(260項目)。見え方と、実際の服で着せ直す操作感だけ未確認 |
 
 ### 以前からの残件
 
@@ -49,7 +50,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
 作り直し・収束加速まで。M4 未着手）
 
-自動テストの規模: cargo test 57 / verify_core.py 77 / blender_selftest.py 246
+自動テストの規模: cargo test 58 / verify_core.py 82 / blender_selftest.py 260
 
 ---
 

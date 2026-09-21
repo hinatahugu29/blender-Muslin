@@ -130,6 +130,151 @@ def sync_before_start(obj):
     return "stored"
 
 
+# ---------------------------------------------------------------------------
+# 型紙(寸法の基準)
+#
+# 「元の形」は2つの役目を兼ねていた。フレーム 1 の姿勢と、布の寸法
+# (伸びの基準の辺長・質量を出す面積・曲げの基準)である。着せた形を元の形に
+# し直すと、収束しきらない伸び(0.3% ほど)がそのまま寸法に焼き込まれ、
+# し直すたびに服が大きくなっていった(6回で 1.8%。ROADMAP M7)。
+#
+# そこで寸法の基準を「型紙」として別の属性に持つ。
+#
+# - 型紙を作っている段階(着せた印が無い): 人の編集は型紙の変更。
+#   開始のたびに今の形を型紙として取り直す(以前と同じ振る舞い)
+# - 着せた段階(`Set Current as Rest` で姿勢を保存した後): 型紙は固定。
+#   人の編集は姿勢の微調整として扱い、寸法は変えない
+# ---------------------------------------------------------------------------
+
+PATTERN_ATTRIBUTE = "muslin_pattern"
+
+# 「着せた姿勢を元の形として保存した」という印。これがある間は型紙を取り直さない。
+DRESSED_FLAG = "muslin_dressed"
+
+
+def is_dressed(obj):
+    return bool(obj.get(DRESSED_FLAG, False))
+
+
+def mark_dressed(obj):
+    obj[DRESSED_FLAG] = True
+
+
+def clear_dressed(obj):
+    if DRESSED_FLAG in obj:
+        del obj[DRESSED_FLAG]
+
+
+def _pattern_attribute(mesh):
+    attr = mesh.attributes.get(PATTERN_ATTRIBUTE)
+    if attr is None or attr.domain != 'POINT' or attr.data_type != 'FLOAT_VECTOR':
+        return None
+    return attr
+
+
+def has_pattern(obj):
+    return obj.type == 'MESH' and _pattern_attribute(obj.data) is not None
+
+
+def store_pattern(obj, positions=None):
+    """今のメッシュ形状(または渡されたローカル座標)を型紙として保存する。"""
+    mesh = obj.data
+    count = len(mesh.vertices)
+    if count == 0:
+        return False
+    if positions is None:
+        positions = np.empty(count * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("co", positions)
+    else:
+        positions = np.asarray(positions, dtype=np.float32)
+        if positions.size != count * 3:
+            return False
+    attr = _pattern_attribute(mesh)
+    if attr is None:
+        attr = mesh.attributes.new(PATTERN_ATTRIBUTE, 'FLOAT_VECTOR', 'POINT')
+    attr.data.foreach_set("vector", positions)
+    mesh.update()
+    return True
+
+
+def load_pattern(obj):
+    """型紙をローカル座標の平坦な配列で返す。無ければ None。"""
+    if obj.type != 'MESH':
+        return None
+    mesh = obj.data
+    attr = _pattern_attribute(mesh)
+    count = len(mesh.vertices)
+    if attr is None or count == 0 or len(attr.data) != count:
+        return None
+    out = np.empty(count * 3, dtype=np.float32)
+    attr.data.foreach_get("vector", out)
+    return out
+
+
+def clear_pattern(obj):
+    if obj.type != 'MESH':
+        return False
+    attr = _pattern_attribute(obj.data)
+    if attr is None:
+        return False
+    obj.data.attributes.remove(attr)
+    return True
+
+
+# 着せた姿勢と型紙の辺長の比がこの範囲を外れる辺があれば、型紙は今の
+# メッシュに対応していないとみなす。布は数 % しか伸びないので、半分や
+# 倍になっている辺は「頂点を足した(属性が 0 で埋まった)」などで壊れている。
+PATTERN_RATIO_RANGE = (0.5, 2.0)
+
+
+def pattern_mismatch(pattern, current, edges):
+    """型紙が今のメッシュに対応しているかを調べる。bpy を使わない。
+
+    pattern / current は平坦な座標配列、edges は (i, j) の列。
+    対応していなければ理由の文字列、していれば None を返す。
+    """
+    p = np.asarray(pattern, dtype=np.float64).reshape(-1, 3)
+    c = np.asarray(current, dtype=np.float64).reshape(-1, 3)
+    if p.shape != c.shape:
+        return f"頂点数が違います(型紙 {len(p)} / 今 {len(c)})"
+    if len(edges) == 0:
+        return None
+    e = np.asarray(edges, dtype=np.int64)
+    lp = np.linalg.norm(p[e[:, 0]] - p[e[:, 1]], axis=1)
+    lc = np.linalg.norm(c[e[:, 0]] - c[e[:, 1]], axis=1)
+    lo, hi = PATTERN_RATIO_RANGE
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = lc / lp
+    bad = ~np.isfinite(ratio) | (ratio < lo) | (ratio > hi)
+    if bad.any():
+        return f"{int(bad.sum())} 本の辺で長さが型紙と大きく食い違っています"
+    return None
+
+
+def sync_pattern_before_start(obj):
+    """開始前に型紙をどう扱うか決める(`sync_before_start` の後に呼ぶ)。
+
+    着せた段階でなければ、今の形(= 開始時の形)を型紙として取り直す。
+    着せた段階なら型紙を固定し、取り直さない。
+    """
+    if not is_dressed(obj) or not has_pattern(obj):
+        store_pattern(obj)
+        return "stored"
+    return "kept"
+
+
+def restore_pattern(obj):
+    """型紙の形をメッシュに書き戻し、型紙を作る段階に戻す。戻せたら True。"""
+    positions = load_pattern(obj)
+    if positions is None:
+        return False
+    obj.data.vertices.foreach_set("co", positions)
+    obj.data.update()
+    store(obj)          # 開始時の姿勢も型紙の形にする
+    clear_dressed(obj)
+    return True
+
+
 def clear(obj):
     """保存した元の形を捨てる。"""
     if obj.type != 'MESH':

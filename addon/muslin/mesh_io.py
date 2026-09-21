@@ -12,6 +12,7 @@ import bpy
 import numpy as np
 
 from . import cloth_core
+from . import rest_shape
 from . import seams
 from .transform import transform as _transform
 
@@ -66,6 +67,30 @@ def get_world_positions(obj):
     mesh.vertices.foreach_get("co", local)
 
     return _transform(local, obj.matrix_world).ravel().tolist()
+
+
+def pattern_world_positions(obj, positions, edges, warnings=None):
+    """型紙(寸法の基準)をワールド座標のフラット配列で返す。
+
+    型紙が無い、または今のメッシュに対応していなければ `positions` を
+    そのまま返す(呼び出し側は `is` で見分けられる)。対応していない場合は
+    `warnings` に理由を足す。黙って今の形を基準にすると、着せた段階で
+    寸法が変わったことに気づけない。
+    """
+    local = rest_shape.load_pattern(obj)
+    if local is None:
+        return positions
+    reference = _transform(local, obj.matrix_world).ravel().tolist()
+    reason = rest_shape.pattern_mismatch(reference, positions, edges)
+    if reason is not None:
+        if warnings is not None:
+            warnings.append(
+                f"型紙が今のメッシュと合わないため、今の形を寸法の基準にしました({reason})。"
+                "着せた後に頂点を足したり消したりすると起きます。"
+                "Restore Pattern で型紙を作る段階に戻せます"
+            )
+        return positions
+    return reference
 
 
 def write_positions_to_mesh(obj, flat_world_positions):
@@ -413,8 +438,12 @@ def build_cloth_sim(obj, props):
     edges, bending_quads, triangles = _collect_topology(mesh)
     pinned = find_vertex_group_indices(obj, props.pin_vertex_group)
 
+    # 寸法の基準(伸びの辺長・質量の面積・曲げ)は型紙から、位置は今の形から取る。
+    # 型紙が今のメッシュに対応していなければ、今の形を基準にする(以前と同じ)。
+    reference = pattern_world_positions(obj, positions, edges, warnings)
+
     sim = cloth_core.ClothSim(
-        positions,
+        reference,
         edges,
         bending_quads,
         triangles,
@@ -423,9 +452,12 @@ def build_cloth_sim(obj, props):
         props.stretch_compliance,
         props.bending_compliance,
     )
+    if reference is not positions:
+        sim.set_positions(positions)
 
     broken_seams = []
-    seam_pairs = build_seam_pairs(obj, positions, report=broken_seams)
+    # 縫い目の弧長による対応付けは寸法の問題なので、型紙の上で測る
+    seam_pairs = build_seam_pairs(obj, reference, report=broken_seams)
     if broken_seams:
         warnings.append(
             f"頂点番号が合わない縫い目が {len(broken_seams)} 本あります"

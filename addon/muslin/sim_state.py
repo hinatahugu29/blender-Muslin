@@ -63,6 +63,8 @@ def create_state(obj, props):
     # 元の形をどう扱うかを決めてから組み立てる。
     # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
     rest_shape.sync_before_start(obj)
+    # 型紙を作っている段階なら今の形を型紙として取り直し、着せた段階なら固定する
+    rest_shape.sync_pattern_before_start(obj)
 
     sim, info = mesh_io.build_cloth_sim(obj, props)
     rest = sim.get_positions()
@@ -356,6 +358,10 @@ def _restore_idle_cloths(scene):
             continue
         if obj.get("muslin_baked", False):
             continue        # ベイクの再生が形を決めているので触らない
+        # 戻すのは Muslin が書いた形だけ。人が編集した形まで戻すと、
+        # 型紙を直してから先頭フレームに戻った時点で編集が消える。
+        if not rest_shape.is_deformed(obj):
+            continue
         rest_shape.restore(obj)
 
 
