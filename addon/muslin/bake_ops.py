@@ -89,19 +89,26 @@ class MUSLIN_OT_bake(bpy.types.Operator):
             self.report({'ERROR'}, "シーンのフレーム範囲が不正です")
             return {'CANCELLED'}
 
-        directory = cache_directory(obj)
-        cache_io.clear_cache(directory)
+        # 重ね着のグループなら全員をまとめて計算し、キャッシュは布ごとに書く
+        members = mesh_io.group_members(obj)
+        directories = [cache_directory(m) for m in members]
+        for d in directories:
+            cache_io.clear_cache(d)
 
         original_frame = scene.frame_current
         # ベイク中はハンドラ管理下のライブシミュレーションを止める。
         # ベイク自身は `create_state` で独立した状態を持つので、
         # frame_set でハンドラが走っても二重に計算されることはない。
-        was_running = sim_state.is_running(obj)
-        sim_state.stop_simulation(obj)
+        was_running = any(sim_state.is_running(m) for m in members)
+        for m in members:
+            sim_state.stop_simulation(m)
 
         # ベイク前のメッシュ形状を保存しておき、終了後に戻せるようにする
-        rest_local = [0.0] * (len(obj.data.vertices) * 3)
-        obj.data.vertices.foreach_get("co", rest_local)
+        rest_locals = []
+        for m in members:
+            co = [0.0] * (len(m.data.vertices) * 3)
+            m.data.vertices.foreach_get("co", co)
+            rest_locals.append(co)
 
         window_manager = context.window_manager
         window_manager.progress_begin(0, end - start + 1)
@@ -109,21 +116,23 @@ class MUSLIN_OT_bake(bpy.types.Operator):
         try:
             scene.frame_set(start)
             state = sim_state.create_state(obj, props)
+            lead_props = members[0].muslin
 
-            dt = sim_state.effective_dt(scene, props)
-            local = [0.0] * (len(obj.data.vertices) * 3)
+            dt = sim_state.effective_dt(scene, lead_props)
+            locals_ = [[0.0] * (len(m.data.vertices) * 3) for m in members]
 
             for offset, frame in enumerate(range(start, end + 1)):
                 # コライダーのアニメーションを正しく評価するためフレームを進める
                 scene.frame_set(frame)
 
                 if frame > start:
-                    sim_state.advance_one_frame(state, props, dt, frame)
+                    sim_state.advance_one_frame(state, lead_props, dt, frame)
 
                 world = state["sim"].get_positions()
-                mesh_io.write_positions_to_mesh(obj, world)
-                obj.data.vertices.foreach_get("co", local)
-                cache_io.write_frame(directory, frame, local)
+                sim_state.write_state_positions(state, world, mark=False)
+                for m, local, d in zip(members, locals_, directories):
+                    m.data.vertices.foreach_get("co", local)
+                    cache_io.write_frame(d, frame, local)
 
                 window_manager.progress_update(offset)
 
@@ -134,8 +143,9 @@ class MUSLIN_OT_bake(bpy.types.Operator):
                     )
                     break
         except Exception as exc:
-            obj.data.vertices.foreach_set("co", rest_local)
-            obj.data.update()
+            for m, co in zip(members, rest_locals):
+                m.data.vertices.foreach_set("co", co)
+                m.data.update()
             scene.frame_set(original_frame)
             self.report({'ERROR'}, f"ベイクに失敗: {exc}")
             return {'CANCELLED'}
@@ -146,30 +156,32 @@ class MUSLIN_OT_bake(bpy.types.Operator):
             print("[muslin] ベイクしたのでライブシミュレーションは停止しました")
 
         baked_frames = sum(
-            1 for f in range(start, end + 1) if cache_io.has_frame(directory, f)
+            1 for f in range(start, end + 1) if cache_io.has_frame(directories[0], f)
         )
         actual_end = start + baked_frames - 1
 
-        cache_io.write_info(directory, {
-            "object": obj.name,
-            "vertices": len(obj.data.vertices),
-            "frame_start": start,
-            "frame_end": actual_end,
-            "blender": bpy.app.version_string,
-        })
-
-        obj["muslin_baked"] = True
-        obj["muslin_bake_start"] = start
-        obj["muslin_bake_end"] = actual_end
-        obj["muslin_cache_dir"] = directory
+        for m, d in zip(members, directories):
+            cache_io.write_info(d, {
+                "object": m.name,
+                "vertices": len(m.data.vertices),
+                "frame_start": start,
+                "frame_end": actual_end,
+                "blender": bpy.app.version_string,
+            })
+            m["muslin_baked"] = True
+            m["muslin_bake_start"] = start
+            m["muslin_bake_end"] = actual_end
+            m["muslin_cache_dir"] = d
 
         scene.frame_set(original_frame)
-        apply_baked_frame(obj, original_frame)
+        for m in members:
+            apply_baked_frame(m, original_frame)
 
-        size_mb = cache_io.cache_size_bytes(directory) / (1024 * 1024)
+        size_mb = sum(cache_io.cache_size_bytes(d) for d in directories) / (1024 * 1024)
+        who = f"{len(members)} 着" if len(members) > 1 else directories[0]
         self.report(
             {'INFO'},
-            f"ベイク完了: {baked_frames} フレーム / {size_mb:.1f} MB → {directory}",
+            f"ベイク完了: {baked_frames} フレーム / {size_mb:.1f} MB → {who}",
         )
         return {'FINISHED'}
 

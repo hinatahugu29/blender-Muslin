@@ -485,6 +485,26 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         ),
         default=True,
     )
+    # --- 重ね着(M7) ---
+    sim_group: bpy.props.StringProperty(
+        name="Group",
+        description=(
+            "同じ名前を付けた布を1つのシミュレーションで一緒に解く(重ね着)。"
+            "空なら単独で解く。まとめて解くとき、ソルバーと衝突の設定は"
+            "層の一番内側(同じ層なら名前順で先頭)の布のものを使う"
+        ),
+        default="",
+    )
+    layer: bpy.props.IntProperty(
+        name="Layer",
+        description=(
+            "重ね着の順番。0 が一番内側。層の違う布どうしが当たると、"
+            "内側を動かさず外側だけを押し出す"
+        ),
+        default=0,
+        min=0,
+        max=9,
+    )
     self_collision_thickness: bpy.props.FloatProperty(
         name="Self Thickness",
         description="自己衝突で保つ頂点間距離。メッシュのエッジ長より小さくすること",

@@ -59,14 +59,18 @@ def create_state(obj, props):
     """シミュレーション状態を作る(ハンドラには登録しない)。
 
     ベイクのように「ハンドラを経由せず自分でフレームを進めたい」処理から使う。
+    obj に重ね着のグループ(`sim_group`)が付いていれば、同じグループの布を
+    まとめて1つの状態にする。props は互換のために受け取るが、設定は各布から取る。
     """
-    # 元の形をどう扱うかを決めてから組み立てる。
-    # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
-    rest_shape.sync_before_start(obj)
-    # 型紙を作っている段階なら今の形を型紙として取り直し、着せた段階なら固定する
-    rest_shape.sync_pattern_before_start(obj)
+    members = mesh_io.group_members(obj)
+    for m in members:
+        # 元の形をどう扱うかを決めてから組み立てる。
+        # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
+        rest_shape.sync_before_start(m)
+        # 型紙を作っている段階なら今の形を型紙として取り直し、着せた段階なら固定する
+        rest_shape.sync_pattern_before_start(m)
 
-    sim, info = mesh_io.build_cloth_sim(obj, props)
+    sim, info = mesh_io.build_group_sim(members)
     rest = sim.get_positions()
     start_frame = bpy.context.scene.frame_current
 
@@ -79,11 +83,36 @@ def create_state(obj, props):
         "info": info,
         "last_error": 0.0,
         "last_contacts": 0,
-        "name": obj.name,
-        "material": _material_signature(props),
-        "seam_count": _enabled_seam_count(obj),
-        "elastic": mesh_io.elastic_signature(obj),
+        "name": members[0].name,
+        # (オブジェクトのキー, 最初の頂点番号, 頂点数)。1着でも1件ある
+        "members": [(obj_key(m), s, c) for m, (_n, s, c) in zip(members, info["members"])],
+        "member_names": [m.name for m in members],
+        "material": _group_material_signature(members),
+        "seam_count": sum(_enabled_seam_count(m) for m in members),
+        "elastic": tuple(mesh_io.elastic_signature(m) for m in members),
     }
+
+
+def member_objects(state):
+    """状態に含まれる布のオブジェクト(先頭が設定を使う布)。消えた布があれば空。"""
+    objs = []
+    for (key, _start, _count), name in zip(state["members"], state["member_names"]):
+        o = _find_object(key, name)
+        if o is None:
+            return []
+        objs.append(o)
+    state["member_names"] = [o.name for o in objs]   # リネームに追従する
+    return objs
+
+
+def write_state_positions(state, positions, mark=True):
+    """まとめて解いた座標を、布ごとに切り分けてメッシュへ書く。"""
+    for obj, (_key, start, count) in zip(member_objects(state), state["members"]):
+        mesh_io.write_positions_to_mesh(obj, positions[start * 3:(start + count) * 3])
+        if mark:
+            # 今のメッシュは Muslin の出力であって人が作った形ではない、
+            # という印。次に開始するときの扱いが変わる。
+            rest_shape.mark_deformed(obj)
 
 
 def _enabled_seam_count(obj):
@@ -97,39 +126,40 @@ def _material_signature(props):
             props.pin_vertex_group)
 
 
+def _group_material_signature(members):
+    return tuple(_material_signature(m.muslin) for m in members)
+
+
 def _sync_material(state, props, obj=None):
     """生地とピン留めが変わっていたら、姿勢を保ったままコアに流し込む。
 
     density / compliance / ピン留めは ClothSim の組み立て時に焼き込まれる
     ので、以前は走らせたまま生地を選び直しても何も起きなかった。組み立て
     直すと布が初期姿勢に戻って見比べられないため、コアの差し替えを使う。
+    重ね着のグループでは布ごとの生地をまとめて渡す。
 
     既に計算したフレームは古い生地の結果なので、キャッシュは捨てる。
     """
+    members = member_objects(state) if obj is not None else []
+    offsets = [(s, c) for _k, s, c in state["members"]]
+
     # ゴム紐の倍率も走らせたまま効かせる(set_rest_scales は安い)
     changed = False
-    if obj is not None:
-        elastic = mesh_io.elastic_signature(obj)
+    if members:
+        elastic = tuple(mesh_io.elastic_signature(m) for m in members)
         if elastic != state.get("elastic"):
-            state["info"]["elastic_edges"] = mesh_io.apply_elastics(obj, state["sim"])
+            state["info"]["elastic_edges"] = mesh_io.apply_group_elastics(
+                state["sim"], members, offsets)
             state["elastic"] = elastic
             changed = True
 
-    signature = _material_signature(props)
+    signature = _group_material_signature(members) if members else state["material"]
     if signature == state["material"]:
         if changed and state["cache"] is not None:
             state["cache"] = {state["start_frame"]: state["rest_positions"]}
         return changed
 
-    sim = state["sim"]
-    sim.set_density(props.density)
-    sim.set_compliances(props.stretch_compliance, props.bending_compliance)
-
-    if obj is not None:
-        pinned = mesh_io.find_vertex_group_indices(obj, props.pin_vertex_group)
-        sim.set_pinned(pinned)
-        state["info"]["pinned"] = len(pinned)
-
+    state["info"]["pinned"] = mesh_io.apply_group_materials(state["sim"], members, offsets)
     state["material"] = signature
     if state["cache"] is not None:
         state["cache"] = {state["start_frame"]: state["rest_positions"]}
@@ -151,8 +181,13 @@ def restart_reasons(obj, props):
     reasons = []
     info = state["info"]
 
+    # グループは先頭の布の設定で組み立てているので、そちらと比べる
+    members = member_objects(state)
+    if members:
+        props = members[0].muslin
     registered = list(info.get("colliders", []))
-    current = [o.name for o in mesh_io.collect_collider_objects(props)]
+    current = [o.name for o in mesh_io.collect_collider_objects(props)
+               if o not in members]
     if props.collision_enabled and current != registered:
         # 数だけ出すと入れ替えたときに「1 → 1 個」になって何も伝わらない。
         # 短ければ名前を、多ければ数を出す。
@@ -168,7 +203,7 @@ def restart_reasons(obj, props):
         )
 
     # info["seams"] は縫い合わせる頂点ペアの数なので、本数とは別に数える
-    seams = _enabled_seam_count(obj)
+    seams = sum(_enabled_seam_count(m) for m in (member_objects(state) or [obj]))
     if seams != state["seam_count"]:
         reasons.append(f"縫い目の本数が変わりました ({state['seam_count']} → {seams} 本)")
 
@@ -189,15 +224,32 @@ def invalidate_pinning(obj):
 
 
 def start_simulation(obj, props):
-    """シミュレーションを開始し、フレーム変更ハンドラの管理下に置く。"""
+    """シミュレーションを開始し、フレーム変更ハンドラの管理下に置く。
+
+    重ね着のグループなら、メンバー全員を止めてからまとめて1つで始め、
+    全員のキーで同じ状態を指す(どの布から見ても同じ状態が見える)。
+    """
+    for m in mesh_io.group_members(obj):
+        stop_simulation(m)
     state = create_state(obj, props)
-    _running[obj_key(obj)] = state
+    for key, _start, _count in state["members"]:
+        _running[key] = state
     return state["info"]
 
 
+def _drop_state(state):
+    """状態を、それを指す全メンバーのキーから外す。"""
+    for key in [k for k, s in _running.items() if s is state]:
+        _running.pop(key, None)
+
+
 def stop_simulation(obj):
-    if obj is not None:
-        _running.pop(obj_key(obj), None)
+    """止める。グループのどれか1着を止めると、グループ全体が止まる。"""
+    if obj is None:
+        return
+    state = _running.get(obj_key(obj))
+    if state is not None:
+        _drop_state(state)
 
 
 def stop_all():
@@ -388,11 +440,17 @@ def _frame_change_handler(scene, depsgraph=None):
     dt = effective_dt(scene)
     frame = scene.frame_current
 
+    # 重ね着のグループはメンバー全員のキーで同じ状態を指すので、1回だけ進める
+    seen = set()
     for key, state in list(_running.items()):
-        obj = _find_object(key, state.get("name", ""))
-        if obj is None:
-            _running.pop(key, None)
+        if id(state) in seen:
             continue
+        seen.add(id(state))
+        members = member_objects(state)
+        if not members:
+            _drop_state(state)
+            continue
+        obj = members[0]
         state["name"] = obj.name  # リネームに追従する
         obj_name = obj.name
 
@@ -403,10 +461,11 @@ def _frame_change_handler(scene, depsgraph=None):
         # 抜けるときにそちらが書き戻される。つまり計算した結果は捨てられ、
         # かつシミュレーション側だけがフレームを進めるので、抜けた瞬間に
         # 布が飛ぶ。Blender 標準のクロスも編集中は計算しない。
+        # グループはまとめて解くので、1着でも編集中なら全体を止める。
         #
         # 止めている間に進んだフレームは、抜けたあとキャッシュか開始
         # フレームから追いつく(_simulate_to がジャンプを扱う)。
-        if obj.mode == 'EDIT':
+        if any(m.mode == 'EDIT' for m in members):
             state["was_editing"] = True
             continue
 
@@ -414,23 +473,20 @@ def _frame_change_handler(scene, depsgraph=None):
         # ある。グループ名が同じだと差し替えが起きないので、ここで印を消す。
         if state.pop("was_editing", False):
             state["material"] = None
-        # 設定は布ごとなので、オブジェクトから取る
+        # 設定は布ごとなので、オブジェクトから取る(グループは先頭の布)
         props = obj.muslin
 
         try:
             positions = _simulate_to(state, props, dt, frame, obj)
-            mesh_io.write_positions_to_mesh(obj, positions)
-            # 今のメッシュは Muslin の出力であって人が作った形ではない、
-            # という印。次に開始するときの扱いが変わる。
-            rest_shape.mark_deformed(obj)
+            write_state_positions(state, positions)
             state["last_error"] = state["sim"].average_stretch_error()
             state["last_contacts"] = state["sim"].last_collision_count
             if not state["sim"].is_finite():
                 print(f"[muslin] '{obj_name}' のシミュレーションが発散しました。停止します。")
-                _running.pop(key, None)
+                _drop_state(state)
         except Exception as exc:  # Rust 側の例外もここで受け止めて Blender を落とさない
             print(f"[muslin] '{obj_name}' の更新中にエラー: {exc}")
-            _running.pop(key, None)
+            _drop_state(state)
 
 
 @persistent

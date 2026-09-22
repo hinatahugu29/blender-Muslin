@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(340項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(349項目)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -36,6 +36,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 | ~~型紙の確定 Lock Pattern (M7)~~ | **済み**(実機で一通り確認、2026-09-22)。 Pattern パネルに Lock Pattern と「曲げて配置する前に確定する」が出るか。押すと「型紙は確定済み」と鍵のボタン(Unlock)、Restore Pattern に変わるか。シミュレーションの結果が出ている間は押せず、理由がツールチップに出るか | 確定・解除・警告・押せない条件は自動で確認済み。見え方だけ未確認 |
 | 型紙から UV (M7) | Pattern パネルの Pattern to UV を押すと UV マップ MuslinPattern ができ、UV エディタでピースが重ならず、上下左右が正しい向きで並ぶか。チェッカーテクスチャを貼って、着せた後も升目がゆがまず全ピースで同じ大きさか | 実寸の比・重ならない・向きは自動で確認済み。見え方だけ未確認 |
 | ゴム紐 (M7) | Sewing の下の Elastic パネルで、編集モードで裾やウエストの辺を選んで Add Elastic From Selection を押すと、リストに Length 付きで出るか。走らせて布が寄る(ギャザーになる)か。走らせたまま Length を動かすと、その場で締まったり緩んだりするか | 縮み方・走らせたままの変更・統合での引き継ぎ・削除は自動で確認済み。見え方とギャザーの見た目だけ未確認 |
+| 重ね着 (M7) | 2着(例: シャツとジャケット)の Collision パネルで Group に同じ名前、Layer を 0 / 1 にすると「一緒に解く布: 2 着」と出るか。走らせて外側が内側を突き抜けず、内側が体へ押し込まれないか。片方だけ選んで Stop しても両方止まるか。Dress とベイクで両方が動くか。服ごとに生地を変えて違いが出るか | 双方向の衝突・層・生地の分け方・Dress・ベイクは自動で確認済み。実際の服での見た目は未確認 |
 
 ### 以前からの残件
 
@@ -57,7 +58,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
 作り直し・収束加速まで。M4 未着手）
 
-自動テストの規模: cargo test 62 / verify_core.py 106 / blender_selftest.py 340
+自動テストの規模: cargo test 65 / verify_core.py 106 / blender_selftest.py 349
 
 ---
 

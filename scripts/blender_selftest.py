@@ -1144,6 +1144,161 @@ def main():
     check("ゴム紐の行を描ける", r.props == ["enabled", "name", "scale"], str(r.props))
 
     # ----------------------------------------------------------------
+    section("重ね着(M7)")
+
+    def layered_scene(grouped=True):
+        """台の上に内側・外側の2枚を重ねて置く。grouped=False は以前の一方向の作り。"""
+        clear_scene()
+        scene = bpy.context.scene
+        scene.frame_start = 1
+        scene.frame_set(1)
+        bpy.ops.mesh.primitive_cube_add(size=0.2, location=(0.25, 0.25, 0.3))
+        post = bpy.context.active_object
+        post.name = "Post"
+        inner = make_grid("Inner", side=11, size=0.5, z=0.5)
+        outer = make_grid("Outer", side=11, size=0.5, z=0.53)
+        for o in (inner, outer):
+            p = o.muslin
+            p.collision_enabled = True
+            p.self_collision_enabled = True
+            p.self_collision_thickness = 0.01
+        inner.muslin.collider_object = post
+        if grouped:
+            inner.muslin.sim_group = outer.muslin.sim_group = "Outfit"
+            inner.muslin.layer, outer.muslin.layer = 0, 1
+        else:
+            # 以前の作り: 外側だけが内側をコライダーとして見る(内側は外側を知らない)
+            coll = bpy.data.collections.new("OuterColliders")
+            scene.collection.children.link(coll)
+            coll.objects.link(post)
+            coll.objects.link(inner)
+            outer.muslin.collider_collection = coll
+        return inner, outer
+
+    def center_z(o):
+        c = min(o.data.vertices, key=lambda v: (v.co.x - 0.25) ** 2 + (v.co.y - 0.25) ** 2)
+        return (o.matrix_world @ c.co).z
+
+    def run_frames(objs, frames=40):
+        bpy.context.scene.frame_set(1)
+        for o in objs:
+            bpy.context.view_layer.objects.active = o
+            bpy.ops.muslin.start_sim()
+        advance(frames, start=2)
+
+    def below_count(inner, outer):
+        """外側の頂点のうち、内側の布の裏側へ突き抜けているものの数。
+
+        外側の各頂点について内側の面との最近点を求め、その面の法線(格子の面は
+        上向きに作ってあり、落ちても裏返らない)で表か裏かを見る。同じ番号の
+        頂点どうしで高さを比べるだけだと、垂れた側面や横にずれた所で
+        突き抜けていないのに数えてしまう(最初の版がそうだった)。
+        """
+        ip = np.array([tuple(inner.matrix_world @ v.co) for v in inner.data.vertices])
+        op = np.array([tuple(outer.matrix_world @ v.co) for v in outer.data.vertices])
+        inner.data.calc_loop_triangles()
+        tris = np.array([tuple(t.vertices) for t in inner.data.loop_triangles])
+        a, b, c = ip[tris[:, 0]], ip[tris[:, 1]], ip[tris[:, 2]]
+        normals = np.cross(b - a, c - a)
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        count = 0
+        for p in op:
+            # 近くの面だけを見る(面の重心で近い順に)
+            centers = (a + b + c) / 3
+            k = int(np.argmin(np.linalg.norm(centers - p, axis=1)))
+            if np.linalg.norm(centers[k] - p) > 0.05:
+                continue            # 内側の布から離れている
+            if (p - a[k]) @ normals[k] < 0.0:
+                count += 1
+        return count
+
+    # 内側だけを落としたときの形(外側に押されなければこれと同じになるはず)
+    clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=0.2, location=(0.25, 0.25, 0.3))
+    post_only = bpy.context.active_object
+    alone = make_grid("Alone", side=11, size=0.5, z=0.5)
+    alone.muslin.collider_object = post_only
+    alone.muslin.self_collision_enabled = True
+    alone.muslin.self_collision_thickness = 0.01
+    run_frames([alone])
+    alone_z = center_z(alone)
+    bpy.ops.muslin.stop_sim()
+
+    inner, outer = layered_scene(grouped=True)
+    members = mesh_io.group_members(outer)
+    check("グループは内側から並び、先頭が設定を使う布", [m.name for m in members] == ["Inner", "Outer"],
+          str([m.name for m in members]))
+    bpy.context.view_layer.objects.active = outer
+    info = sim_state.start_simulation(outer, outer.muslin)
+    check("まとめて1つで組み立てる", info["vertices"] == 242 and len(info["members"]) == 2,
+          f"{info['vertices']} 頂点 / {info['members']}")
+    check("2着が同じ状態を指す", sim_state.get_state(inner) is sim_state.get_state(outer))
+    advance(40, start=2)
+    grouped_gap = center_z(outer) - center_z(inner)
+    grouped_below = below_count(inner, outer)
+    check("外側は内側を突き抜けない", grouped_gap > 0.005 and grouped_below == 0,
+          f"中央の隙間 {grouped_gap * 1000:.1f}mm / 下にある頂点 {grouped_below}")
+    # 層の目的は「外側が内側を体(ここでは台)の中へ押し込まない」こと。内側は
+    # 上に乗った外側に膨らみを押さえられるので単独より低くなるが(物理的にも
+    # 自然)、台の上面より下へは行かない
+    post_top = 0.4 + inner.muslin.collision_thickness
+    grouped_inner = center_z(inner)
+    check("内側は台(体)の中へ押し込まれない", grouped_inner > post_top - 0.001,
+          f"内側の中央 {grouped_inner:.4f} / 台の上面+厚み {post_top:.4f}(単独 {alone_z:.4f})")
+
+    # 走らせたまま片方の生地を変えても動く(布ごとの生地をまとめて渡す)
+    outer.muslin.density = 0.6
+    advance(3, start=42)
+    check("走らせたまま外側の生地を変えられる", sim_state.is_running(outer)
+          and sim_state.get_state(outer)["sim"].is_finite())
+
+    sim_state.stop_simulation(inner)
+    check("1着を止めるとグループ全体が止まる",
+          not sim_state.is_running(inner) and not sim_state.is_running(outer))
+
+    # 比較: 同じグループでも層を付けない(両方 0)と、外側が内側を押し込む
+    inner0, outer0 = layered_scene(grouped=True)
+    outer0.muslin.layer = 0
+    bpy.context.view_layer.objects.active = outer0
+    sim_state.start_simulation(outer0, outer0.muslin)
+    advance(40, start=2)
+    flat_inner = center_z(inner0)
+    flat_gap = center_z(outer0) - center_z(inner0)
+    flat_below = below_count(inner0, outer0)
+    sim_state.stop_simulation(outer0)
+    print(f"[muslin] 重ね着の比較: 層なし 内側 {flat_inner:.4f} / 隙間 {flat_gap * 1000:.1f}mm / "
+          f"突き抜け {flat_below} 頂点、層あり 内側 {grouped_inner:.4f} / "
+          f"隙間 {grouped_gap * 1000:.1f}mm / 突き抜け {grouped_below} 頂点")
+
+    # 比較: 以前の一方向の作り(グループにしない)
+    inner1, outer1 = layered_scene(grouped=False)
+    run_frames([inner1, outer1])
+    oneway_gap = center_z(outer1) - center_z(inner1)
+    oneway_below = below_count(inner1, outer1)
+    print(f"[muslin] 重ね着の比較: 一方向 隙間 {oneway_gap * 1000:.1f}mm / 突き抜け {oneway_below} 頂点、"
+          f"グループ 隙間 {grouped_gap * 1000:.1f}mm / 突き抜け {grouped_below} 頂点")
+    for o in (inner1, outer1):
+        sim_state.stop_simulation(o)
+
+    # Dress はグループ全体を着せる
+    inner, outer = layered_scene(grouped=True)
+    bpy.context.view_layer.objects.active = outer
+    res = bpy.ops.muslin.dress(max_steps=60)
+    check("Dress がグループ全体を着せる", res == {'FINISHED'}
+          and rest_shape.is_dressed(inner) and rest_shape.is_dressed(outer))
+
+    # ベイクもグループ全体をまとめて計算し、布ごとにキャッシュを書く
+    bpy.context.scene.frame_start, bpy.context.scene.frame_end = 1, 6
+    bpy.context.view_layer.objects.active = inner
+    res = bpy.ops.muslin.bake()
+    check("ベイクがグループ全体を書く", res == {'FINISHED'}
+          and inner.get("muslin_baked") and outer.get("muslin_baked"), str(res))
+    bpy.context.view_layer.objects.active = inner
+    bpy.ops.muslin.free_bake()
+    bpy.context.view_layer.objects.active = outer
+    bpy.ops.muslin.free_bake()
+
+    # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)

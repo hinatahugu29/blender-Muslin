@@ -64,14 +64,20 @@ class Dresser:
         # False なら落ち着いても上限に達しても止まらない(整えるモード)。
         # 止まるのは人が確定か中止をしたときと、発散したときだけ
         self.auto_finish = auto_finish
-        self.props = _DressProps(props)
         self.dt = dt
         self.max_steps = max_steps
-        # 走っているシミュレーションとは別に回す(タイムラインに触れない)
-        sim_state.stop_simulation(obj)
-        count = len(obj.data.vertices)
-        self.before = np.empty(count * 3, dtype=np.float32)
-        obj.data.vertices.foreach_get("co", self.before)
+        # 走っているシミュレーションとは別に回す(タイムラインに触れない)。
+        # 重ね着のグループなら、グループの布をまとめて着せる。ソルバーの設定は
+        # 組み立てと同じく先頭の布(一番内側)のものを使う
+        self.members = mesh_io.group_members(obj)
+        props = self.members[0].muslin
+        self.props = _DressProps(props)
+        self.before = []
+        for m in self.members:
+            sim_state.stop_simulation(m)
+            co = np.empty(len(m.data.vertices) * 3, dtype=np.float32)
+            m.data.vertices.foreach_get("co", co)
+            self.before.append(co)
         # 開始時の形(型紙を作る段階なら型紙、着せた段階なら着せた姿勢)に
         # そろえてから組み立てる。組み立て方は通常の開始と同じ
         self.state = sim_state.create_state(obj, props)
@@ -83,10 +89,13 @@ class Dresser:
         # つまんでいる間の状態。離したら上限のステップ数を数え直す
         self.grabbed = None
         self._budget_start = 0
-        # レイを当てる三角形(トポロジは着せ付けの間変わらない)
-        mesh = obj.data
-        mesh.calc_loop_triangles()
-        self._triangles = [tuple(t.vertices) for t in mesh.loop_triangles]
+        # レイを当てる三角形(トポロジは着せ付けの間変わらない)。グループでは
+        # 布ごとに頂点番号をずらしてつなげる
+        self._triangles = []
+        for m, (_key, start, _count) in zip(self.members, self.state["members"]):
+            m.data.calc_loop_triangles()
+            self._triangles += [tuple(start + i for i in t.vertices)
+                                for t in m.data.loop_triangles]
 
     @property
     def warnings(self):
@@ -161,7 +170,7 @@ class Dresser:
 
     def show(self):
         """途中経過をメッシュに書く(ビューポートで見せるため)。"""
-        mesh_io.write_positions_to_mesh(self.obj, self.state["sim"].get_positions())
+        sim_state.write_state_positions(self.state, self.state["sim"].get_positions(), mark=False)
 
     def finish(self):
         """今の形を着せた姿勢として保存する。発散していたら元に戻して False。"""
@@ -169,14 +178,16 @@ class Dresser:
             self.cancel()
             return False
         self.show()
-        rest_shape.store(self.obj)
-        rest_shape.mark_dressed(self.obj)
+        for m in self.members:
+            rest_shape.store(m)
+            rest_shape.mark_dressed(m)
         return True
 
     def cancel(self):
         """着せ付け前の形に戻す。"""
-        self.obj.data.vertices.foreach_set("co", self.before)
-        self.obj.data.update()
+        for m, co in zip(self.members, self.before):
+            m.data.vertices.foreach_set("co", co)
+            m.data.update()
 
     def summary(self):
         if self.settled:

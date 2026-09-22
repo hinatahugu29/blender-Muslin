@@ -560,71 +560,159 @@ def check_bending_stiffness(props):
     return [hint]
 
 
+def group_members(obj):
+    """obj と一緒に解く布の一覧(重ね着のグループ)。先頭が設定を使う布。
+
+    `sim_group` が空なら obj だけ。同じ名前の布を、層の内側から(同じ層なら
+    名前順で)並べる。並び順は頂点の番号の並びになるので、毎回同じにする。
+    """
+    group = getattr(obj.muslin, "sim_group", "")
+    if not group:
+        return [obj]
+    scene = bpy.context.scene
+    members = [o for o in scene.objects
+               if o.type == 'MESH' and getattr(o, "muslin", None) is not None
+               and o.muslin.sim_group == group]
+    if obj not in members:
+        members.append(obj)
+    members.sort(key=lambda o: (o.muslin.layer, o.name))
+    return members
+
+
+def material_values(props):
+    """布1着の生地の値(密度, 伸び, 曲げ)。"""
+    return (props.density, props.stretch_compliance, props.bending_compliance)
+
+
+def apply_group_materials(sim, members, offsets):
+    """グループの各布の生地と、ピン留めをコアに渡す。
+
+    1着だけのときは従来どおり全体に一括で渡す(結果を変えないため)。
+    """
+    pinned = []
+    for m, (start, _count) in zip(members, offsets):
+        pinned += [start + i for i in find_vertex_group_indices(m, m.muslin.pin_vertex_group)]
+    if len(members) == 1:
+        props = members[0].muslin
+        sim.set_density(props.density)
+        sim.set_compliances(props.stretch_compliance, props.bending_compliance)
+    else:
+        vertex_material = []
+        for k, (_start, count) in enumerate(offsets):
+            vertex_material += [k] * count
+        values = [material_values(m.muslin) for m in members]
+        sim.set_materials(vertex_material,
+                          [v[0] for v in values], [v[1] for v in values], [v[2] for v in values])
+    sim.set_pinned(pinned)
+    return len(pinned)
+
+
+def apply_group_elastics(sim, members, offsets):
+    """グループの各布のゴム紐を、頂点番号をずらしてまとめて渡す。"""
+    pairs, scales = [], []
+    for m, (start, _count) in zip(members, offsets):
+        p, s = elastic_edges(m)
+        pairs += [(a + start, b + start) for a, b in p]
+        scales += s
+    return sim.set_rest_scales(pairs, scales)
+
+
 def build_cloth_sim(obj, props):
     """obj(メッシュオブジェクト)から ClothSim を構築する。座標はワールド座標系。
 
-    戻り値: (sim, info) info には頂点数・制約数などの診断情報が入る。
+    `sim_group` が付いていれば、同じグループの布をまとめて1つに組み立てる
+    (`build_group_sim`)。戻り値: (sim, info)。
     """
-    mesh = obj.data
-    warnings = (
-        validate_mesh(obj)
-        + check_thickness(obj, props)
-        + check_bending_stiffness(props)
-    )
-    positions = get_world_positions(obj)
-    edges, bending_quads, triangles = _collect_topology(mesh)
-    pinned = find_vertex_group_indices(obj, props.pin_vertex_group)
+    return build_group_sim(group_members(obj))
 
-    # 寸法の基準(伸びの辺長・質量の面積・曲げ)は型紙から、位置は今の形から取る。
-    # 型紙が今のメッシュに対応していなければ、今の形を基準にする(以前と同じ)。
-    reference = pattern_world_positions(obj, positions, edges, warnings)
 
-    # 型紙を確定しないまま曲げて置いたピースは、曲げた形が型紙になる。
-    # わざと平らでない型紙もあるので止めはしない
-    if not rest_shape.is_pattern_locked(obj):
-        bent = rest_shape.bent_islands(positions, edges)
-        if bent:
+def build_group_sim(members):
+    """布の一覧をまとめて1つの ClothSim に組み立てる(重ね着。M7)。
+
+    頂点・辺・面・縫い目・ゴム紐・ピン留めを、布ごとに頂点番号をずらして
+    つなげる。生地は布ごと(set_materials)、層は布ごと(set_layers)。
+    ソルバー・衝突・縫製の設定は先頭の布(一番内側)のものを使う。
+    1着だけなら従来の組み立てと同じ結果になる。
+
+    戻り値: (sim, info)。info["members"] は [(名前, 最初の頂点番号, 頂点数)]。
+    """
+    lead = members[0]
+    props = lead.muslin
+    warnings = check_bending_stiffness(props)
+
+    positions, reference = [], []
+    edges, bending_quads, triangles = [], [], []
+    seam_pairs, offsets, layers = [], [], []
+    for m in members:
+        start = len(positions) // 3
+        mp = m.muslin
+        warnings += validate_mesh(m) + check_thickness(m, props)
+        m_positions = get_world_positions(m)
+        m_edges, m_quads, m_tris = _collect_topology(m.data)
+
+        # 寸法の基準(伸びの辺長・質量の面積・曲げ)は型紙から、位置は今の形から取る。
+        # 型紙が今のメッシュに対応していなければ、今の形を基準にする(以前と同じ)。
+        m_reference = pattern_world_positions(m, m_positions, m_edges, warnings)
+
+        # 型紙を確定しないまま曲げて置いたピースは、曲げた形が型紙になる。
+        # わざと平らでない型紙もあるので止めはしない
+        if not rest_shape.is_pattern_locked(m):
+            bent = rest_shape.bent_islands(m_positions, m_edges)
+            if bent:
+                warnings.append(
+                    f"'{m.name}' に平らでないピースが {bent} 枚あり、その形のまま型紙"
+                    "(寸法の基準)になりました。曲げて配置したのなら、Restore Pattern か"
+                    "編集で平らに戻し、Lock Pattern で型紙を確定してから曲げてください"
+                    "(わざと平らでない型紙なら、この警告は気にしなくて構いません)"
+                )
+
+        broken = []
+        # 縫い目の弧長による対応付けは寸法の問題なので、型紙の上で測る
+        m_seams = build_seam_pairs(m, m_reference, report=broken, pose=m_positions)
+        if broken:
             warnings.append(
-                f"平らでないピースが {bent} 枚あり、その形のまま型紙(寸法の基準)に"
-                "なりました。曲げて配置したのなら、Restore Pattern か編集で平らに戻し、"
-                "Lock Pattern で型紙を確定してから曲げてください"
-                "(わざと平らでない型紙なら、この警告は気にしなくて構いません)"
+                f"'{m.name}' に使えない縫い目が {len(broken)} 本あります"
+                f"({', '.join(broken[:3])}{' ほか' if len(broken) > 3 else ''})。"
+                "縫い目の辺を消したか、片側が途切れて2本以上に分かれています。縫い直してください"
             )
+
+        positions += m_positions
+        reference += m_reference
+        edges += [(a + start, b + start) for a, b in m_edges]
+        bending_quads += [tuple(i + start for i in q) for q in m_quads]
+        triangles += [tuple(i + start for i in t) for t in m_tris]
+        seam_pairs += [(a + start, b + start) for a, b in m_seams]
+        count = len(m_positions) // 3
+        offsets.append((start, count))
+        layers += [mp.layer] * count
 
     sim = cloth_core.ClothSim(
         reference,
         edges,
         bending_quads,
         triangles,
-        pinned,
+        [],
         props.density,
         props.stretch_compliance,
         props.bending_compliance,
     )
-    if reference is not positions:
+    if reference != positions:
         sim.set_positions(positions)
+    pinned_count = apply_group_materials(sim, members, offsets)
+    if len(set(layers)) > 1:
+        sim.set_layers(layers)
 
-    broken_seams = []
-    # 縫い目の弧長による対応付けは寸法の問題なので、型紙の上で測る
-    seam_pairs = build_seam_pairs(obj, reference, report=broken_seams, pose=positions)
-    if broken_seams:
-        warnings.append(
-            f"使えない縫い目が {len(broken_seams)} 本あります"
-            f"({', '.join(broken_seams[:3])}"
-            f"{' ほか' if len(broken_seams) > 3 else ''})。"
-            "縫い目の辺を消したか、片側が途切れて2本以上に分かれています。縫い直してください"
-        )
     if seam_pairs:
         sim.set_seams(seam_pairs, props.seam_compliance)
         sim.set_seam_closure(0.0)
 
-    elastic_count = apply_elastics(obj, sim)
+    elastic_count = apply_group_elastics(sim, members, offsets)
 
     collider_objects = []
     if props.collision_enabled:
         for collider in collect_collider_objects(props):
-            if collider == obj:
-                continue  # 自分自身はコライダーにしない(それは自己衝突の役目)
+            if collider in members:
+                continue  # グループの布どうしは自己衝突で当たる(コライダーにしない)
             c_positions, c_triangles = build_collider_mesh(collider)
             if not c_triangles:
                 continue
@@ -650,18 +738,24 @@ def build_cloth_sim(obj, props):
             "布やコライダーが深く交差しています。配置を見直すか、"
             "Thickness を小さくしてください"
         )
+    if len(members) > 1 and not props.self_collision_enabled:
+        warnings.append(
+            f"重ね着のグループ '{props.sim_group}' ですが、先頭の布 '{lead.name}' の"
+            "Self Collision が切れています。布どうしが当たらずにすり抜けます"
+        )
 
     info = {
-        "vertices": len(mesh.vertices),
+        "vertices": len(positions) // 3,
         "edges": len(edges),
         "bending": len(bending_quads),
         "triangles": len(triangles),
-        "pinned": len(pinned),
+        "pinned": pinned_count,
         "seams": len(seam_pairs),
         "elastic_edges": elastic_count,
         "colliders": collider_objects,
         "collider_triangles": sim.collider_triangle_count,
         "untangle_remaining": remaining,
         "warnings": warnings,
+        "members": [(m.name, s, c) for m, (s, c) in zip(members, offsets)],
     }
     return sim, info

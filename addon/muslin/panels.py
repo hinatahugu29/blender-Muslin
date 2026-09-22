@@ -221,6 +221,20 @@ class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):
         sub.prop(props, "self_collision_thickness")
         sub.prop(props, "continuous_self_collision")
 
+        # 重ね着: 同じ Group の布をまとめて解き、Layer の内側を優先する
+        layout.separator()
+        col = layout.column(align=True)
+        col.prop(props, "sim_group")
+        sub = col.column(align=True)
+        sub.enabled = bool(props.sim_group)
+        sub.prop(props, "layer")
+        if props.sim_group:
+            obj = context.active_object
+            members = mesh_io.group_members(obj)
+            note = self.buttons(layout)
+            note.label(text=f"一緒に解く布: {len(members)} 着(設定は {members[0].name})",
+                       icon='MOD_CLOTH')
+
         layout.separator()
         col = layout.column(align=True)
         col.prop(props, "floor_enabled")
