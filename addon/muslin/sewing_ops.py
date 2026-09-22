@@ -241,6 +241,67 @@ class MUSLIN_OT_fill_outline(bpy.types.Operator):
         return {'FINISHED'}
 
 
+UV_LAYER = "MuslinPattern"
+
+
+class MUSLIN_OT_pattern_to_uv(bpy.types.Operator):
+    """型紙の平らな形から UV を作る(全ピースで実寸の比をそろえる)
+
+    着せた後の形ではなく型紙から作るので、布が伸びたり曲がったりしても
+    柄はゆがまない。UV マップ "MuslinPattern" に書き、UV の 1 が何メートルかを
+    オブジェクトのカスタムプロパティ muslin_meters_per_uv に残す。
+    """
+
+    bl_idname = "muslin.pattern_to_uv"
+    bl_label = "Pattern to UV"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        return ui_poll.mesh_selected(cls, context)
+
+    def execute(self, context):
+        import numpy as np
+        from . import pattern_uv
+        from . import rest_shape
+
+        obj = context.active_object
+        mesh = obj.data
+        edges = np.empty(len(mesh.edges) * 2, dtype=np.int32)
+        mesh.edges.foreach_get("vertices", edges)
+        edges = edges.reshape(-1, 2)
+
+        pattern = rest_shape.load_pattern(obj)
+        source = "型紙"
+        if pattern is None:
+            # 一度も開始していない(型紙が無い)ときは今の形から作る
+            pattern = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+            mesh.vertices.foreach_get("co", pattern)
+            source = "今の形"
+        bent = rest_shape.bent_islands(pattern, edges)
+
+        uvs, meters_per_uv = pattern_uv.layout(pattern, edges)
+
+        layer = mesh.uv_layers.get(UV_LAYER) or mesh.uv_layers.new(name=UV_LAYER)
+        loop_vertices = np.empty(len(mesh.loops), dtype=np.int32)
+        mesh.loops.foreach_get("vertex_index", loop_vertices)
+        layer.data.foreach_set("uv", uvs[loop_vertices].astype(np.float32).ravel())
+        mesh.uv_layers.active = layer
+        obj["muslin_meters_per_uv"] = meters_per_uv
+        mesh.update()
+
+        message = (f"{source}から UV を作りました(UV の 1 = {meters_per_uv:.3f} m、"
+                   f"ピース {len(pattern_uv.islands(len(mesh.vertices), edges))} 枚)")
+        if bent:
+            self.report({'WARNING'}, message + f"。平らでないピースが {bent} 枚あり、"
+                        "そのピースの柄はゆがみます(Lock Pattern してから曲げてください)")
+        else:
+            self.report({'INFO'}, message)
+        return {'FINISHED'}
+
+
 # -------------------------------------------------------------- シーム編集
 
 class MUSLIN_OT_join_pieces(bpy.types.Operator):
@@ -528,6 +589,7 @@ _classes = (
     MUSLIN_OT_add_pattern_piece,
     MUSLIN_OT_fill_outline,
     MUSLIN_OT_join_pieces,
+    MUSLIN_OT_pattern_to_uv,
     MUSLIN_OT_add_seam,
     MUSLIN_OT_remove_seam,
     MUSLIN_OT_clear_seams,

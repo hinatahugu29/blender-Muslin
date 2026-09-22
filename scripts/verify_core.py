@@ -720,6 +720,65 @@ def test_seam_codes():
     check("途切れた側は2本になる", len(cut) == 2, str(cut))
 
 
+def test_pattern_uv():
+    """型紙から UV を作る(bpy 非依存)"""
+    if not has_numpy():
+        skip("型紙から UV", "numpy が無い")
+        return
+    import numpy as np
+    import pattern_uv
+
+    # 立てて作った型紙 2 枚(XZ 平面。前身頃 0.5x0.7 と 小さな 0.3x0.2)
+    def rect(w, h, y, nx=6, nz=8, x0=0.0):
+        pts, edges = [], []
+        for k in range(nz):
+            for i in range(nx):
+                pts.append((x0 + w * i / (nx - 1), y, h * k / (nz - 1)))
+        for k in range(nz):
+            for i in range(nx):
+                a = k * nx + i
+                if i + 1 < nx:
+                    edges.append((a, a + 1))
+                if k + 1 < nz:
+                    edges.append((a, a + nx))
+        return pts, edges
+
+    p1, e1 = rect(0.5, 0.7, 0.0)
+    p2, e2 = rect(0.3, 0.2, 0.3, x0=2.0)
+    n1 = len(p1)
+    pts = np.array(p1 + p2)
+    edges = e1 + [(a + n1, b + n1) for a, b in e2]
+    uvs, mpu = pattern_uv.layout(pts.ravel(), edges)
+
+    check("UV は 0〜1 に収まる", uvs.min() >= -1e-9 and uvs.max() <= 1 + 1e-9,
+          f"{uvs.min():.3f}〜{uvs.max():.3f}")
+    e = np.array(edges)
+    real = np.linalg.norm(pts[e[:, 0]] - pts[e[:, 1]], axis=1)
+    on_uv = np.linalg.norm(uvs[e[:, 0]] - uvs[e[:, 1]], axis=1) * mpu
+    check("UV 上の長さ × 縮尺 = 型紙の実寸(全ピース共通の縮尺)",
+          np.allclose(real, on_uv, atol=1e-9), f"最大差 {np.abs(real - on_uv).max():.2e}m")
+    top = int(np.argmax(pts[:n1, 2]))
+    bottom = int(np.argmin(pts[:n1, 2]))
+    check("立てた型紙は上が UV の上になる", uvs[top, 1] > uvs[bottom, 1])
+    right = int(np.argmax(pts[:n1, 0]))
+    left = int(np.argmin(pts[:n1, 0]))
+    check("左右も反転しない", uvs[right, 0] > uvs[left, 0])
+
+    def box(ids):
+        return uvs[ids].min(axis=0), uvs[ids].max(axis=0)
+    (a0, a1), (b0, b1) = box(list(range(n1))), box(list(range(n1, len(pts))))
+    overlap = (a0 < b1).all() and (b0 < a1).all()
+    check("ピースどうしが重ならない", not overlap)
+
+    # 寝かせて作った型紙(XY 平面)でも実寸の比が保たれる
+    flat = pts.copy()[:n1]
+    flat[:, [1, 2]] = flat[:, [2, 1]]
+    uvs2, mpu2 = pattern_uv.layout(flat.ravel(), e1)
+    on_uv2 = np.linalg.norm(uvs2[np.array(e1)[:, 0]] - uvs2[np.array(e1)[:, 1]], axis=1) * mpu2
+    check("寝かせた型紙でも実寸の比が保たれる",
+          np.allclose(real[:len(e1)], on_uv2, atol=1e-9))
+
+
 def test_bent_islands():
     """平らでない(曲げて置いた)ピースの判定(bpy 非依存)"""
     if not has_numpy():
@@ -1072,6 +1131,7 @@ def main():
     test_seam_logic()
     test_seam_codes()
     test_grab()
+    test_pattern_uv()
     test_bent_islands()
     test_pattern_mismatch()
     test_cache_io()

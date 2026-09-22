@@ -318,6 +318,7 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
             else:
                 layout.operator("muslin.lock_pattern", icon='LOCKED')
                 layout.label(text="曲げて配置する前に確定する", icon='INFO')
+            layout.operator("muslin.pattern_to_uv", icon='UV')
 
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):

@@ -874,6 +874,36 @@ def main():
         check("離した後にあらためて落ち着く", d.settled, d.summary())
     d.cancel()
 
+    # ---- 型紙から UV を作る: 着せた後でも型紙の実寸どおり ----
+    piece = make_dress_scene()
+    bpy.ops.muslin.dress()
+    res = bpy.ops.muslin.pattern_to_uv()
+    check("Pattern to UV が通る", res == {'FINISHED'}, str(res))
+    layer = piece.data.uv_layers.get("MuslinPattern")
+    check("UV マップ MuslinPattern ができる", layer is not None)
+    if layer is not None:
+        me = piece.data
+        uv = np.empty(len(me.loops) * 2, dtype=np.float32)
+        layer.data.foreach_get("uv", uv)
+        uv = uv.reshape(-1, 2)
+        lv = np.empty(len(me.loops), dtype=np.int32)
+        me.loops.foreach_get("vertex_index", lv)
+        per_vertex = np.zeros((len(me.vertices), 2))
+        per_vertex[lv] = uv
+        ev = np.empty(len(me.edges) * 2, dtype=np.int32)
+        me.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        mpu = piece["muslin_meters_per_uv"]
+        pat = rest_shape.load_pattern(piece).reshape(-1, 3)
+        real = np.linalg.norm(pat[ev[:, 0]] - pat[ev[:, 1]], axis=1)
+        on_uv = np.linalg.norm(per_vertex[ev[:, 0]] - per_vertex[ev[:, 1]], axis=1) * mpu
+        check("着せた後でも UV は型紙の実寸どおり(ゆがまない)",
+              np.allclose(real, on_uv, atol=1e-5), f"最大差 {np.abs(real - on_uv).max() * 1000:.3f}mm")
+        now = np.asarray(positions_of(piece))
+        dressed_len = np.linalg.norm(now[ev[:, 0]] - now[ev[:, 1]], axis=1)
+        check("(前提)着せた形は型紙と違う", np.abs(dressed_len - real).max() > 1e-4)
+        check("UV の 1 が何 m かを残す", mpu > 0.1, f"{mpu:.3f} m")
+
     # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
     def bend_around(o):
         xs_ = [v.co.x for v in o.data.vertices]
