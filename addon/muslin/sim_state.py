@@ -82,6 +82,7 @@ def create_state(obj, props):
         "name": obj.name,
         "material": _material_signature(props),
         "seam_count": _enabled_seam_count(obj),
+        "elastic": mesh_io.elastic_signature(obj),
     }
 
 
@@ -105,9 +106,20 @@ def _sync_material(state, props, obj=None):
 
     既に計算したフレームは古い生地の結果なので、キャッシュは捨てる。
     """
+    # ゴム紐の倍率も走らせたまま効かせる(set_rest_scales は安い)
+    changed = False
+    if obj is not None:
+        elastic = mesh_io.elastic_signature(obj)
+        if elastic != state.get("elastic"):
+            state["info"]["elastic_edges"] = mesh_io.apply_elastics(obj, state["sim"])
+            state["elastic"] = elastic
+            changed = True
+
     signature = _material_signature(props)
     if signature == state["material"]:
-        return False
+        if changed and state["cache"] is not None:
+            state["cache"] = {state["start_frame"]: state["rest_positions"]}
+        return changed
 
     sim = state["sim"]
     sim.set_density(props.density)

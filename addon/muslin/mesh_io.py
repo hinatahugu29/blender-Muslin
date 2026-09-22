@@ -138,7 +138,12 @@ def read_seam_codes(mesh):
     オブジェクトモードのメッシュから読む。編集モード中は編集用の BMesh が
     正しいので `bmesh_seam_codes` を使う。
     """
-    attr = mesh.attributes.get(seams.SEAM_ATTRIBUTE)
+    return read_edge_ints(mesh, seams.SEAM_ATTRIBUTE)
+
+
+def read_edge_ints(mesh, name):
+    """辺の整数属性 name の値と、辺の頂点対を返す(縫い目・ゴム紐で共通)。"""
+    attr = mesh.attributes.get(name)
     if attr is None or attr.domain != 'EDGE' or attr.data_type != 'INT':
         return None, None
     count = len(mesh.edges)
@@ -256,6 +261,50 @@ def build_seam_pairs(obj, positions=None, report=None, pose=None):
             pairs.append((ia, ib))
 
     return pairs
+
+
+# ------------------------------------------------------------------ ゴム紐
+
+# 辺の整数属性。値はゴム紐の uid(0 はどれにも属さない)。縫い目と同じく
+# Blender が統合・細分化・削除に合わせて辺と一緒に運ぶ。
+ELASTIC_ATTRIBUTE = "muslin_elastic"
+
+
+def elastic_signature(obj):
+    """ゴム紐の設定の指紋。走らせたまま倍率を変えたことを見つけるのに使う。"""
+    return tuple((e.uid, round(e.scale, 6), e.enabled)
+                 for e in getattr(obj, "muslin_elastics", []))
+
+
+def elastic_edges(obj):
+    """ゴム紐として縮める (辺, 倍率) の列。オブジェクトモードのメッシュから読む。"""
+    wanted = {e.uid: e.scale for e in getattr(obj, "muslin_elastics", [])
+              if e.enabled and e.uid}
+    if not wanted:
+        return [], []
+    codes, edges = read_edge_ints(obj.data, ELASTIC_ATTRIBUTE)
+    if codes is None:
+        return [], []
+    pairs, scales = [], []
+    for c, e in zip(codes, edges):
+        if c in wanted:
+            pairs.append((int(e[0]), int(e[1])))
+            scales.append(float(wanted[c]))
+    return pairs, scales
+
+
+def apply_elastics(obj, sim):
+    """ゴム紐の倍率をコアに渡す。当てはまった辺の数を返す。"""
+    pairs, scales = elastic_edges(obj)
+    return sim.set_rest_scales(pairs, scales)
+
+
+def next_elastic_uid():
+    used = 0
+    for obj in bpy.data.objects:
+        for e in getattr(obj, "muslin_elastics", []):
+            used = max(used, e.uid)
+    return used + 1
 
 
 # -------------------------------------------------------------- コリジョン
@@ -569,6 +618,8 @@ def build_cloth_sim(obj, props):
         sim.set_seams(seam_pairs, props.seam_compliance)
         sim.set_seam_closure(0.0)
 
+    elastic_count = apply_elastics(obj, sim)
+
     collider_objects = []
     if props.collision_enabled:
         for collider in collect_collider_objects(props):
@@ -607,6 +658,7 @@ def build_cloth_sim(obj, props):
         "triangles": len(triangles),
         "pinned": len(pinned),
         "seams": len(seam_pairs),
+        "elastic_edges": elastic_count,
         "colliders": collider_objects,
         "collider_triangles": sim.collider_triangle_count,
         "untangle_remaining": remaining,

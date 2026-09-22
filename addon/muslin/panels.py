@@ -358,6 +358,37 @@ class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
         col.prop(props, "seam_compliance")
 
 
+class MUSLIN_UL_elastics(bpy.types.UIList):
+    """ゴム紐リスト"""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        row.prop(item, "name", text="", emboss=False, icon='MOD_WAVE')
+        row.prop(item, "scale", text="")
+
+
+class MUSLIN_PT_elastic(_MuslinPanelBase, bpy.types.Panel):
+    bl_label = "Elastic"
+    bl_parent_id = "MUSLIN_PT_sewing"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            layout.label(text="メッシュを選択してください", icon='INFO')
+            return
+        layout.label(text="編集モードでゴムを入れる辺を選択:")
+        layout.operator("muslin.add_elastic", icon='ADD')
+        row = layout.row()
+        row.template_list(
+            "MUSLIN_UL_elastics", "", obj, "muslin_elastics", obj, "muslin_elastic_active", rows=2
+        )
+        row.column(align=True).operator("muslin.remove_elastic", text="", icon='REMOVE')
+        layout.label(text="Length 0.8 = 2割縮める(走らせたまま変えられる)", icon='INFO')
+
+
 class MUSLIN_PT_bake(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Bake"
     bl_parent_id = "MUSLIN_PT_main"
@@ -430,6 +461,7 @@ class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
 
 _classes = (
     MUSLIN_UL_seams,
+    MUSLIN_UL_elastics,
     MUSLIN_PT_main,
     MUSLIN_PT_solver,
     MUSLIN_PT_solver_advanced,
@@ -439,6 +471,7 @@ _classes = (
     MUSLIN_PT_pinning,
     MUSLIN_PT_pattern,
     MUSLIN_PT_sewing,
+    MUSLIN_PT_elastic,
     MUSLIN_PT_bake,
     MUSLIN_PT_debug,
 )

@@ -178,6 +178,25 @@ class MUSLIN_PG_seam(bpy.types.PropertyGroup):
     )
 
 
+class MUSLIN_PG_elastic(bpy.types.PropertyGroup):
+    """ゴム紐(弾性グループ)。辺の属性 `muslin_elastic` に uid を書いた辺を縮める。"""
+
+    name: bpy.props.StringProperty(name="Name", default="Elastic")
+    uid: bpy.props.IntProperty(name="UID", default=0, min=0)
+    scale: bpy.props.FloatProperty(
+        name="Length",
+        description=(
+            "辺の長さの倍率。0.8 なら 2 割縮もうとして、まわりの布を寄せる"
+            "(ウエストや袖口のゴム)。1 で効かない"
+        ),
+        default=0.8,
+        min=0.2,
+        max=1.5,
+        subtype='FACTOR',
+    )
+    enabled: bpy.props.BoolProperty(name="Enabled", default=True)
+
+
 class MUSLIN_PG_tools(bpy.types.PropertyGroup):
     """シーン単位の設定。ツールと表示に関わるものだけ。"""
 
@@ -512,6 +531,7 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
 _classes = (
     MUSLIN_PG_vertex_index,
     MUSLIN_PG_seam,
+    MUSLIN_PG_elastic,
     MUSLIN_PG_tools,
     MUSLIN_PG_cloth,
 )
@@ -527,9 +547,13 @@ def register():
     # シームは「どのメッシュに属するか」が本質なのでオブジェクトに持たせる
     bpy.types.Object.muslin_seams = bpy.props.CollectionProperty(type=MUSLIN_PG_seam)
     bpy.types.Object.muslin_seam_active = bpy.props.IntProperty(default=0)
+    bpy.types.Object.muslin_elastics = bpy.props.CollectionProperty(type=MUSLIN_PG_elastic)
+    bpy.types.Object.muslin_elastic_active = bpy.props.IntProperty(default=0)
 
 
 def unregister():
+    del bpy.types.Object.muslin_elastic_active
+    del bpy.types.Object.muslin_elastics
     del bpy.types.Object.muslin_seam_active
     del bpy.types.Object.muslin_seams
     del bpy.types.Scene.muslin_tools

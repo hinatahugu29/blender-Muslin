@@ -584,6 +584,32 @@ impl ClothSim {
         }
     }
 
+    /// 辺ごとの長さの倍率を設定する(ゴム紐。M7)。
+    ///
+    /// `edges[k]` の伸び制約の目標長を、組み立て時の長さ × `scales[k]` にする。
+    /// 渡さなかった辺は倍率 1 に戻す(呼ぶたびに全体を置き換える)。
+    /// 倍率 0.8 なら 2 割縮もうとして、まわりの布を寄せる(ギャザー)。
+    /// 伸び制約に無い辺は無視し、当てはまった辺の数を返す。
+    pub fn set_rest_scales(&mut self, edges: &[(usize, usize)], scales: &[f64]) -> usize {
+        let mut wanted = std::collections::HashMap::new();
+        for (&(a, b), &s) in edges.iter().zip(scales.iter()) {
+            wanted.insert((a.min(b), a.max(b)), s.max(0.0));
+        }
+        let mut matched = 0;
+        for c in self.stretch_constraints.iter_mut() {
+            let key = (c.i0.min(c.i1), c.i0.max(c.i1));
+            let scale = match wanted.get(&key) {
+                Some(&s) => {
+                    matched += 1;
+                    s
+                }
+                None => 1.0,
+            };
+            c.rest_length = c.initial_length * scale;
+        }
+        matched
+    }
+
     /// ピン留めを再設定する。面積から算出した質量分布は保持される。
     pub fn set_pinned(&mut self, pinned: &[usize]) {
         self.inv_mass.copy_from_slice(&self.base_inv_mass);
@@ -2578,6 +2604,39 @@ mod tests {
         sim.step(1.0 / 60.0, &SimParams::default());
         assert!(sim.positions[pin].sub(before).length() < 1e-12);
         assert!(sim.set_grab(999, Vec3::zero(), 0.0).is_err());
+    }
+
+    /// ゴム紐: 倍率を掛けた辺が縮み、布が寄る。倍率 1 に戻せば元の長さ。
+    #[test]
+    fn rest_scales_shrink_marked_edges_and_can_be_reset() {
+        // 横一列 11 頂点の紐。真ん中の 4 辺だけを 0.5 倍にする
+        let positions: Vec<Vec3> = (0..11).map(|i| Vec3::new(i as f64 * 0.1, 0.0, 0.0)).collect();
+        let edges: Vec<(usize, usize)> = (0..10).map(|i| (i, i + 1)).collect();
+        let mut sim = ClothSim::new(positions, &edges, &[], &[], &[0, 10], 0.0, 0.0, 0.0);
+        let marked: Vec<(usize, usize)> = (3..7).map(|i| (i + 1, i)).collect(); // 向きは逆でもよい
+        let matched = sim.set_rest_scales(&marked, &[0.5; 4]);
+        assert_eq!(matched, 4);
+        assert!(sim.set_rest_scales(&[(0, 5)], &[0.5]) == 0, "伸び制約に無い辺は数えない");
+        sim.set_rest_scales(&marked, &[0.5; 4]);
+
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.5,
+            ..SimParams::default()
+        };
+        for _ in 0..120 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        let len = |s: &ClothSim, i: usize| s.positions[i].sub(s.positions[i + 1]).length();
+        // 両端を留めているので全長は 1m のまま。縮んだ辺のぶん、他の辺が伸ばされる
+        let shrunk = (3..7).map(|i| len(&sim, i)).sum::<f64>() / 4.0;
+        let others = [0, 1, 2, 7, 8, 9].iter().map(|&i| len(&sim, i)).sum::<f64>() / 6.0;
+        assert!(shrunk < others, "縮めた辺 {shrunk:.4} が他の辺 {others:.4} より短くない");
+
+        sim.set_rest_scales(&[], &[]);
+        for c in &sim.stretch_constraints {
+            assert!((c.rest_length - c.initial_length).abs() < 1e-12, "倍率 1 に戻っていない");
+        }
     }
 
     /// 床面衝突: 布が床を突き抜けない

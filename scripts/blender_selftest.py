@@ -1042,6 +1042,108 @@ def main():
           str(res))
 
     # ----------------------------------------------------------------
+    section("ゴム紐(M7)")
+
+    def hem_grid(name, x=0.0):
+        """上端を留めた布。裾(一番下の行)の辺を選んだ状態で返す。"""
+        o = make_grid(name, side=11, size=0.5, z=1.0)
+        o.location.x = x
+        bpy.context.view_layer.update()
+        o.muslin.collision_enabled = False
+        g = o.vertex_groups.new(name="Pin")
+        g.add([v.index for v in o.data.vertices if v.co.y > 0.49], 1.0, 'REPLACE')
+        o.muslin.pin_vertex_group = "Pin"
+        # 頂点と面の選択も外す。辺だけ選び直しても、編集モードに入ると
+        # 頂点の選択(作った直後は全選択)から辺の選択が作り直される
+        for v in o.data.vertices:
+            v.select = v.co.y < 1e-6
+        for p in o.data.polygons:
+            p.select = False
+        for e in o.data.edges:
+            a, b = (o.data.vertices[i].co for i in e.vertices)
+            e.select = a.y < 1e-6 and b.y < 1e-6
+        return o
+
+    def hem_width(o, frames=40):
+        bpy.context.scene.frame_set(1)
+        bpy.context.view_layer.objects.active = o
+        bpy.ops.muslin.start_sim()
+        advance(frames, start=2)
+        bottom = [v.co.x for v in o.data.vertices
+                  if rest_shape.load(o)[v.index * 3 + 1] < 1e-6]
+        bpy.ops.muslin.stop_sim()
+        return max(bottom) - min(bottom)
+
+    clear_scene()
+    plain = hem_grid("Plain")
+    plain_width = hem_width(plain)
+
+    clear_scene()
+    band = hem_grid("Band")
+    bpy.ops.object.mode_set(mode='EDIT')
+    res = bpy.ops.muslin.add_elastic()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    check("Add Elastic From Selection が通る", res == {'FINISHED'}, str(res))
+    check("ゴム紐が登録される", len(band.muslin_elastics) == 1 and band.muslin_elastics[0].uid > 0)
+    band.muslin_elastics[0].scale = 0.6
+    pairs, scales = mesh_io.elastic_edges(band)
+    check("裾の辺がゴム紐になる", len(pairs) == 10 and all(abs(s - 0.6) < 1e-6 for s in scales),
+          f"{len(pairs)} 本")
+    band_width = hem_width(band)
+    check("ゴム紐を入れた裾は狭まる", band_width < plain_width * 0.8,
+          f"ゴムなし {plain_width * 100:.1f}cm / ゴム 0.6 {band_width * 100:.1f}cm")
+
+    # 走らせたまま倍率を変えると効く(組み立て直さない)
+    bpy.context.scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    advance(20, start=2)
+    band.muslin_elastics[0].scale = 1.0
+    advance(40, start=22)
+    state = sim_state.get_state(band)
+    relaxed = [v.co.x for v in band.data.vertices if rest_shape.load(band)[v.index * 3 + 1] < 1e-6]
+    check("走らせたまま倍率を 1 に戻すと裾が広がる",
+          max(relaxed) - min(relaxed) > band_width * 1.1 and state["info"]["elastic_edges"] == 10,
+          f"{(max(relaxed) - min(relaxed)) * 100:.1f}cm")
+    check("走らせたまま変えても組み立て直しを求めない",
+          sim_state.restart_reasons(band, band.muslin) == [])
+    bpy.ops.muslin.stop_sim()
+
+    # 統合で引き継ぐ(複製した布の uid は振り直す)
+    bpy.context.scene.frame_set(1)
+    twin = band.copy()
+    twin.data = band.data.copy()
+    twin.location.x += 1.0
+    bpy.context.collection.objects.link(twin)
+    for o in bpy.context.scene.objects:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = band
+    bpy.ops.muslin.join_pieces()
+    uids = [e.uid for e in band.muslin_elastics]
+    pairs, _ = mesh_io.elastic_edges(band)
+    check("統合してもゴム紐が引き継がれる", len(uids) == 2 and len(set(uids)) == 2 and len(pairs) == 20,
+          f"uid {uids} / {len(pairs)} 本")
+
+    # 削除すると属性からも消える
+    band.muslin_elastic_active = 0
+    removed = band.muslin_elastics[0].uid
+    bpy.ops.muslin.remove_elastic()
+    codes, _ = mesh_io.read_edge_ints(band.data, mesh_io.ELASTIC_ATTRIBUTE)
+    check("Remove Elastic で属性からも消える", removed not in codes and len(mesh_io.elastic_edges(band)[0]) == 10)
+
+    from muslin import panels as panels_mod
+    class _Row:
+        def __init__(self):
+            self.props = []
+        def row(self, **_kw):
+            return self
+        def prop(self, _d, name, **_kw):
+            self.props.append(name)
+    r = _Row()
+    panels_mod.MUSLIN_UL_elastics.draw_item(None, bpy.context, r, band, band.muslin_elastics[0],
+                                            0, band, "muslin_elastic_active", 0)
+    check("ゴム紐の行を描ける", r.props == ["enabled", "name", "scale"], str(r.props))
+
+    # ----------------------------------------------------------------
     section("計測機構")
     clear_scene()
     obj = make_grid("Timed", side=11, z=1.0)

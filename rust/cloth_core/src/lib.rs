@@ -290,6 +290,16 @@ mod bindings {
                 .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
+        /// 辺ごとの長さの倍率(ゴム紐)。渡さなかった辺は 1 に戻す。当てはまった辺の数を返す
+        fn set_rest_scales(&mut self, edges: Vec<(u32, u32)>, scales: Vec<f64>) -> PyResult<usize> {
+            if edges.len() != scales.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "edges と scales の長さが違います",
+                ));
+            }
+            Ok(self.inner.set_rest_scales(&as_usize_pairs(&edges), &scales))
+        }
+
         /// つまむのをやめる
         fn clear_grab(&mut self) {
             self.inner.clear_grab();

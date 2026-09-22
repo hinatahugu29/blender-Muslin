@@ -241,6 +241,120 @@ class MUSLIN_OT_fill_outline(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ------------------------------------------------------------ ゴム紐
+
+def _clear_elastic_codes(obj, uids):
+    """指定した uid のゴム紐を辺の属性から消す。編集モードでも動く。"""
+    import numpy as np
+    wanted = set(uids)
+    if not wanted:
+        return
+    if obj.mode == 'EDIT':
+        bm = bmesh.from_edit_mesh(obj.data)
+        layer = bm.edges.layers.int.get(mesh_io.ELASTIC_ATTRIBUTE)
+        if layer is not None:
+            for e in bm.edges:
+                if e[layer] in wanted:
+                    e[layer] = 0
+            bmesh.update_edit_mesh(obj.data)
+        return
+    attr = obj.data.attributes.get(mesh_io.ELASTIC_ATTRIBUTE)
+    if attr is None:
+        return
+    codes = np.zeros(len(obj.data.edges), dtype=np.int32)
+    attr.data.foreach_get("value", codes)
+    for c in wanted:
+        codes[codes == c] = 0
+    attr.data.foreach_set("value", codes)
+    obj.data.update()
+
+
+def _renumber_elastics(obj, taken):
+    """複製したピースのゴム紐の uid が重なっていたら振り直す(統合の前に)。"""
+    import numpy as np
+    clash = [e for e in obj.muslin_elastics if e.uid and e.uid in taken]
+    if not clash:
+        return
+    attr = obj.data.attributes.get(mesh_io.ELASTIC_ATTRIBUTE)
+    codes = None
+    if attr is not None:
+        codes = np.zeros(len(obj.data.edges), dtype=np.int32)
+        attr.data.foreach_get("value", codes)
+    start = max(mesh_io.next_elastic_uid(), max(taken) + 1)
+    for k, elastic in enumerate(clash):
+        new = start + k
+        if codes is not None:
+            codes[codes == elastic.uid] = new
+        elastic.uid = new
+    if attr is not None:
+        attr.data.foreach_set("value", codes)
+        obj.data.update()
+
+
+class MUSLIN_OT_add_elastic(bpy.types.Operator):
+    """編集モードで選んだ辺をゴム紐にする(長さの倍率をかけて縮める)"""
+
+    bl_idname = "muslin.add_elastic"
+    bl_label = "Add Elastic From Selection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return ui_poll.in_edit_mode(cls, context)
+
+    def execute(self, context):
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+        # 層を足すと要素の参照が作り直されるので、先に作っておく
+        layer = (bm.edges.layers.int.get(mesh_io.ELASTIC_ATTRIBUTE)
+                 or bm.edges.layers.int.new(mesh_io.ELASTIC_ATTRIBUTE))
+        picked = [e for e in bm.edges if e.select]
+        if not picked:
+            self.report({'ERROR'}, "エッジが選択されていません")
+            return {'CANCELLED'}
+        uid = mesh_io.next_elastic_uid()
+        moved = sum(1 for e in picked if e[layer] != 0)
+        for e in picked:
+            e[layer] = uid
+        bmesh.update_edit_mesh(obj.data)
+
+        elastic = obj.muslin_elastics.add()
+        elastic.name = f"Elastic {len(obj.muslin_elastics)}"
+        elastic.uid = uid
+        obj.muslin_elastic_active = len(obj.muslin_elastics) - 1
+        message = f"{elastic.name}: {len(picked)} 本の辺(長さ ×{elastic.scale:.2f})"
+        if moved:
+            self.report({'WARNING'}, message + f"。{moved} 本は別のゴム紐から付け替えました")
+        else:
+            self.report({'INFO'}, message)
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_remove_elastic(bpy.types.Operator):
+    """選択中のゴム紐を削除する"""
+
+    bl_idname = "muslin.remove_elastic"
+    bl_label = "Remove Elastic"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        if len(context.active_object.muslin_elastics) == 0:
+            return ui_poll.reject(cls, "ゴム紐がまだ登録されていません")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        index = obj.muslin_elastic_active
+        if 0 <= index < len(obj.muslin_elastics):
+            _clear_elastic_codes(obj, [obj.muslin_elastics[index].uid])
+            obj.muslin_elastics.remove(index)
+            obj.muslin_elastic_active = max(0, index - 1)
+        return {'FINISHED'}
+
+
 UV_LAYER = "MuslinPattern"
 
 
@@ -352,6 +466,16 @@ class MUSLIN_OT_join_pieces(bpy.types.Operator):
             for obj in meshes if obj is not active
             for s in obj.muslin_seams if s.uid
         ]
+        # ゴム紐も同じ(辺の属性は Blender が運ぶので、登録だけ写す)
+        taken = set()
+        for obj in meshes:
+            _renumber_elastics(obj, taken)
+            taken |= {e.uid for e in obj.muslin_elastics if e.uid}
+        carried_elastics = [
+            (e.name, e.uid, e.scale, e.enabled)
+            for obj in meshes if obj is not active
+            for e in obj.muslin_elastics if e.uid
+        ]
 
         bpy.ops.object.join()
 
@@ -362,6 +486,9 @@ class MUSLIN_OT_join_pieces(bpy.types.Operator):
         for name, uid, invert, enabled in carried:
             seam = active.muslin_seams.add()
             seam.name, seam.uid, seam.invert, seam.enabled = name, uid, invert, enabled
+        for name, uid, scale, enabled in carried_elastics:
+            elastic = active.muslin_elastics.add()
+            elastic.name, elastic.uid, elastic.scale, elastic.enabled = name, uid, scale, enabled
 
         if lost:
             self.report(
@@ -590,6 +717,8 @@ _classes = (
     MUSLIN_OT_fill_outline,
     MUSLIN_OT_join_pieces,
     MUSLIN_OT_pattern_to_uv,
+    MUSLIN_OT_add_elastic,
+    MUSLIN_OT_remove_elastic,
     MUSLIN_OT_add_seam,
     MUSLIN_OT_remove_seam,
     MUSLIN_OT_clear_seams,
