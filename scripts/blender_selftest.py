@@ -742,7 +742,7 @@ def main():
 
         平らなまま置くと、縫い目が閉じるときに布が平面の中で二つ折りになり、
         円柱に一度も触れなかった(最初の版の場面がそうだった)。型紙は平らな
-        形で記録してから曲げる。本来は「配置」の機能がやること(ROADMAP M7)。
+        形で確定(Lock Pattern)してから曲げる。
         """
         clear_scene()
         scene = bpy.context.scene
@@ -761,17 +761,15 @@ def main():
         group.add([v.index for v in piece.data.vertices
                    if v.co.z > top - 1e-5 and abs(v.co.x) < 0.1], 1.0, "REPLACE")
 
-        # 型紙(平ら)を記録し、固定してから円柱のまわりに曲げる
-        rest_shape.store_pattern(piece)
-        rest_shape.mark_dressed(piece)
+        # 平らなうちに型紙を確定してから、円柱のまわりに曲げて置く(実際の手順どおり)
+        bpy.context.view_layer.objects.active = piece
+        assert bpy.ops.muslin.lock_pattern() == {'FINISHED'}
         width = max(v.co.x for v in piece.data.vertices) - min(v.co.x for v in piece.data.vertices)
         radius = width / (1.5 * math.pi)        # 3/4 周で一周する半径
         for v in piece.data.vertices:
             theta = v.co.x / radius
             v.co.x, v.co.y = radius * math.sin(theta), -radius * math.cos(theta)
         piece.data.update()
-        rest_shape.store(piece)
-        rest_shape.mark_dressed(piece)
         props = piece.muslin
         props.pin_vertex_group = "Pin"
         props.collider_object = body
@@ -875,6 +873,77 @@ def main():
             pass
         check("離した後にあらためて落ち着く", d.settled, d.summary())
     d.cancel()
+
+    # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
+    def bend_around(o):
+        xs_ = [v.co.x for v in o.data.vertices]
+        r = (max(xs_) - min(xs_)) / (1.5 * math.pi)
+        for v in o.data.vertices:
+            t = v.co.x / r
+            v.co.x, v.co.y = r * math.sin(t), -r * math.cos(t)
+        o.data.update()
+
+    def pattern_depth(o):
+        pat = rest_shape.load_pattern(o).reshape(-1, 3)
+        return float(np.ptp(pat[:, 1]))
+
+    # 確定しないまま曲げて開始すると、曲げた形が型紙になる(これが穴だった)
+    clear_scene()
+    bpy.ops.muslin.add_pattern_piece()
+    loose = bpy.context.active_object
+    loose.muslin.collision_enabled = False
+    check("最初は型紙が確定していない", not rest_shape.is_pattern_locked(loose))
+    bend_around(loose)
+    info = sim_state.start_simulation(loose, loose.muslin)
+    sim_state.stop_simulation(loose)
+    check("確定せずに曲げると警告が出る",
+          any("平らでないピース" in w for w in info["warnings"]), " / ".join(info["warnings"])[:80])
+    check("確定せずに曲げると曲げた形が型紙になる", pattern_depth(loose) > 0.05,
+          f"型紙の奥行き {pattern_depth(loose) * 100:.1f}cm")
+
+    # 確定してから曲げれば、型紙は平らなまま
+    clear_scene()
+    bpy.ops.muslin.add_pattern_piece()
+    locked = bpy.context.active_object
+    locked.muslin.collision_enabled = False
+    res = bpy.ops.muslin.lock_pattern()
+    check("Lock Pattern が通る", res == {'FINISHED'} and rest_shape.is_pattern_locked(locked),
+          str(res))
+    check("確定済みならもう押せない", not bpy.ops.muslin.lock_pattern.poll())
+    check("確定しても着せた段階にはならない(Adjust は押せない)",
+          not rest_shape.is_dressed(locked) and not bpy.ops.muslin.adjust.poll())
+    bend_around(locked)
+    info = sim_state.start_simulation(locked, locked.muslin)
+    check("確定してから曲げると警告は出ない",
+          not any("平らでないピース" in w for w in info["warnings"]), " / ".join(info["warnings"])[:80])
+    check("確定してから曲げても型紙は平らなまま", pattern_depth(locked) < 1e-6,
+          f"{pattern_depth(locked):.2e}")
+    advance(3, start=2)
+    sim_state.stop_simulation(locked)
+
+    # シミュレーションの結果が出ているときは確定できない(計算結果を型紙にしない)
+    rest_shape.unlock_pattern(locked)
+    check("結果が出ているときは確定できない",
+          rest_shape.is_deformed(locked) and not bpy.ops.muslin.lock_pattern.poll())
+    bpy.context.scene.frame_set(1)       # 元の形(曲げた形)に戻る
+
+    # Unlock すると作る段階に戻り、次の開始で今の形が型紙になる
+    bpy.ops.muslin.lock_pattern()
+    res = bpy.ops.muslin.unlock_pattern()
+    check("Unlock Pattern で作る段階に戻る",
+          res == {'FINISHED'} and not rest_shape.is_pattern_locked(locked), str(res))
+
+    # Restore Pattern は確定も外して、平らな型紙の形に戻す
+    flat = make_grid("FlatPiece", side=5)
+    flat.muslin.collision_enabled = False
+    bpy.ops.muslin.lock_pattern()
+    for v in flat.data.vertices:
+        v.co.z += 0.1 * v.co.x
+    flat.data.update()
+    res = bpy.ops.muslin.restore_pattern()
+    check("Restore Pattern で平らに戻り、確定も外れる",
+          res == {'FINISHED'} and not rest_shape.is_pattern_locked(flat)
+          and max(abs(v.co.z) for v in flat.data.vertices) < 1e-6, str(res))
 
     # ---- 整える(Adjust): つまむためのモード。人が確定するまで終わらない ----
     # 型紙を作る段階(縫い目が開いたまま)では押せない

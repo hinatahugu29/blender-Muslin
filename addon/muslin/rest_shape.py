@@ -251,13 +251,85 @@ def pattern_mismatch(pattern, current, edges):
     return None
 
 
+# 「型紙を確定した」という印(Lock Pattern)。着せる前、ピースを胴のまわりに
+# 曲げて配置するときに要る。これが無いと、曲げてから初めて開始したときに
+# 曲げた形が型紙として取り込まれる。着せた印(DRESSED_FLAG)も型紙の固定を
+# 意味するが、あちらは「縫い目が閉じている」ことも表すので別に持つ。
+LOCKED_FLAG = "muslin_pattern_locked"
+
+
+def is_pattern_locked(obj):
+    """型紙が固定されているか(確定したか、着せたか)。"""
+    return bool(obj.get(LOCKED_FLAG, False)) or is_dressed(obj)
+
+
+def lock_pattern(obj):
+    """今の形を型紙として記録し、以後の開始で取り直さないようにする。"""
+    if not store_pattern(obj):
+        return False
+    store(obj)
+    obj[LOCKED_FLAG] = True
+    return True
+
+
+def unlock_pattern(obj):
+    """型紙の固定を外し、型紙を作る段階に戻す(形はそのまま)。
+
+    次に開始したときに今の形が型紙になる。着せた印も外す。
+    """
+    if LOCKED_FLAG in obj:
+        del obj[LOCKED_FLAG]
+    clear_dressed(obj)
+
+
+# 平らとみなす厚み。型紙のピースの頂点が、最も薄い方向にこれ以上広がって
+# いたら「曲がっている」と判断する。1mm 未満の揺らぎは平面の型紙の誤差。
+FLAT_TOLERANCE = 0.001
+
+
+def bent_islands(positions, edges):
+    """平らでない(曲げて置かれた)ピースの数を返す。bpy を使わない。
+
+    辺でつながった頂点のまとまりをピースとみなし、主成分分析で一番薄い
+    方向の広がりを見る。筒状の型紙のようにわざと平らでないものもあるので、
+    呼び出し側は止めずに警告にとどめる。
+    """
+    p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    n = len(p)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    bent = 0
+    for members in groups.values():
+        if len(members) < 4:
+            continue
+        pts = p[members]
+        centered = pts - pts.mean(axis=0)
+        thinnest = np.linalg.svd(centered, compute_uv=False)[-1] / np.sqrt(len(members))
+        if thinnest > FLAT_TOLERANCE:
+            bent += 1
+    return bent
+
+
 def sync_pattern_before_start(obj):
     """開始前に型紙をどう扱うか決める(`sync_before_start` の後に呼ぶ)。
 
-    着せた段階でなければ、今の形(= 開始時の形)を型紙として取り直す。
-    着せた段階なら型紙を固定し、取り直さない。
+    型紙が固定されていなければ、今の形(= 開始時の形)を型紙として取り直す。
+    固定されていれば(Lock Pattern した、または着せた)取り直さない。
     """
-    if not is_dressed(obj) or not has_pattern(obj):
+    if not is_pattern_locked(obj) or not has_pattern(obj):
         store_pattern(obj)
         return "stored"
     return "kept"
@@ -271,7 +343,7 @@ def restore_pattern(obj):
     obj.data.vertices.foreach_set("co", positions)
     obj.data.update()
     store(obj)          # 開始時の姿勢も型紙の形にする
-    clear_dressed(obj)
+    unlock_pattern(obj) # 型紙を作る段階に戻る
     return True
 
 

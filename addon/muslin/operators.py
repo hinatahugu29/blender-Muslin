@@ -349,6 +349,69 @@ class MUSLIN_OT_set_rest_shape(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_lock_pattern(bpy.types.Operator):
+    """今の形を型紙として確定する。以後、開始しても型紙を取り直さない
+
+    ピースを胴のまわりに曲げて配置する前に押す。確定しないまま曲げてから
+    開始すると、曲げた形が型紙(布の寸法の基準)になってしまう。
+    """
+
+    bl_idname = "muslin.lock_pattern"
+    bl_label = "Lock Pattern"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        obj = context.active_object
+        if rest_shape.is_deformed(obj):
+            # 計算結果の形を型紙にしてしまう事故を防ぐ
+            return ui_poll.reject(cls, "シミュレーションの結果が表示されています。"
+                                       "Reset で元の形に戻してから確定してください")
+        if rest_shape.is_pattern_locked(obj):
+            return ui_poll.reject(cls, "型紙はすでに確定しています")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        if not rest_shape.lock_pattern(obj):
+            self.report({'ERROR'}, "メッシュに頂点がありません")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"'{obj.name}' の今の形を型紙として確定しました")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_unlock_pattern(bpy.types.Operator):
+    """型紙の確定を外し、型紙を作る段階に戻す(形はそのまま)
+
+    次に開始したときに今の形が型紙になる。曲げて置いた形のまま外すと、
+    曲げた形が型紙になるので注意。
+    """
+
+    bl_idname = "muslin.unlock_pattern"
+    bl_label = "Unlock Pattern"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        if not rest_shape.is_pattern_locked(context.active_object):
+            return ui_poll.reject(cls, "型紙は確定していません")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        sim_state.stop_simulation(obj)
+        rest_shape.unlock_pattern(obj)
+        self.report({'INFO'}, f"'{obj.name}' の型紙の確定を外しました")
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_restore_pattern(bpy.types.Operator):
     """型紙の形に戻し、型紙を作る段階に戻る
 
@@ -483,6 +546,8 @@ _classes = (
     MUSLIN_OT_restart_sim,
     MUSLIN_OT_reset_shape,
     MUSLIN_OT_set_rest_shape,
+    MUSLIN_OT_lock_pattern,
+    MUSLIN_OT_unlock_pattern,
     MUSLIN_OT_restore_pattern,
 )
 

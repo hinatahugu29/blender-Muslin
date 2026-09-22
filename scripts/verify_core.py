@@ -720,6 +720,30 @@ def test_seam_codes():
     check("途切れた側は2本になる", len(cut) == 2, str(cut))
 
 
+def test_bent_islands():
+    """平らでない(曲げて置いた)ピースの判定(bpy 非依存)"""
+    if not has_numpy():
+        skip("平らでないピースの判定", "numpy が無い")
+        return
+    import rest_shape
+
+    positions, edges, *_ = build_grid(5, 5)
+    check("平らなピースは曲がっていない", rest_shape.bent_islands(positions, edges) == 0)
+    curved = list(positions)
+    for i in range(len(curved) // 3):
+        x = curved[i * 3]
+        curved[i * 3 + 2] = 0.3 * x * x            # 放物線に曲げる
+    check("曲げたピースは曲がっている", rest_shape.bent_islands(curved, edges) == 1)
+    # 平らなピースどうしが別々の平面にあっても、1枚ずつ見れば平ら
+    two = list(positions) + [c + (1.0 if k % 3 == 2 else 0.0) for k, c in enumerate(positions)]
+    n = len(positions) // 3
+    two_edges = list(edges) + [(a + n, b + n) for a, b in edges]
+    check("別々の平面にある平らなピースは曲がっていない",
+          rest_shape.bent_islands(two, two_edges) == 0)
+    tiny = [0, 0, 0, 1, 0, 0, 0, 1, 0.5]
+    check("頂点の少ないまとまりは数えない", rest_shape.bent_islands(tiny, [(0, 1), (1, 2)]) == 0)
+
+
 def test_pattern_mismatch():
     """型紙と今のメッシュの対応を調べる(bpy 非依存)"""
     if not has_numpy():
@@ -1048,6 +1072,7 @@ def main():
     test_seam_logic()
     test_seam_codes()
     test_grab()
+    test_bent_islands()
     test_pattern_mismatch()
     test_cache_io()
     test_transform()

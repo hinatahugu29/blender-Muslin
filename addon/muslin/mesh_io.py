@@ -530,6 +530,18 @@ def build_cloth_sim(obj, props):
     # 型紙が今のメッシュに対応していなければ、今の形を基準にする(以前と同じ)。
     reference = pattern_world_positions(obj, positions, edges, warnings)
 
+    # 型紙を確定しないまま曲げて置いたピースは、曲げた形が型紙になる。
+    # わざと平らでない型紙もあるので止めはしない
+    if not rest_shape.is_pattern_locked(obj):
+        bent = rest_shape.bent_islands(positions, edges)
+        if bent:
+            warnings.append(
+                f"平らでないピースが {bent} 枚あり、その形のまま型紙(寸法の基準)に"
+                "なりました。曲げて配置したのなら、Restore Pattern か編集で平らに戻し、"
+                "Lock Pattern で型紙を確定してから曲げてください"
+                "(わざと平らでない型紙なら、この警告は気にしなくて構いません)"
+            )
+
     sim = cloth_core.ClothSim(
         reference,
         edges,

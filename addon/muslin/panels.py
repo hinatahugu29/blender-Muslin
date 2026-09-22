@@ -304,6 +304,21 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
         layout.operator("muslin.join_pieces", icon='AUTOMERGE_ON')
         layout.label(text="縫うピースは事前に統合が必要", icon='INFO')
 
+        # 型紙の確定。胴のまわりに曲げて置く前に押す(曲げた形が型紙に
+        # なるのを防ぐ)。確定したかどうかをここで見せる
+        obj = context.active_object
+        if obj is not None and obj.type == 'MESH' and context.mode == 'OBJECT':
+            from . import rest_shape
+            layout.separator()
+            if rest_shape.is_pattern_locked(obj):
+                row = layout.row(align=True)
+                row.label(text="型紙は確定済み", icon='LOCKED')
+                row.operator("muslin.unlock_pattern", text="", icon='UNLOCKED')
+                layout.operator("muslin.restore_pattern", icon='MESH_GRID')
+            else:
+                layout.operator("muslin.lock_pattern", icon='LOCKED')
+                layout.label(text="曲げて配置する前に確定する", icon='INFO')
+
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"
