@@ -290,6 +290,26 @@ mod bindings {
                 .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
+        /// 頂点ごとに生地を割り当てる(重ね着で服ごとに生地が違うとき)
+        fn set_materials(
+            &mut self,
+            vertex_material: Vec<usize>,
+            densities: Vec<f64>,
+            stretch: Vec<f64>,
+            bending: Vec<f64>,
+        ) -> PyResult<()> {
+            self.inner
+                .set_materials(&vertex_material, &densities, &stretch, &bending)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// 頂点ごとの層(0 が一番内側)。空のリストで全頂点を同じ層に戻す
+        fn set_layers(&mut self, layers: Vec<u32>) -> PyResult<()> {
+            self.inner
+                .set_layers(&layers)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
         /// 辺ごとの長さの倍率(ゴム紐)。渡さなかった辺は 1 に戻す。当てはまった辺の数を返す
         fn set_rest_scales(&mut self, edges: Vec<(u32, u32)>, scales: Vec<f64>) -> PyResult<usize> {
             if edges.len() != scales.len() {

@@ -292,6 +292,10 @@ pub struct ClothSim {
     /// ビューポートでつまんでいる頂点(M7)。無ければ None。
     grab: Option<Grab>,
 
+    /// 頂点ごとの層(重ね着。0 が一番内側)。空なら全頂点が同じ層。
+    /// 層の違う頂点どうしが当たったら、内側を動かさず外側だけを押し出す。
+    layers: Vec<u32>,
+
     // XPBD の λ 用スクラッチ領域(毎ステップ確保し直さないよう保持)
     lambda_stretch: Vec<f64>,
     lambda_bending: Vec<f64>,
@@ -486,6 +490,7 @@ impl ClothSim {
             seam_constraints: Vec::new(),
             seam_closure: 0.0,
             grab: None,
+            layers: Vec::new(),
         };
         sim.lambda_seam.clear();
         sim
@@ -581,6 +586,80 @@ impl ClothSim {
         }
         for c in self.bending_constraints.iter_mut() {
             c.compliance = bending;
+        }
+    }
+
+    /// 頂点ごとに生地を割り当てる(重ね着で服ごとに生地が違うとき。M7)。
+    ///
+    /// `vertex_material[i]` が頂点 i の生地の番号で、`densities` / `stretch` /
+    /// `bending` はその番号で引く。質量は頂点ごと(面積 × 密度)、伸び・曲げの
+    /// コンプライアンスは制約ごと(その制約の最初の頂点の生地)に決まる。
+    /// 1着の中の制約は服をまたがないので、どの頂点で引いても同じ。
+    /// ピン留めした頂点は質量無限のまま。
+    pub fn set_materials(
+        &mut self,
+        vertex_material: &[usize],
+        densities: &[f64],
+        stretch: &[f64],
+        bending: &[f64],
+    ) -> Result<(), String> {
+        let n = self.positions.len();
+        if vertex_material.len() != n {
+            return Err(format!("vertex_material length {} != {}", vertex_material.len(), n));
+        }
+        let kinds = densities.len();
+        if stretch.len() != kinds || bending.len() != kinds {
+            return Err("densities / stretch / bending の長さが違う".into());
+        }
+        if vertex_material.iter().any(|&m| m >= kinds) {
+            return Err("生地の番号が範囲外".into());
+        }
+        for i in 0..n {
+            let density = densities[vertex_material[i]];
+            let mass = if density <= 0.0 {
+                1.0
+            } else {
+                (self.vertex_area[i] * density).max(1e-12)
+            };
+            let inv = 1.0 / mass;
+            self.base_inv_mass[i] = inv;
+            if self.inv_mass[i] != 0.0 {
+                self.inv_mass[i] = inv;
+            }
+        }
+        for c in self.stretch_constraints.iter_mut() {
+            c.compliance = stretch[vertex_material[c.i0]];
+        }
+        for c in self.bending_constraints.iter_mut() {
+            c.compliance = bending[vertex_material[c.p1]];
+        }
+        Ok(())
+    }
+
+    /// 頂点ごとの層を設定する(重ね着。0 が一番内側)。空で全頂点を同じ層に戻す。
+    pub fn set_layers(&mut self, layers: &[u32]) -> Result<(), String> {
+        if !layers.is_empty() && layers.len() != self.positions.len() {
+            return Err(format!("layers length {} != {}", layers.len(), self.positions.len()));
+        }
+        self.layers = layers.to_vec();
+        Ok(())
+    }
+
+    /// 自己衝突で頂点 i と j(面なら面の代表頂点)を押し合うときの重み。
+    ///
+    /// 層が違えば内側を 0 にして動かさない。外側の服が内側の服を押し込んで
+    /// 突き抜けるのを防ぐ(ジャケットがシャツを体に押し付けて貫通させない)。
+    fn layer_scales(&self, i: usize, j: usize) -> (f64, f64) {
+        if self.layers.is_empty() {
+            return (1.0, 1.0);
+        }
+        let (li, lj) = (self.layers[i], self.layers[j]);
+        if li < lj {
+            (0.0, 1.0)
+        } else if li > lj {
+            (1.0, 0.0)
+        } else {
+            (1.0, 1.0)
         }
     }
 
@@ -1415,8 +1494,10 @@ impl ClothSim {
             let (i, j) = pairs[idx];
             let (i, j) = (i as usize, j as usize);
 
-            let w0 = self.inv_mass[i];
-            let w1 = self.inv_mass[j];
+            // 層が違えば内側の頂点は動かさない(外側だけを押し出す)
+            let (si, sj) = self.layer_scales(i, j);
+            let w0 = self.inv_mass[i] * si;
+            let w1 = self.inv_mass[j] * sj;
             let w_sum = w0 + w1;
             if w_sum == 0.0 {
                 continue;
@@ -1641,11 +1722,14 @@ impl ClothSim {
             }
 
             let (u, v, w) = crate::collision::barycentric_on_triangle(q, a, b, c);
-            let wp = self.inv_mass[vi];
+            // 層が違えば内側(頂点か面のどちらか)は動かさない。面は1着の中にあるので
+            // 3頂点とも同じ層
+            let (sv, st) = self.layer_scales(vi, t[0]);
+            let wp = self.inv_mass[vi] * sv;
             let (wa, wb, wc) = (
-                self.inv_mass[t[0]],
-                self.inv_mass[t[1]],
-                self.inv_mass[t[2]],
+                self.inv_mass[t[0]] * st,
+                self.inv_mass[t[1]] * st,
+                self.inv_mass[t[2]] * st,
             );
             // 三角形側の実効的な逆質量。重心座標の重みで配分する
             let wt = u * u * wa + v * v * wb + w * w * wc;
@@ -2637,6 +2721,123 @@ mod tests {
         for c in &sim.stretch_constraints {
             assert!((c.rest_length - c.initial_length).abs() < 1e-12, "倍率 1 に戻っていない");
         }
+    }
+
+    /// 全頂点に同じ生地を割り当てれば、set_density + set_compliances と結果が
+    /// ビット単位で同じ(1着だけのときに重ね着の仕組みが結果を変えない)。
+    #[test]
+    fn single_material_matches_global_material_exactly() {
+        let run = |use_materials: bool| {
+            let (positions, edges, bending, tris, pinned) = build_grid(9, 9, 0.05);
+            let n = positions.len();
+            let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+            if use_materials {
+                sim.set_materials(&vec![0; n], &[0.35], &[1e-6], &[2e-2]).unwrap();
+            } else {
+                sim.set_density(0.35);
+                sim.set_compliances(1e-6, 2e-2);
+            }
+            for _ in 0..60 {
+                sim.step(1.0 / 60.0, &SimParams::default());
+            }
+            sim.positions
+        };
+        let a = run(true);
+        let b = run(false);
+        assert!(a.iter().zip(b.iter()).all(|(p, q)| p.x == q.x && p.y == q.y && p.z == q.z));
+    }
+
+    /// 生地を頂点ごとに変えられる(重い布は重く、硬さは制約ごと)
+    #[test]
+    fn materials_assign_mass_and_compliance_per_vertex() {
+        let (positions, edges, bending, tris, pinned) = build_grid(5, 5, 0.1);
+        let n = positions.len();
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+        let mats: Vec<usize> = (0..n).map(|i| if i < n / 2 { 0 } else { 1 }).collect();
+        sim.set_materials(&mats, &[0.1, 1.0], &[0.0, 1e-4], &[1e-3, 1e-2]).unwrap();
+        let light = (0..n).find(|&i| mats[i] == 0 && sim.inv_mass[i] > 0.0).unwrap();
+        let heavy = (0..n).find(|&i| mats[i] == 1 && sim.inv_mass[i] > 0.0 && sim.vertex_area[i] == sim.vertex_area[light]);
+        if let Some(h) = heavy {
+            assert!((sim.inv_mass[light] / sim.inv_mass[h] - 10.0).abs() < 1e-9);
+        }
+        for c in &sim.stretch_constraints {
+            assert_eq!(c.compliance, [0.0, 1e-4][mats[c.i0]]);
+        }
+        assert!(pinned.iter().all(|&p| sim.inv_mass[p] == 0.0), "ピン留めは質量無限のまま");
+        assert!(sim.set_materials(&mats, &[0.1], &[0.0, 1e-4], &[1e-3, 1e-2]).is_err());
+        assert!(sim.set_layers(&[0, 1]).is_err());
+    }
+
+    /// 重ね着: 層が違えば内側は外側に押されず、外側は内側を突き抜けない。
+    ///
+    /// 周りを留めた内側の布(太鼓の皮)に、外側の布を落とす。層があれば内側は
+    /// 内側だけで吊ったときと同じだけしか垂れない(実測 5.8mm で一致。外側の重さは伝わらない。
+    /// 物理的には正しくないが、服を体へ押し込まないことを優先する割り切りで、
+    /// 先行事例 Taremin Cloth と同じ)。層が無ければ外側に押されて 7.4mm 垂れる。
+    #[test]
+    fn layers_keep_inner_cloth_from_being_pushed() {
+        let side = 11;
+        let spacing = 0.04;
+        let build = |with_outer: bool, layered: bool| {
+            let (inner, inner_edges, _, inner_tris, _) = build_grid(side, side, spacing);
+            let rim: Vec<usize> = (0..side * side)
+                .filter(|&i| {
+                    let (x, y) = (i % side, i / side);
+                    x == 0 || y == 0 || x == side - 1 || y == side - 1
+                })
+                .collect();
+            let mut positions = inner.clone();
+            let mut edges = inner_edges.clone();
+            let mut tris = inner_tris.clone();
+            let n = inner.len();
+            if with_outer {
+                for p in &inner {
+                    positions.push(p.add(Vec3::new(0.0, 0.0, 0.03)));
+                }
+                edges.extend(inner_edges.iter().map(|&(a, b)| (a + n, b + n)));
+                tris.extend(inner_tris.iter().map(|&(a, b, c)| (a + n, b + n, c + n)));
+            }
+            let quads = crate::bending::quads_from_triangles(&tris);
+            let mut sim = ClothSim::new(positions, &edges, &quads, &tris, &rim, 0.2, 0.0, 1e-2);
+            if layered && with_outer {
+                let layers: Vec<u32> = (0..2 * n).map(|i| if i < n { 0 } else { 1 }).collect();
+                sim.set_layers(&layers).unwrap();
+            }
+            (sim, n)
+        };
+        let params = SimParams {
+            self_collision_enabled: true,
+            self_collision_thickness: 0.012,
+            damping: 0.5,
+            ..SimParams::default()
+        };
+        let center = (side / 2) * side + side / 2;
+        let settle = |sim: &mut ClothSim| {
+            for _ in 0..120 {
+                sim.step(1.0 / 60.0, &params);
+            }
+        };
+
+        let (mut alone, _) = build(false, false);
+        settle(&mut alone);
+        let (mut layered, n) = build(true, true);
+        settle(&mut layered);
+        let (mut mixed, _) = build(true, false);
+        settle(&mut mixed);
+
+        let sag_alone = -alone.positions[center].z;
+        let sag_layered = -layered.positions[center].z;
+        let sag_mixed = -mixed.positions[center].z;
+        assert!(
+            (sag_layered - sag_alone).abs() < 0.002,
+            "層があるのに内側が押された: 単独 {sag_alone:.4} / 重ね着 {sag_layered:.4}"
+        );
+        assert!(
+            sag_mixed > sag_alone * 1.15,
+            "(前提)層が無ければ外側に押されるはず: 単独 {sag_alone:.4} / 層なし {sag_mixed:.4}"
+        );
+        let gap = layered.positions[center + n].z - layered.positions[center].z;
+        assert!(gap > 0.0, "外側が内側を突き抜けた: 隙間 {gap:.4}");
     }
 
     /// 床面衝突: 布が床を突き抜けない
