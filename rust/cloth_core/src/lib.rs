@@ -282,6 +282,25 @@ mod bindings {
             self.inner.set_seams(&as_usize_pairs(&pairs), compliance);
         }
 
+        /// 頂点をつまんで target(ワールド座標)へ引く。compliance 0 で硬く引く
+        #[pyo3(signature = (index, target, compliance = 0.0))]
+        fn set_grab(&mut self, index: usize, target: (f64, f64, f64), compliance: f64) -> PyResult<()> {
+            self.inner
+                .set_grab(index, Vec3::new(target.0, target.1, target.2), compliance)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// つまむのをやめる
+        fn clear_grab(&mut self) {
+            self.inner.clear_grab();
+        }
+
+        /// つまんでいる頂点(無ければ None)
+        #[getter]
+        fn grabbed_vertex(&self) -> Option<usize> {
+            self.inner.grabbed_vertex()
+        }
+
         /// 縫い合わせ進行度 0.0〜1.0
         fn set_seam_closure(&mut self, closure: f64) {
             self.inner.set_seam_closure(closure);

@@ -11,6 +11,7 @@
 import bpy
 import numpy as np
 
+from . import grab
 from . import mesh_io
 from . import rest_shape
 from . import sim_state
@@ -23,19 +24,23 @@ SETTLE_STEPS = 12            # 続けて下回る必要のあるステップ数
 DEFAULT_MAX_STEPS = 600      # 24fps で 25 秒相当。これで落ち着かなければ打ち切る
 
 # 着せ付けの間だけ減衰を強める(1秒あたりに失う速度の割合)。欲しいのは
-# 静止した形で、途中の揺れ方ではない。生地の減衰(Cotton で 0.05)の
-# ままだと、吊った筒が振り子のように揺れ続けて 600 ステップでも落ち着かなかった。
+# 静止した形で、途中の揺れ方ではない。2つの場面で測った:
 #
-# ただし減衰は静止形状をまったく変えないわけではない。摩擦のある接触では
-# 止まれる位置が1つに決まらず、どこで止まるかは経路で変わる。円柱に
-# 着せた筒で比べると(selftest の場面):
+#   何にも触れずに吊られた布(上端の中央だけ留め、平面の中で折れる):
+#     生地の減衰 0.05 のまま → 600 ステップでも振り子のように揺れ続けた
+#     0.5 → 271 ステップ / 0.9 → 114 / 0.99 → 76
+#   円柱(胴)に触れて着ている筒(selftest の場面):
+#     0.05 → 172 ステップ、0.9 との形の差 最大 0.06mm
+#     0.5 → 176 / 0.9 → 183 / 0.99 → 175(差 3.0mm)
 #
-#   減衰 0.5  : 271 ステップ、0.9 との差 最大 28mm
-#   減衰 0.9  : 114 ステップ
-#   減衰 0.99 :  76 ステップ、0.9 との差 最大 1.9mm
-#
-# 0.9 より強くしても形はほとんど変わらず、速さも頭打ちに近いので 0.9 にした。
+# 触れて着ている場面では減衰はほとんど効かず、形もほぼ変わらない。
+# 揺れ続けるのは体から離れて垂れる部分(スカートの裾など)なので、
+# そちらのために 0.9 にする。0.99 は形が数 mm 変わり始める。
 DRESS_DAMPING = 0.9
+
+# つまむ強さ(XPBD のコンプライアンス)。0 は硬く引く(マウスの位置へそのまま行く)。
+# 柔らかくした方が手応えが良いかは実機で確かめる(CHECKPOINTS)
+GRAB_COMPLIANCE = 0.0
 
 
 class _DressProps:
@@ -72,6 +77,13 @@ class Dresser:
         self.speed = float("inf")
         self.seam_steps = props.seam_close_frames if self.state["info"]["seams"] else 0
         self._last = np.asarray(self.state["sim"].get_positions())
+        # つまんでいる間の状態。離したら上限のステップ数を数え直す
+        self.grabbed = None
+        self._budget_start = 0
+        # レイを当てる三角形(トポロジは着せ付けの間変わらない)
+        mesh = obj.data
+        mesh.calc_loop_triangles()
+        self._triangles = [tuple(t.vertices) for t in mesh.loop_triangles]
 
     @property
     def warnings(self):
@@ -83,7 +95,11 @@ class Dresser:
 
     @property
     def done(self):
-        return self.settled or self.steps >= self.max_steps or not self.state["sim"].is_finite()
+        if not self.state["sim"].is_finite():
+            return True
+        if self.grabbed is not None:
+            return False      # つまんでいる間は止めない
+        return self.settled or self.steps - self._budget_start >= self.max_steps
 
     def step(self):
         """1ステップ進め、終わったら True を返す。"""
@@ -97,11 +113,48 @@ class Dresser:
         self._last = now
         self.speed = float(moved.max()) / self.dt if moved.size else 0.0
         # 縫い目が閉じ切るまでは、止まって見えても落ち着いたことにしない
-        if self.steps > self.seam_steps and self.speed < SETTLE_SPEED:
+        if self.grabbed is None and self.steps > self.seam_steps and self.speed < SETTLE_SPEED:
             self.calm += 1
         else:
             self.calm = 0
         return self.done
+
+    # ------------------------------------------------------- つまむ
+
+    def pick(self, origin, direction):
+        """ワールド座標のレイの先にある布の頂点を返す。当たらなければ None。
+
+        戻り値は (頂点番号, レイが面に当たった点)。
+        """
+        positions = self.state["sim"].get_positions()
+        found = grab.ray_triangles(origin, direction, positions, self._triangles)
+        if found is None:
+            return None
+        tri, world_hit = found
+        index = grab.nearest_vertex(world_hit, self._triangles[tri], positions)
+        return index, world_hit
+
+    def begin_grab(self, index, anchor_hit):
+        positions = self.state["sim"].get_positions()
+        start = tuple(positions[index * 3:index * 3 + 3])
+        self.grabbed = {"index": index, "start": start, "anchor": tuple(anchor_hit)}
+        self.state["sim"].set_grab(index, start, GRAB_COMPLIANCE)
+
+    def move_grab(self, now_hit):
+        if self.grabbed is None:
+            return
+        g = self.grabbed
+        target = grab.drag_target(g["start"], g["anchor"], now_hit)
+        self.state["sim"].set_grab(g["index"], target, GRAB_COMPLIANCE)
+
+    def end_grab(self):
+        """離す。離した後はあらためて落ち着くまで回す。"""
+        if self.grabbed is None:
+            return
+        self.state["sim"].clear_grab()
+        self.grabbed = None
+        self.calm = 0
+        self._budget_start = self.steps
 
     def show(self):
         """途中経過をメッシュに書く(ビューポートで見せるため)。"""
@@ -134,7 +187,8 @@ class Dresser:
 class MUSLIN_OT_dress(bpy.types.Operator):
     """時間軸を進めずに、縫って落ち着くまで回し、着せた姿勢として保存する
 
-    寸法は型紙のまま。Esc で中止(元の形に戻る)、Enter でその場で確定する。
+    寸法は型紙のまま。左ドラッグで布をつまんで動かせる。Esc で中止
+    (元の形に戻る)、Enter でその場で確定する。
     """
 
     bl_idname = "muslin.dress"
@@ -188,13 +242,65 @@ class MUSLIN_OT_dress(bpy.types.Operator):
         wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
+    def _view_ray(self, context, event):
+        """マウス位置のレイ (origin, direction, 視線方向)。3D ビューの外なら None。
+
+        パネルのボタンから呼ぶと context.region はサイドバーなので、
+        同じエリアの WINDOW 領域を探してそこで計算する。
+        """
+        from bpy_extras import view3d_utils
+        from mathutils import Vector
+        area = context.area
+        if area is None or area.type != 'VIEW_3D':
+            return None
+        region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+        rv3d = area.spaces.active.region_3d
+        if region is None or rv3d is None:
+            return None
+        x, y = event.mouse_x - region.x, event.mouse_y - region.y
+        if not (0 <= x < region.width and 0 <= y < region.height):
+            return None
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, (x, y))
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, (x, y))
+        forward = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
+        return tuple(origin), tuple(direction), tuple(forward)
+
+    def _handle_grab(self, context, event):
+        """左ドラッグで布をつまむ。扱ったら True。"""
+        d = self._dresser
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            ray = self._view_ray(context, event)
+            if ray is None:
+                return False
+            picked = d.pick(ray[0], ray[1])
+            if picked is None:
+                return False      # 布の外をクリックしたら通常どおり(選択など)に回す
+            d.begin_grab(*picked)
+            self._plane_normal = ray[2]
+            return True
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and d.grabbed is not None:
+            d.end_grab()
+            return True
+        if event.type == 'MOUSEMOVE' and d.grabbed is not None:
+            ray = self._view_ray(context, event)
+            if ray is not None:
+                # つまんだ点を通り、つまんだときの視線に垂直な平面の上で追う
+                hit = grab.ray_plane(ray[0], ray[1], d.grabbed["anchor"], self._plane_normal)
+                if hit is not None:
+                    d.move_grab(hit)
+            return True
+        return False
+
     def modal(self, context, event):
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             return self._finish_modal(context, commit=False)
         if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
             return self._finish_modal(context, commit=True)
-        if event.type != 'TIMER':
+        if self._handle_grab(context, event):
             return {'RUNNING_MODAL'}
+        if event.type != 'TIMER':
+            # 視点の回転やズームは Blender に任せる(着せながら回り込んで見られるように)
+            return {'PASS_THROUGH'}
 
         # 画面が固まらないよう、1回のタイマーで回すのは短い時間だけ
         import time
@@ -206,7 +312,7 @@ class MUSLIN_OT_dress(bpy.types.Operator):
         d = self._dresser
         context.area.header_text_set(
             f"着せ付け中: {d.steps} ステップ / 最大速度 {d.speed * 100:.1f} cm/s"
-            "   Enter: 確定   Esc: 中止"
+            "   左ドラッグ: つまむ   Enter: 確定   Esc: 中止"
         )
         if done:
             return self._finish_modal(context, commit=True)

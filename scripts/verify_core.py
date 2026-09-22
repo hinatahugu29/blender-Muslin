@@ -665,6 +665,38 @@ def test_seam_logic():
           isinstance(seams.pair_chains([0, 1], [1, 2], degenerate), list))
 
 
+def test_grab():
+    """布をつまむ: 幾何計算(bpy 非依存)とコアの set_grab"""
+    import grab
+
+    hit = grab.ray_plane((0, -5, 0), (0, 1, 0), (0, 0, 0), (0, 1, 0))
+    check("レイと平面の交点", hit is not None and math.dist(hit, (0, 0, 0)) < 1e-12, str(hit))
+    check("平面と平行なレイは交わらない",
+          grab.ray_plane((0, -5, 0), (1, 0, 0), (0, 0, 0), (0, 1, 0)) is None)
+    check("後ろにある平面とは交わらない",
+          grab.ray_plane((0, 5, 0), (0, 1, 0), (0, 0, 0), (0, 1, 0)) is None)
+    positions = [0, 0, 0, 1, 0, 0, 0, 1, 0]
+    check("面の中で一番近い頂点を選ぶ", grab.nearest_vertex((0.9, 0.1, 0), [0, 1, 2], positions) == 1)
+    target = grab.drag_target((1, 1, 1), (1.2, 1, 1), (1.7, 1, 1.5))
+    check("つまんだ瞬間のずれを保って動かす",
+          math.dist(target, (1.5, 1, 1.5)) < 1e-12, str(target))
+
+    sim = cloth_core.ClothSim([0.0, 0.0, 0.0], [], [], [], [], 0.0)
+    sim.set_grab(0, (0.0, 0.0, 0.5))
+    check("つまんだ頂点を返す", sim.grabbed_vertex == 0)
+    for _ in range(30):
+        sim.step(1.0 / 60.0, -9.81, 10, 4, 0.5)
+    z = sim.get_positions()[2]
+    check("硬くつまむと目標に留まる(重力に負けない)", abs(z - 0.5) < 1e-6, f"z={z:.6f}")
+    sim.clear_grab()
+    check("離すとつまんでいない", sim.grabbed_vertex is None)
+    try:
+        sim.set_grab(5, (0.0, 0.0, 0.0))
+        check("範囲外の頂点は拒否する", False)
+    except ValueError:
+        check("範囲外の頂点は拒否する", True)
+
+
 def test_seam_codes():
     """辺の属性値から縫い目の頂点列を作り直す(bpy 非依存)"""
     import seams
@@ -1015,6 +1047,7 @@ def main():
     test_timings()
     test_seam_logic()
     test_seam_codes()
+    test_grab()
     test_pattern_mismatch()
     test_cache_io()
     test_transform()

@@ -738,12 +738,17 @@ def main():
     from muslin import rest_shape
 
     def make_dress_scene():
-        """上端をピン留めした1枚を筒に縫い、円柱のまわりに着せる場面。"""
+        """1枚を円柱(胴)のまわりに 3/4 周だけ曲げて置き、両脇を縫って着せる場面。
+
+        平らなまま置くと、縫い目が閉じるときに布が平面の中で二つ折りになり、
+        円柱に一度も触れなかった(最初の版の場面がそうだった)。型紙は平らな
+        形で記録してから曲げる。本来は「配置」の機能がやること(ROADMAP M7)。
+        """
         clear_scene()
         scene = bpy.context.scene
         scene.frame_start = 1
         scene.frame_set(1)
-        bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.1, 0.0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.0, 0.0))
         body = bpy.context.active_object
         body.name = "Body"
         piece = make_tube_piece("Shirt", 0.0)
@@ -752,9 +757,21 @@ def main():
         bpy.context.view_layer.update()     # matrix_world を今の位置にそろえる
         top = max(v.co.z for v in piece.data.vertices)
         group = piece.vertex_groups.new(name="Pin")
-        # 上端の中央だけを留める。端まで留めると縫い目の一番上が閉じようがない
+        # 前の上端の中央だけを留める。端まで留めると縫い目の一番上が閉じようがない
         group.add([v.index for v in piece.data.vertices
                    if v.co.z > top - 1e-5 and abs(v.co.x) < 0.1], 1.0, "REPLACE")
+
+        # 型紙(平ら)を記録し、固定してから円柱のまわりに曲げる
+        rest_shape.store_pattern(piece)
+        rest_shape.mark_dressed(piece)
+        width = max(v.co.x for v in piece.data.vertices) - min(v.co.x for v in piece.data.vertices)
+        radius = width / (1.5 * math.pi)        # 3/4 周で一周する半径
+        for v in piece.data.vertices:
+            theta = v.co.x / radius
+            v.co.x, v.co.y = radius * math.sin(theta), -radius * math.cos(theta)
+        piece.data.update()
+        rest_shape.store(piece)
+        rest_shape.mark_dressed(piece)
         props = piece.muslin
         props.pin_vertex_group = "Pin"
         props.collider_object = body
@@ -780,6 +797,10 @@ def main():
           str(bpy.context.scene.frame_current))
     check("着せた段階になる", rest_shape.is_dressed(piece))
     closed_gap = seam_gap(piece)
+    # 布が本当に円柱に触れていること(最初の版の場面は平面で二つ折りになり触れていなかった)
+    radial = min(math.hypot(x, y) for x, y, _z in positions_of(piece))
+    check("布が円柱(半径 6cm)に触れている", radial < 0.06 + piece.muslin.collision_thickness + 0.003,
+          f"軸からの最短距離 {radial * 100:.2f}cm")
     check("縫い目が閉じている", closed_gap < 0.002,
           f"{open_gap * 100:.1f}cm → {closed_gap * 1000:.2f}mm")
     check("型紙は変わらない",
@@ -821,7 +842,39 @@ def main():
     back = max(math.dist(a, b) for a, b in zip(before, positions_of(piece)))
     check("中止すると着せ付け前の形に戻る", moved > 0.01 and back < 1e-6,
           f"途中 {moved:.3f}m / 戻した後 {back:.2e}m")
-    check("中止しても着せた段階にならない", not rest_shape.is_dressed(piece))
+    check("中止しても開始姿勢は変わらない",
+          np.allclose(rest_shape.load(piece), np.asarray(before, dtype=np.float32).ravel(), atol=1e-6))
+
+    # 着せ付けの最中に布をつまんで動かす(モーダルの左ドラッグと同じ呼び方)
+    piece = make_dress_scene()
+    d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene))
+    for _ in range(40):
+        d.step()
+    picked = d.pick((0.0, -2.0, 0.0), (0.0, 1.0, 0.0))      # 正面から布の中央へ
+    check("レイで布の頂点を拾える", picked is not None, str(picked))
+    missed = d.pick((5.0, -2.0, 0.0), (0.0, 1.0, 0.0))
+    check("布の外なら拾わない", missed is None, str(missed))
+    if picked is not None:
+        index, hit = picked
+        d.begin_grab(index, hit)
+        pulled = (hit[0], hit[1] - 0.1, hit[2])            # 10cm 手前へ引く
+        d.move_grab(pulled)
+        for _ in range(30):
+            check_done = d.step()
+        pos = d.state["sim"].get_positions()
+        start = d.grabbed["start"]
+        target = grab_target = (start[0] + pulled[0] - hit[0],
+                                start[1] + pulled[1] - hit[1],
+                                start[2] + pulled[2] - hit[2])
+        off = math.dist(pos[index * 3:index * 3 + 3], grab_target)
+        check("つまんだ頂点が目標へ行く", off < 0.005, f"{off * 1000:.1f}mm")
+        check("つまんでいる間は終わらない", check_done is False and d.calm == 0)
+        d.end_grab()
+        check("離すとつまんでいない", d.grabbed is None and d.state["sim"].grabbed_vertex is None)
+        while not d.step():
+            pass
+        check("離した後にあらためて落ち着く", d.settled, d.summary())
+    d.cancel()
 
     # 上限で打ち切っても保存はする(途中でも着せた形が要ることがある)
     piece = make_dress_scene()

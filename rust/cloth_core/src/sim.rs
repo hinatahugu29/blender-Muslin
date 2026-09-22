@@ -11,6 +11,33 @@ use crate::bending::{solve_bending, BendingConstraint};
 use crate::collision::{SpatialHash, TriangleBvh};
 use crate::math::Vec3;
 
+/// つまんだ頂点を目標位置へ引く制約。`C = |x - target|`。
+#[derive(Clone, Debug)]
+struct Grab {
+    index: usize,
+    target: Vec3,
+    compliance: f64,
+    lambda: f64,
+}
+
+impl Grab {
+    fn solve(&mut self, positions: &mut [Vec3], inv_mass: &[f64], inv_dt2: f64) {
+        let w = inv_mass[self.index];
+        if w == 0.0 {
+            return; // ピン留めされた頂点は動かさない
+        }
+        let d = positions[self.index].sub(self.target);
+        let c = d.length();
+        if c < 1e-12 {
+            return;
+        }
+        let alpha = self.compliance * inv_dt2;
+        let dl = (-c - alpha * self.lambda) / (w + alpha);
+        self.lambda += dl;
+        positions[self.index] = positions[self.index].add(d.scale(w * dl / c));
+    }
+}
+
 /// 2頂点間の距離制約。伸び・曲げ・縫製すべてこの形で表現する。
 #[derive(Clone, Debug)]
 pub struct DistanceConstraint {
@@ -262,6 +289,9 @@ pub struct ClothSim {
     /// 縫製の閉じ具合 0.0(初期長のまま) 〜 1.0(完全に縫い合わさる)。
     seam_closure: f64,
 
+    /// ビューポートでつまんでいる頂点(M7)。無ければ None。
+    grab: Option<Grab>,
+
     // XPBD の λ 用スクラッチ領域(毎ステップ確保し直さないよう保持)
     lambda_stretch: Vec<f64>,
     lambda_bending: Vec<f64>,
@@ -455,6 +485,7 @@ impl ClothSim {
             bending_constraints,
             seam_constraints: Vec::new(),
             seam_closure: 0.0,
+            grab: None,
         };
         sim.lambda_seam.clear();
         sim
@@ -686,6 +717,38 @@ impl ClothSim {
         self.apply_seam_closure();
     }
 
+    /// 頂点 `index` をつまんで `target` へ引く(ビューポートで布を動かす操作)。
+    ///
+    /// ピン留めと違い、コンプライアンスを持つ XPBD の制約として解く。
+    /// 反復ごとに目標へ寄せる方式(先行事例 Taremin Cloth のソフトピン)だと、
+    /// 効き方が反復数で変わってしまう。ピン留めされた頂点はつまめない。
+    pub fn set_grab(&mut self, index: usize, target: Vec3, compliance: f64) -> Result<(), String> {
+        if index >= self.positions.len() {
+            return Err(format!("grab index {index} out of range"));
+        }
+        let lambda = match &self.grab {
+            Some(g) if g.index == index => g.lambda,
+            _ => 0.0,
+        };
+        self.grab = Some(Grab {
+            index,
+            target,
+            compliance: compliance.max(0.0),
+            lambda,
+        });
+        Ok(())
+    }
+
+    /// つまむのをやめる。
+    pub fn clear_grab(&mut self) {
+        self.grab = None;
+    }
+
+    /// つまんでいる頂点。
+    pub fn grabbed_vertex(&self) -> Option<usize> {
+        self.grab.as_ref().map(|g| g.index)
+    }
+
     /// 縫い合わせ進行度を 0.0〜1.0 で設定する。1.0 で rest_length が 0(完全に縫合)。
     pub fn set_seam_closure(&mut self, closure: f64) {
         self.seam_closure = closure.clamp(0.0, 1.0);
@@ -779,6 +842,9 @@ impl ClothSim {
         self.lambda_stretch.iter_mut().for_each(|l| *l = 0.0);
         self.lambda_bending.iter_mut().for_each(|l| *l = 0.0);
         self.lambda_seam.iter_mut().for_each(|l| *l = 0.0);
+        if let Some(g) = self.grab.as_mut() {
+            g.lambda = 0.0;
+        }
 
         let inv_dt2 = 1.0 / (dt * dt);
 
@@ -833,6 +899,10 @@ impl ClothSim {
             );
             self.timings.seam += ms_since(t);
 
+            if let Some(g) = self.grab.as_mut() {
+                g.solve(&mut self.positions, &self.inv_mass, inv_dt2);
+            }
+
             if cheb {
                 // 一定周期で加速をリスタートする。外挿の積み上がりを切らないと
                 // 反復数を上げたときに発散する(CHEBYSHEV_RESTART の表を参照)。
@@ -885,6 +955,11 @@ impl ClothSim {
                 &mut self.lambda_seam,
                 inv_dt2,
             );
+            // つまんでいる頂点も同じ理由で解く。伸びだけを戻すと、つまんだ頂点が
+            // 目標から引き離される(反復 10 で 1.75cm 離れていた)
+            if let Some(g) = self.grab.as_mut() {
+                g.solve(&mut self.positions, &self.inv_mass, inv_dt2);
+            }
         }
         self.timings.post_collision += ms_since(t_post);
 
@@ -2436,6 +2511,73 @@ mod tests {
             drift.abs() < 0.0005,
             "着せ直すたびに寸法が変わっている: {ratios:?}"
         );
+    }
+
+    /// つまむ制約はばね定数 1/α のばねとして釣り合い、反復数に依存しない。
+    ///
+    /// 質量 1 の1点を重力下で柔らかくつまむと、目標から m·g·α だけ下がって
+    /// 止まるはず。反復ごとに目標へ寄せる方式だと反復数で効きが変わる。
+    #[test]
+    fn soft_grab_settles_at_spring_offset_regardless_of_iterations() {
+        let alpha = 1e-3;
+        let expected = 9.81 * alpha;
+        for iterations in [1u32, 10, 40] {
+            let mut sim = ClothSim::new(vec![Vec3::zero()], &[], &[], &[], &[], 0.0, 0.0, 0.0);
+            sim.set_grab(0, Vec3::zero(), alpha).unwrap();
+            let params = SimParams {
+                iterations,
+                damping: 0.9,
+                ..SimParams::default()
+            };
+            for _ in 0..600 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            let sag = -sim.positions[0].z;
+            assert!(
+                (sag - expected).abs() < expected * 0.02,
+                "iterations {iterations}: 下がり {sag:.5} / 期待 {expected:.5}"
+            );
+        }
+    }
+
+    /// 硬くつまむと頂点は目標へ行き、周りも付いてくる。離せば元どおり落ちる。
+    #[test]
+    fn hard_grab_moves_vertex_and_neighbors_then_releases() {
+        let (positions, edges, bending, tris, pinned) = build_grid(9, 9, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+        let params = SimParams::default();
+        let corner = 0; // ピン留めした上端の反対側の角
+        let start = sim.positions[corner];
+        // 上端のピンから布の長さ(0.4m)以内に置く。届かない位置だと伸びとの綱引きになる
+        let target = start.add(Vec3::new(0.0, 0.1, 0.1));
+        sim.set_grab(corner, target, 0.0).unwrap();
+        assert_eq!(sim.grabbed_vertex(), Some(corner));
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        let off = sim.positions[corner].sub(target).length();
+        assert!(off < 0.005, "目標へ行っていない: {off:.4}m");
+        assert!(sim.positions[1].z > 0.05, "隣の頂点が付いてこない: {}", sim.positions[1].z);
+        assert!(sim.average_stretch_error() < 0.05);
+
+        sim.clear_grab();
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        assert!(sim.positions[corner].z < target.z - 0.05, "離しても落ちない");
+    }
+
+    /// ピン留めした頂点はつまんでも動かない。範囲外の番号は拒否する。
+    #[test]
+    fn grab_ignores_pinned_vertices_and_rejects_bad_index() {
+        let (positions, edges, bending, tris, pinned) = build_grid(5, 5, 0.1);
+        let pin = pinned[0];
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+        let before = sim.positions[pin];
+        sim.set_grab(pin, before.add(Vec3::new(0.0, 0.0, 1.0)), 0.0).unwrap();
+        sim.step(1.0 / 60.0, &SimParams::default());
+        assert!(sim.positions[pin].sub(before).length() < 1e-12);
+        assert!(sim.set_grab(999, Vec3::zero(), 0.0).is_err());
     }
 
     /// 床面衝突: 布が床を突き抜けない
