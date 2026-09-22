@@ -84,6 +84,8 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
             # 保存したいときのために Save Dressed Pose も残す
             row = layout.row(align=True)
             row.operator("muslin.dress", icon='MOD_CLOTH')
+            # 整える(つまむモード)は着せた後だけ押せる。押せない理由は poll が出す
+            row.operator("muslin.adjust", icon='VIEW_PAN')
             if rest_shape.is_dressed(obj):
                 row.operator("muslin.restore_pattern", text="", icon='MESH_GRID')
                 layout.label(text="着せた姿勢から開始(寸法は型紙)", icon='CHECKMARK')

@@ -876,6 +876,66 @@ def main():
         check("離した後にあらためて落ち着く", d.settled, d.summary())
     d.cancel()
 
+    # ---- 整える(Adjust): つまむためのモード。人が確定するまで終わらない ----
+    # 型紙を作る段階(縫い目が開いたまま)では押せない
+    clear_scene()
+    raw = make_grid("RawGrid", side=5)
+    raw.muslin.collision_enabled = False
+    check("着せる前は Adjust を押せない", not bpy.ops.muslin.adjust.poll())
+
+    piece = make_dress_scene()
+    bpy.ops.muslin.dress()
+    check("着せた後は Adjust を押せる", bpy.ops.muslin.adjust.poll())
+    dressed = positions_of(piece)
+
+    d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene),
+                          max_steps=50, auto_finish=False)
+    ended = any(d.step() for _ in range(300))
+    check("整えるモードは落ち着いても上限を過ぎても終わらない", not ended and d.steps == 300,
+          f"{d.steps} ステップ / 落ち着き {d.settled}")
+    check("落ち着いたことは分かる(ヘッダに出す)", d.settled, d.summary())
+
+    picked = d.pick((0.0, -2.0, 0.0), (0.0, 1.0, 0.0))
+    check("着せた布を拾える", picked is not None, str(picked))
+    if picked is not None:
+        index, hit = picked
+        d.begin_grab(index, hit)
+        d.move_grab((hit[0], hit[1], hit[2] + 0.08))        # 8cm 持ち上げる
+        for _ in range(30):
+            d.step()
+        d.end_grab()
+        for _ in range(60):
+            d.step()
+        check("確定すると保存する", d.finish() and rest_shape.is_dressed(piece))
+        moved = max(math.dist(a, b) for a, b in zip(dressed, positions_of(piece)))
+        check("つまんで整えた形が開始姿勢になる",
+              moved > 0.01 and np.allclose(rest_shape.load(piece),
+                                            np.asarray(positions_of(piece), np.float32).ravel(),
+                                            atol=1e-6),
+              f"着せた形から最大 {moved * 100:.1f}cm")
+        check("整えても縫い目は閉じたまま", seam_gap(piece) < 0.002,
+              f"{seam_gap(piece) * 1000:.2f}mm")
+
+    # 中止すると始める前の形(着せた姿勢)に戻る
+    kept = positions_of(piece)
+    d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene),
+                          auto_finish=False)
+    picked = d.pick((0.0, -2.0, 0.0), (0.0, 1.0, 0.0))
+    if picked is not None:
+        d.begin_grab(*picked)
+        d.move_grab((picked[1][0], picked[1][1] - 0.1, picked[1][2]))
+    for _ in range(20):
+        d.step()
+    d.show()
+    d.cancel()
+    check("整えるのを中止すると始める前の形に戻る",
+          max(math.dist(a, b) for a, b in zip(kept, positions_of(piece))) < 1e-6)
+
+    # スクリプトから呼んだときは決まった数だけ回して保存する
+    res = bpy.ops.muslin.adjust(steps=10)
+    check("スクリプトからの Adjust は保存して終わる",
+          res == {'FINISHED'} and rest_shape.is_dressed(piece), str(res))
+
     # 上限で打ち切っても保存はする(途中でも着せた形が要ることがある)
     piece = make_dress_scene()
     res = bpy.ops.muslin.dress(max_steps=5)

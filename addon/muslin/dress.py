@@ -59,8 +59,11 @@ class _DressProps:
 class Dresser:
     """1ステップずつ着せ付けを進める。モーダルでも同期でも同じものを使う。"""
 
-    def __init__(self, obj, props, dt, max_steps=DEFAULT_MAX_STEPS):
+    def __init__(self, obj, props, dt, max_steps=DEFAULT_MAX_STEPS, auto_finish=True):
         self.obj = obj
+        # False なら落ち着いても上限に達しても止まらない(整えるモード)。
+        # 止まるのは人が確定か中止をしたときと、発散したときだけ
+        self.auto_finish = auto_finish
         self.props = _DressProps(props)
         self.dt = dt
         self.max_steps = max_steps
@@ -97,8 +100,8 @@ class Dresser:
     def done(self):
         if not self.state["sim"].is_finite():
             return True
-        if self.grabbed is not None:
-            return False      # つまんでいる間は止めない
+        if self.grabbed is not None or not self.auto_finish:
+            return False      # つまんでいる間と、整えるモードでは止めない
         return self.settled or self.steps - self._budget_start >= self.max_steps
 
     def step(self):
@@ -178,62 +181,49 @@ class Dresser:
     def summary(self):
         if self.settled:
             return f"{self.steps} ステップで落ち着きました"
+        if not self.auto_finish:
+            # 整えるモードは人が確定したところで終わる。打ち切りではない
+            return (f"{self.steps} ステップ(確定した時点で最大速度 "
+                    f"{self.speed * 100:.1f} cm/s)")
         return (
             f"{self.steps} ステップで打ち切りました"
             f"(最大速度 {self.speed * 100:.1f} cm/s。まだ動いています)"
         )
 
 
-class MUSLIN_OT_dress(bpy.types.Operator):
-    """時間軸を進めずに、縫って落ち着くまで回し、着せた姿勢として保存する
+class _ClothModal:
+    """着せ付け(Dress)と整える(Adjust)に共通のモーダル。
 
-    寸法は型紙のまま。左ドラッグで布をつまんで動かせる。Esc で中止
-    (元の形に戻る)、Enter でその場で確定する。
+    違いは「落ち着いたら自動で終わるか」と文言だけ。つまむ操作、減衰の強化、
+    保存の仕方は同じものを使う。
     """
 
-    bl_idname = "muslin.dress"
-    bl_label = "Dress"
-    bl_options = {'REGISTER', 'UNDO'}
+    AUTO_FINISH = True
+    HEADER = ""       # 実行中のヘッダの頭
+    SAVED = ""        # 確定したときの報告
+    CANCELLED = ""    # 中止したときの報告
 
-    max_steps: bpy.props.IntProperty(
-        name="Max Steps",
-        description="落ち着かなくてもここで打ち切る",
-        default=DEFAULT_MAX_STEPS,
-        min=1,
-    )
-
-    @classmethod
-    def poll(cls, context):
-        from . import ui_poll
-        if context.mode != 'OBJECT':
-            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
-        return ui_poll.mesh_selected(cls, context)
+    def _make_dresser(self, context):
+        obj = context.active_object
+        return Dresser(obj, obj.muslin, sim_state.effective_dt(context.scene),
+                       self.max_steps, auto_finish=self.AUTO_FINISH)
 
     def _start(self, context):
-        obj = context.active_object
-        self._dresser = Dresser(obj, obj.muslin, sim_state.effective_dt(context.scene),
-                                self.max_steps)
+        self._dresser = self._make_dresser(context)
         for w in self._dresser.warnings:
             self.report({'WARNING'}, w)
 
     def _end(self, context, commit):
         dresser = self._dresser
         if commit and dresser.finish():
-            self.report({'INFO'}, "着せ付けを保存しました: " + dresser.summary())
+            self.report({'INFO'}, f"{self.SAVED}: " + dresser.summary())
             return {'FINISHED'}
         if commit:
             self.report({'ERROR'}, "シミュレーションが発散しました。元の形に戻します")
         else:
             dresser.cancel()
-            self.report({'INFO'}, "着せ付けを中止しました")
+            self.report({'INFO'}, self.CANCELLED)
         return {'CANCELLED'}
-
-    def execute(self, context):
-        # スクリプトやテストから呼ばれたときは、最後まで同期で回す
-        self._start(context)
-        while not self._dresser.step():
-            pass
-        return self._end(context, commit=True)
 
     def invoke(self, context, event):
         self._start(context)
@@ -291,6 +281,17 @@ class MUSLIN_OT_dress(bpy.types.Operator):
             return True
         return False
 
+    def _header(self):
+        d = self._dresser
+        if d.grabbed is not None:
+            state = "つまんでいます"
+        elif d.settled:
+            state = "落ち着きました"
+        else:
+            state = f"最大速度 {d.speed * 100:.1f} cm/s"
+        return (f"{self.HEADER}: {d.steps} ステップ / {state}"
+                "   左ドラッグ: つまむ   Enter: 確定   Esc: 中止")
+
     def modal(self, context, event):
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             return self._finish_modal(context, commit=False)
@@ -299,7 +300,7 @@ class MUSLIN_OT_dress(bpy.types.Operator):
         if self._handle_grab(context, event):
             return {'RUNNING_MODAL'}
         if event.type != 'TIMER':
-            # 視点の回転やズームは Blender に任せる(着せながら回り込んで見られるように)
+            # 視点の回転やズームは Blender に任せる(回り込んで見られるように)
             return {'PASS_THROUGH'}
 
         # 画面が固まらないよう、1回のタイマーで回すのは短い時間だけ
@@ -309,11 +310,7 @@ class MUSLIN_OT_dress(bpy.types.Operator):
         while not done and time.perf_counter() < deadline:
             done = self._dresser.step()
         self._dresser.show()
-        d = self._dresser
-        context.area.header_text_set(
-            f"着せ付け中: {d.steps} ステップ / 最大速度 {d.speed * 100:.1f} cm/s"
-            "   左ドラッグ: つまむ   Enter: 確定   Esc: 中止"
-        )
+        context.area.header_text_set(self._header())
         if done:
             return self._finish_modal(context, commit=True)
         return {'RUNNING_MODAL'}
@@ -325,7 +322,91 @@ class MUSLIN_OT_dress(bpy.types.Operator):
         return self._end(context, commit)
 
 
-_classes = (MUSLIN_OT_dress,)
+class MUSLIN_OT_dress(_ClothModal, bpy.types.Operator):
+    """時間軸を進めずに、縫って落ち着くまで回し、着せた姿勢として保存する
+
+    寸法は型紙のまま。落ち着くと自動で終わる。途中で左ドラッグでつまむこともできる。
+    Esc で中止(元の形に戻る)、Enter でその場で確定する。
+    """
+
+    bl_idname = "muslin.dress"
+    bl_label = "Dress"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    AUTO_FINISH = True
+    HEADER = "着せ付け中"
+    SAVED = "着せ付けを保存しました"
+    CANCELLED = "着せ付けを中止しました"
+
+    max_steps: bpy.props.IntProperty(
+        name="Max Steps",
+        description="落ち着かなくてもここで打ち切る",
+        default=DEFAULT_MAX_STEPS,
+        min=1,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        return ui_poll.mesh_selected(cls, context)
+
+    def execute(self, context):
+        # スクリプトやテストから呼ばれたときは、最後まで同期で回す
+        self._start(context)
+        while not self._dresser.step():
+            pass
+        return self._end(context, commit=True)
+
+
+class MUSLIN_OT_adjust(_ClothModal, bpy.types.Operator):
+    """着せた布をつまんで整える。Enter を押すまで終わらない
+
+    着せた姿勢から始める(縫い目は閉じている)。左ドラッグでつまみ、
+    Enter で着せた姿勢として保存、Esc で始める前の形に戻す。
+    """
+
+    bl_idname = "muslin.adjust"
+    bl_label = "Adjust"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    AUTO_FINISH = False
+    HEADER = "整えています"
+    SAVED = "整えた形を保存しました"
+    CANCELLED = "整えるのをやめて元の形に戻しました"
+
+    # 自動では終わらないので上限は使わないが、Dresser の引数として渡す
+    max_steps: bpy.props.IntProperty(default=DEFAULT_MAX_STEPS, options={'HIDDEN'})
+    steps: bpy.props.IntProperty(
+        name="Steps",
+        description="スクリプトから呼んだときに回すステップ数(画面からは Enter まで回る)",
+        default=120,
+        min=0,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        # 着せていない布は縫い目が開いたまま。整える前に着せる
+        if not rest_shape.is_dressed(context.active_object):
+            return ui_poll.reject(cls, "先に Dress で着せてください")
+        return True
+
+    def execute(self, context):
+        # スクリプトから呼ばれたときは決まった数だけ回して保存する
+        self._start(context)
+        for _ in range(self.steps):
+            if self._dresser.step():
+                break
+        return self._end(context, commit=True)
+
+
+_classes = (MUSLIN_OT_dress, MUSLIN_OT_adjust)
 
 
 def register():
