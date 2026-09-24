@@ -266,12 +266,183 @@ def sample_sewing():
     save("03_sewing.blend")
 
 
+# ------------------------------------------------------------------ 4. 型紙から UV
+
+def _select_edges(obj, predicate):
+    """predicate(a, b) を満たす辺だけを選んだ状態にする(オブジェクトモードで呼ぶ)。
+
+    編集モードに入るとき頂点の選択から辺の選択が作り直されるので、
+    頂点と面の選択も消しておく(sample_sewing と同じ理由)。
+    """
+    me = obj.data
+    for v in me.vertices:
+        v.select = False
+    for poly in me.polygons:
+        poly.select = False
+    for e in me.edges:
+        a, b = me.vertices[e.vertices[0]].co, me.vertices[e.vertices[1]].co
+        e.select = predicate(a, b)
+        if e.select:
+            me.vertices[e.vertices[0]].select = True
+            me.vertices[e.vertices[1]].select = True
+
+
+def _checker_material():
+    """文字入りのグリッド画像を MuslinPattern の UV で貼るマテリアル。
+
+    升目の文字が読めれば、柄が左右反転していないかが一目で分かる。
+    """
+    image = bpy.data.images.new("MuslinCheck", 1024, 1024)
+    image.generated_type = 'COLOR_GRID'
+    mat = bpy.data.materials.new("MuslinCheck")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bsdf = next(n for n in nodes if n.type == 'BSDF_PRINCIPLED')
+    tex = nodes.new("ShaderNodeTexImage")
+    tex.image = image
+    uv = nodes.new("ShaderNodeUVMap")
+    uv.uv_map = "MuslinPattern"
+    links.new(uv.outputs["UV"], tex.inputs["Vector"])
+    links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    nodes.active = tex
+    return mat
+
+
+def _pattern_to_uv(obj, material):
+    for o in bpy.context.scene.objects:
+        o.select_set(o is obj)
+    bpy.context.view_layer.objects.active = obj
+    result = bpy.ops.muslin.pattern_to_uv()
+    obj.data.materials.append(material)
+    return result
+
+
+def sample_pattern_uv():
+    """Pattern to UV の見え方を確かめる場面(CHECKPOINTS の「型紙から UV」)。
+
+    3つを並べる:
+    - Garment: 前身頃と後ろ身頃を縫って胴に着せた服。後ろ身頃の柄が
+      背中側から見て反転していないか、着せた後も升目がゆがまないか
+    - Sleeve_Flat: 床に寝かせて作ったピース(+Y を上として扱う経路)
+    - Piece_45deg: 縦に立てたまま Z まわりに 45° 回したピース
+      (左右の向きの判定が際どい経路)
+    """
+    print("04_pattern_uv: 型紙から UV の見え方", flush=True)
+    import math
+
+    scene = fresh_scene(frame_end=60)
+    tools = scene.muslin_tools
+    tools.pattern_width = 0.45
+    tools.pattern_height = 0.6
+    tools.pattern_resolution = 0.025
+    material = _checker_material()
+
+    # --- 胴に着せる服 ---
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.12, depth=1.4, location=(0.0, 0.0, 0.9))
+    body = bpy.context.active_object
+    body.name = "Body"
+    smooth(body)
+
+    scene.cursor.location = (0.0, -0.18, 1.0)
+    bpy.ops.muslin.add_pattern_piece()
+    front = bpy.context.active_object
+    front.name = "Front"
+    scene.cursor.location = (0.0, 0.18, 1.0)
+    bpy.ops.muslin.add_pattern_piece()
+    back = bpy.context.active_object
+    back.name = "Back"
+
+    for o in scene.objects:
+        o.select_set(o in (front, back))
+    bpy.context.view_layer.objects.active = front
+    bpy.ops.muslin.join_pieces()
+    garment = bpy.context.active_object
+    garment.name = "Garment"
+    smooth(garment)
+    mark_as_cloth(garment)
+
+    group = garment.vertex_groups.new(name="Shoulder")
+    top = max(v.co.z for v in garment.data.vertices)
+    group.add([v.index for v in garment.data.vertices if abs(v.co.z - top) < 1e-5],
+              1.0, 'REPLACE')
+
+    xs = [v.co.x for v in garment.data.vertices]
+    made = 0
+    for edge_x in (min(xs), max(xs)):
+        bpy.ops.object.mode_set(mode='OBJECT')
+        _select_edges(garment, lambda a, b, x=edge_x: abs(a.x - x) < 1e-5 and abs(b.x - x) < 1e-5)
+        bpy.ops.object.mode_set(mode='EDIT')
+        if bpy.ops.muslin.add_seam() == {'FINISHED'}:
+            made += 1
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    props = garment.muslin
+    props.fabric_preset = 'COTTON'
+    props.pin_vertex_group = "Shoulder"
+    props.collider_object = body
+    props.collision_enabled = True
+    props.self_collision_enabled = False
+    props.seam_close_frames = 30
+    bpy.ops.muslin.fit_thickness()
+
+    # 平らなうちに型紙を確定してから着せる
+    assert bpy.ops.muslin.lock_pattern() == {'FINISHED'}
+    dressed = bpy.ops.muslin.dress()
+    uv_garment = _pattern_to_uv(garment, material)
+    print(f"  Garment: シーム {made} 本 / Dress {dressed} / UV {uv_garment}", flush=True)
+
+    # --- 床に寝かせたピース ---
+    scene.cursor.location = (0.9, 0.0, 0.0)
+    bpy.ops.muslin.add_pattern_piece()
+    flat = bpy.context.active_object
+    flat.name = "Sleeve_Flat"
+    for v in flat.data.vertices:      # XZ 平面 → XY 平面(上端が +Y)
+        v.co.y, v.co.z = v.co.z, 0.0
+    flat.data.update()
+    print(f"  Sleeve_Flat: UV {_pattern_to_uv(flat, material)}", flush=True)
+
+    # --- Z まわりに 45° 回したピース(型紙はローカル座標なので頂点ごと回す) ---
+    scene.cursor.location = (-0.9, 0.0, 1.0)
+    bpy.ops.muslin.add_pattern_piece()
+    diag = bpy.context.active_object
+    diag.name = "Piece_45deg"
+    c = s = math.sqrt(0.5)
+    for v in diag.data.vertices:
+        x, y = v.co.x, v.co.y
+        v.co.x, v.co.y = c * x - s * y, s * x + c * y
+    diag.data.update()
+    print(f"  Piece_45deg: UV {_pattern_to_uv(diag, material)}", flush=True)
+
+    # ビューポートを「テクスチャ付きのソリッド表示」にしておく
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.spaces.active.shading.color_type = 'TEXTURE'
+
+    add_note("Pattern to UV の確認: 升目の文字が正しく読めるか / 着せた後も升目が四角いか",
+             location=(0.0, 0.0, 1.85), size=0.07)
+    add_camera_and_light((0.0, 0.0, 0.9), distance=2.6, height=1.6)
+    for o in scene.objects:
+        o.select_set(o is garment)
+    bpy.context.view_layer.objects.active = garment
+    save("04_pattern_uv.blend")
+
+
+SAMPLES = {
+    "01": sample_drape,
+    "02": sample_flag,
+    "03": sample_sewing,
+    "04": sample_pattern_uv,
+}
+
+
 if __name__ == "__main__":
     import muslin
 
     muslin.register()
+    # `-- 04` のように番号を渡すとそれだけを作る(省略すると全部)
+    wanted = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else list(SAMPLES)
     print(f"サンプルを生成します -> {OUT_DIR}", flush=True)
-    sample_drape()
-    sample_flag()
-    sample_sewing()
+    for key in wanted:
+        SAMPLES[key]()
     print("完了", flush=True)
