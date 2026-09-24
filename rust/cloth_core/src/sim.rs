@@ -3534,8 +3534,6 @@ mod tests {
         assert!(err < 0.05, "自己衝突で布が伸びすぎている: {err}");
     }
 
-    /// 自己衝突が実際に頂点同士を押し離す
-    #[test]
     /// 頂点の並びがずれた2枚が、互いを突き抜けないこと。
     ///
     /// 頂点同士の反発しか無かった頃は**素通りしていた**。格子間隔 h の2枚を
@@ -3937,7 +3935,6 @@ mod tests {
     /// 品質のための設定が摩擦という別物を動かしてしまっていた。
     #[test]
     fn friction_does_not_depend_on_substeps() {
-        let thickness = 0.02;
         let friction = 0.3;
         let dt = 1.0 / 60.0;
 
@@ -4356,6 +4353,7 @@ mod tests {
         );
     }
 
+    /// 自己衝突が実際に頂点同士を押し離す
     #[test]
     fn self_collision_separates_overlapping_vertices() {
         // 制約で結ばれていない2頂点をほぼ同じ位置に置く
