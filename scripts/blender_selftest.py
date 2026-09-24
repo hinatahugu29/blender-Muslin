@@ -931,6 +931,12 @@ def main():
         dressed_len = np.linalg.norm(now[ev[:, 0]] - now[ev[:, 1]], axis=1)
         check("(前提)着せた形は型紙と違う", np.abs(dressed_len - real).max() > 1e-4)
         check("UV の 1 が何 m かを残す", mpu > 0.1, f"{mpu:.3f} m")
+        # 胴の正面(-Y 側)にある頂点で、外(正面)から見て右 = +X に u が増える
+        front = [i for i, (_x, y, _z) in enumerate(now) if y < -0.02]
+        xs_front = np.array([now[i][0] for i in front])
+        us_front = per_vertex[front, 0]
+        slope = np.polyfit(xs_front, us_front, 1)[0] if len(front) > 2 else 0.0
+        check("巻いた布を外から見て柄が左右反転しない", slope > 0.0, f"傾き {slope:.2f}")
 
     # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
     def bend_around(o):

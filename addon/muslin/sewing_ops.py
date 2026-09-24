@@ -387,16 +387,24 @@ class MUSLIN_OT_pattern_to_uv(bpy.types.Operator):
         mesh.edges.foreach_get("vertices", edges)
         edges = edges.reshape(-1, 2)
 
+        # 今の形(着せた形)と面は、ピースの外側を決めるのに使う。
+        # 外から見て柄が左右反転しないようにするため(後ろ身頃など)
+        current = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("co", current)
+        mesh.calc_loop_triangles()
+        triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get("vertices", triangles)
+        triangles = triangles.reshape(-1, 3)
+
         pattern = rest_shape.load_pattern(obj)
         source = "型紙"
         if pattern is None:
             # 一度も開始していない(型紙が無い)ときは今の形から作る
-            pattern = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-            mesh.vertices.foreach_get("co", pattern)
+            pattern = current
             source = "今の形"
         bent = rest_shape.bent_islands(pattern, edges)
 
-        uvs, meters_per_uv = pattern_uv.layout(pattern, edges)
+        uvs, meters_per_uv = pattern_uv.layout(pattern, edges, current, triangles)
 
         layer = mesh.uv_layers.get(UV_LAYER) or mesh.uv_layers.new(name=UV_LAYER)
         loop_vertices = np.empty(len(mesh.loops), dtype=np.int32)

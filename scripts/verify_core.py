@@ -778,6 +778,49 @@ def test_pattern_uv():
     check("寝かせた型紙でも実寸の比が保たれる",
           np.allclose(real[:len(e1)], on_uv2, atol=1e-9))
 
+    # 前身頃と後ろ身頃: どちらも外から見て文字が正しく読める向きになる。
+    # Add Pattern Piece と同じ巻き順(面の法線は -Y)で作り、胴を挟んで置く。
+    # 後ろ身頃の法線は内側を向くが、外側は服の中心から離れる側で決める
+    def tris(nx, nz, base):
+        out = []
+        for k in range(nz - 1):
+            for i in range(nx - 1):
+                a = base + k * nx + i
+                out += [(a, a + 1, a + nx + 1), (a, a + nx + 1, a + nx)]
+        return out
+
+    pf, ef = rect(0.5, 0.7, -0.2, x0=-0.25)
+    pb, eb = rect(0.5, 0.7, 0.2, x0=-0.25)
+    nf = len(pf)
+    garment = np.array(pf + pb)
+    g_edges = ef + [(a + nf, b + nf) for a, b in eb]
+    g_tris = tris(6, 8, 0) + tris(6, 8, nf)
+    g_uv, _ = pattern_uv.layout(garment.ravel(), g_edges, garment.ravel(), g_tris)
+    fr, fl = int(np.argmax(garment[:nf, 0])), int(np.argmin(garment[:nf, 0]))
+    br, bl = nf + int(np.argmax(garment[nf:, 0])), nf + int(np.argmin(garment[nf:, 0]))
+    check("前身頃は正面(-Y)から見て左右が正しい", g_uv[fr, 0] > g_uv[fl, 0])
+    # 背中側(+Y)から見ると、画面の右はワールドの -X
+    check("後ろ身頃は背中側(+Y)から見て左右が正しい", g_uv[bl, 0] > g_uv[br, 0])
+    check("後ろ身頃も上が UV の上", g_uv[nf + int(np.argmax(garment[nf:, 2])), 1]
+          > g_uv[nf + int(np.argmin(garment[nf:, 2])), 1])
+
+    # 着せた形(円柱に巻いた形)で判定しても同じ向きになる
+    dressed = garment.copy()
+    for idx in range(len(dressed)):
+        x, y = dressed[idx, 0], dressed[idx, 1]
+        theta = x / 0.2 * (np.pi / 2)
+        side = -1.0 if y < 0 else 1.0
+        dressed[idx, 0] = 0.2 * np.sin(theta)
+        dressed[idx, 1] = side * 0.2 * np.cos(theta)
+    d_uv, _ = pattern_uv.layout(garment.ravel(), g_edges, dressed.ravel(), g_tris)
+    check("着せた形で判定しても向きは同じ", np.allclose(d_uv, g_uv))
+
+    # 単独の平らなピースは外側を決められないので、今までどおり
+    single = np.array(pf)
+    s_uv, _ = pattern_uv.layout(single.ravel(), ef, single.ravel(), tris(6, 8, 0))
+    s_old, _ = pattern_uv.layout(single.ravel(), ef)
+    check("外側を決められない単独のピースは従来どおり", np.allclose(s_uv, s_old))
+
 
 def test_bent_islands():
     """平らでない(曲げて置いた)ピースの判定(bpy 非依存)"""
