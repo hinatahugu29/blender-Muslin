@@ -5,6 +5,7 @@
 
 pub mod bending;
 pub mod collision;
+pub mod coloring;
 pub mod hashing;
 pub mod math;
 pub mod sim;

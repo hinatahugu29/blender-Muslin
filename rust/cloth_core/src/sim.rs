@@ -7,7 +7,7 @@
 //! - XPBD の λ(ラグランジュ乗数)はサブステップごとにリセットし、反復内で累積する
 //!   (これにより compliance が実際の物性値として反復回数に依存しなくなる)。
 
-use crate::bending::{solve_bending, BendingConstraint};
+use crate::bending::{solve_bending_colored, BendingConstraint};
 use crate::collision::{SpatialHash, TriangleBvh};
 use crate::math::Vec3;
 
@@ -289,6 +289,11 @@ pub struct ClothSim {
     /// 縫製制約(M3)。`seam_closure` によって rest_length が変化する。
     pub seam_constraints: Vec<DistanceConstraint>,
 
+    /// 伸び・曲げの制約の、色ごとのブロックの区間(M9)。制約は色の順に並べてある。
+    /// 同じ色のブロックは頂点を共有しないので並列に解ける
+    stretch_colors: Vec<Vec<std::ops::Range<usize>>>,
+    bending_colors: Vec<Vec<std::ops::Range<usize>>>,
+
     /// 縫製の閉じ具合 0.0(初期長のまま) 〜 1.0(完全に縫い合わさる)。
     seam_closure: f64,
 
@@ -432,6 +437,35 @@ impl ClothSim {
                 BendingConstraint::new(&positions, a, b, c, d, bending_compliance)
             })
             .collect();
+        // ブロックに区切って色の順に並べ替える(M9)。以後はこの順で解く。
+        // 並列でも逐次でも同じ順。並列にしない大きさなら、ブロック1つ =
+        // 元の順番のまま(色分けで収束を落とさない)
+        let block = if n >= PARALLEL_MIN_VERTICES {
+            crate::coloring::BLOCK
+        } else {
+            usize::MAX
+        };
+        let (stretch_constraints, stretch_colors) = {
+            let verts: Vec<[usize; 2]> =
+                stretch_constraints.iter().map(|c| [c.i0, c.i1]).collect();
+            let (order, colors) =
+                crate::coloring::block_color_order(verts.len(), n, block, |i| &verts[i][..]);
+            let sorted: Vec<DistanceConstraint> =
+                order.iter().map(|&i| stretch_constraints[i].clone()).collect();
+            (sorted, colors)
+        };
+        let (bending_constraints, bending_colors) = {
+            let verts: Vec<[usize; 4]> = bending_constraints
+                .iter()
+                .map(|c| [c.p1, c.p2, c.p3, c.p4])
+                .collect();
+            let (order, colors) =
+                crate::coloring::block_color_order(verts.len(), n, block, |i| &verts[i][..]);
+            let sorted: Vec<BendingConstraint> =
+                order.iter().map(|&i| bending_constraints[i]).collect();
+            (sorted, colors)
+        };
+
         // ピン留め前の逆質量(ピンの解除時に元の質量分布へ戻せるようにする)
         let base_inv_mass: Vec<f64> = inv_mass
             .iter()
@@ -500,6 +534,8 @@ impl ClothSim {
             substep_start: vec![Vec3::zero(); n],
             stretch_constraints,
             bending_constraints,
+            stretch_colors,
+            bending_colors,
             seam_constraints: Vec::new(),
             seam_closure: 0.0,
             grab: None,
@@ -1026,23 +1062,28 @@ impl ClothSim {
                 self.cheb_cur.copy_from_slice(&self.positions);
             }
 
+            let parallel = n >= self.parallel_threshold;
             let t = std::time::Instant::now();
-            solve_distance(
+            solve_distance_colored(
                 &mut self.positions,
                 &self.inv_mass,
                 &self.stretch_constraints,
                 &mut self.lambda_stretch,
                 inv_dt2,
+                &self.stretch_colors,
+                parallel,
             );
             self.timings.stretch += ms_since(t);
 
             let t = std::time::Instant::now();
-            solve_bending(
+            solve_bending_colored(
                 &mut self.positions,
                 &self.inv_mass,
                 &self.bending_constraints,
                 &mut self.lambda_bending,
                 inv_dt2,
+                &self.bending_colors,
+                parallel,
             );
             self.timings.bending += ms_since(t);
 
@@ -1098,12 +1139,14 @@ impl ClothSim {
         // 縫い目の頂点が引き離され、閉じたはずの縫い目に隙間が残る。
         let t_post = std::time::Instant::now();
         for _ in 0..params.post_collision_iterations {
-            solve_distance(
+            solve_distance_colored(
                 &mut self.positions,
                 &self.inv_mass,
                 &self.stretch_constraints,
                 &mut self.lambda_stretch,
                 inv_dt2,
+                &self.stretch_colors,
+                n >= self.parallel_threshold,
             );
             solve_distance(
                 &mut self.positions,
@@ -1956,6 +1999,49 @@ impl ClothSim {
             .iter()
             .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
     }
+}
+
+/// 色分けした距離制約を解く(M9)。`constraints` は色の順に並んでいること。
+///
+/// 1つの制約の計算は `solve_distance` と同じ。同じ色のブロックは頂点を
+/// 共有しないので並列にしてよく、並列でも逐次でも結果は1ビットも変わらない。
+fn solve_distance_colored(
+    positions: &mut [Vec3],
+    inv_mass: &[f64],
+    constraints: &[DistanceConstraint],
+    lambdas: &mut [f64],
+    inv_dt2: f64,
+    colors: &[Vec<std::ops::Range<usize>>],
+    parallel: bool,
+) {
+    use crate::coloring::{for_each_colored, Shared};
+    let pos = Shared::new(positions);
+    let lam = Shared::new(lambdas);
+    for_each_colored(colors, parallel, |ci| {
+        let c = &constraints[ci];
+        let w0 = inv_mass[c.i0];
+        let w1 = inv_mass[c.i1];
+        let w_sum = w0 + w1;
+        if w_sum == 0.0 {
+            return;
+        }
+        // SAFETY: 同じ色のブロックは頂点を共有しない(色分けの保証)。λ は制約ごと
+        unsafe {
+            let p0 = pos.get(c.i0);
+            let p1 = pos.get(c.i1);
+            let delta = p0.sub(p1);
+            let Some(dir) = delta.normalized() else {
+                return;
+            };
+            let c_val = delta.length() - c.rest_length;
+            let alpha_tilde = c.compliance * inv_dt2;
+            let lambda = lam.get(ci);
+            let d_lambda = (-c_val - alpha_tilde * lambda) / (w_sum + alpha_tilde);
+            lam.set(ci, lambda + d_lambda);
+            pos.set(c.i0, p0.add(dir.scale(d_lambda * w0)));
+            pos.set(c.i1, p1.add(dir.scale(-d_lambda * w1)));
+        }
+    });
 }
 
 /// XPBD の距離制約ソルバー。λ を反復間で累積する。
@@ -3052,6 +3138,82 @@ mod tests {
             max_diff < 1e-6,
             "頂点位置が食い違う: 最大差 {max_diff} m"
         );
+    }
+
+    /// 伸び・曲げの制約を色ごとに並列に解いても、逐次と同じ結果になること(M9)
+    #[test]
+    fn parallel_colored_constraints_match_sequential() {
+        let run = |threshold: usize| {
+            let side = 71;
+            let (positions, edges, bending, tris, pinned) = build_grid(side, side, 0.02);
+            let mut sim =
+                ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+            sim.parallel_threshold = threshold;
+            let params = SimParams {
+                collision_enabled: false,
+                substeps: 4,
+                iterations: 10,
+                chebyshev_radius: 0.98,
+                ..Default::default()
+            };
+            for _ in 0..30 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            sim.positions.clone()
+        };
+        let seq = run(usize::MAX);
+        let par = run(PARALLEL_MIN_VERTICES);
+        assert!(seq == par, "並列にすると位置が変わった");
+    }
+
+    /// 同じ色の別のブロックが頂点を共有していないこと(並列の安全の前提)
+    #[test]
+    fn constraint_colors_never_share_vertices() {
+        let side = 71; // 並列にする大きさ(ブロックに区切られる)
+        let (positions, edges, bending, tris, pinned) = build_grid(side, side, 0.02);
+        let sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+        let n = sim.positions.len();
+        let check = |colors: &Vec<Vec<std::ops::Range<usize>>>,
+                     verts: &dyn Fn(usize) -> Vec<usize>,
+                     total: usize| {
+            let mut covered = 0;
+            assert!(colors.iter().any(|blocks| blocks.len() > 1), "並列にできるブロックが無い");
+            for blocks in colors {
+                let mut owner = vec![usize::MAX; n];
+                for (k, b) in blocks.iter().enumerate() {
+                    covered += b.len();
+                    for ci in b.clone() {
+                        for v in verts(ci) {
+                            assert!(owner[v] == usize::MAX || owner[v] == k,
+                                    "同じ色の別のブロックが頂点 {v} を共有");
+                            owner[v] = k;
+                        }
+                    }
+                }
+            }
+            assert_eq!(covered, total);
+        };
+        check(&sim.stretch_colors,
+              &|ci| vec![sim.stretch_constraints[ci].i0, sim.stretch_constraints[ci].i1],
+              sim.stretch_constraints.len());
+        check(&sim.bending_colors,
+              &|ci| {
+                  let c = &sim.bending_constraints[ci];
+                  vec![c.p1, c.p2, c.p3, c.p4]
+              },
+              sim.bending_constraints.len());
+    }
+
+    /// 並列にしない大きさでは、制約は組み立てたときの順番のまま(収束を落とさない)
+    #[test]
+    fn small_cloth_keeps_constraint_order() {
+        let (positions, edges, bending, tris, pinned) = build_grid(20, 20, 0.05);
+        let sim = ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-3);
+        let order: Vec<(usize, usize)> =
+            sim.stretch_constraints.iter().map(|c| (c.i0, c.i1)).collect();
+        assert_eq!(order, edges);
+        assert_eq!(sim.stretch_colors.len(), 1);
+        assert_eq!(sim.bending_colors.len(), 1);
     }
 
     /// キャッシュした候補での衝突解決を並列にしても、逐次と同じ結果になること

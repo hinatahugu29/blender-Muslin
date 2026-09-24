@@ -173,6 +173,57 @@ pub fn solve_bending(
     }
 }
 
+/// 色分けした曲げ制約を解く(M9)。`constraints` は色の順に並んでいること。
+///
+/// 1つの制約の計算は `solve_bending` と同じ。同じ色のブロックは頂点を共有しない
+/// ので並列にしてよい。λ は制約ごとに1つなので、書き込みはぶつからない。
+pub(crate) fn solve_bending_colored(
+    positions: &mut [Vec3],
+    inv_mass: &[f64],
+    constraints: &[BendingConstraint],
+    lambdas: &mut [f64],
+    inv_dt2: f64,
+    colors: &[Vec<std::ops::Range<usize>>],
+    parallel: bool,
+) {
+    use crate::coloring::{for_each_colored, Shared};
+    let pos = Shared::new(positions);
+    let lam = Shared::new(lambdas);
+    for_each_colored(colors, parallel, |ci| {
+        let c = &constraints[ci];
+        let idx = [c.p1, c.p2, c.p3, c.p4];
+        let w = [inv_mass[c.p1], inv_mass[c.p2], inv_mass[c.p3], inv_mass[c.p4]];
+        let weight: f64 = (0..4).map(|i| w[i] * c.k[i] * c.k[i]).sum();
+        if weight < EPS {
+            return;
+        }
+        // SAFETY: 同じ色のブロックは頂点を共有しない(色分けの保証)。λ は制約ごと
+        unsafe {
+            let x = [pos.get(idx[0]), pos.get(idx[1]), pos.get(idx[2]), pos.get(idx[3])];
+            let v = x[0]
+                .scale(c.k[0])
+                .add(x[1].scale(c.k[1]))
+                .add(x[2].scale(c.k[2]))
+                .add(x[3].scale(c.k[3]));
+            let len = v.length();
+            if len < 1e-10 {
+                return;
+            }
+            let dir = v.scale(1.0 / len);
+            let alpha_tilde = c.compliance * inv_dt2;
+            let lambda = lam.get(ci);
+            let d_lambda = (-len - alpha_tilde * lambda) / (weight + alpha_tilde);
+            lam.set(ci, lambda + d_lambda);
+            for i in 0..4 {
+                if w[i] == 0.0 {
+                    continue;
+                }
+                pos.set(idx[i], x[i].add(dir.scale(w[i] * c.k[i] * d_lambda)));
+            }
+        }
+    });
+}
+
 /// 三角形の集合から、曲げ制約の4頂点を導く。
 ///
 /// ちょうど2つの三角形に共有される辺それぞれについて
