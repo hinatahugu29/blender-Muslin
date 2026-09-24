@@ -1460,7 +1460,16 @@ def main():
     if not samples:
         check("サンプルがある", False, "samples/ が空。make_samples.py を実行してください")
     for path in samples:
-        bpy.ops.wm.open_mainfile(filepath=str(path))
+        try:
+            bpy.ops.wm.open_mainfile(filepath=str(path))
+        except RuntimeError as exc:
+            # サンプルは Blender 5.x で保存しているので、それより古い版
+            # (4.2 など)は新しいファイル形式を読めない。後ろの節を走らせる
+            # ために飛ばす(5.x では飛ばさずに失敗として数える)
+            if bpy.app.version < (5, 0, 0) and "not a blend file" in str(exc):
+                print(f"[SKIP] {path.name}: Blender {bpy.app.version_string} では読めない形式")
+                continue
+            raise
         scene = bpy.context.scene
 
         # サンプル側で布に印をつけてある。頂点数で選ぶと球を拾ってしまう
