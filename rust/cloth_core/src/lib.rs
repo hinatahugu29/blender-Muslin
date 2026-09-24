@@ -260,7 +260,6 @@ mod bindings {
                 .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
-        /// ピン留めを再設定する(質量分布は保持される)
         /// 生地の面密度を差し替える(走らせたまま反映できる)。
         fn set_density(&mut self, density: f64) {
             self.inner.set_density(density);
@@ -271,6 +270,7 @@ mod bindings {
             self.inner.set_compliances(stretch, bending);
         }
 
+        /// ピン留めを再設定する(質量分布は保持される)
         fn set_pinned(&mut self, pinned: Vec<u32>) {
             let pinned: Vec<usize> = pinned.iter().map(|&i| i as usize).collect();
             self.inner.set_pinned(&pinned);
@@ -436,6 +436,8 @@ mod bindings {
             map.insert("object_collision", t.object_collision);
             map.insert("self_collision", t.self_collision);
             map.insert("hash_rebuild", t.hash_rebuild);
+            // 時間ではなく件数(掃過判定で面まで戻した頂点の数)
+            map.insert("self_tunneling", t.self_tunneling);
             map.insert("post_collision", t.post_collision);
             map.insert("velocity", t.velocity);
             map.insert("total", t.total);
