@@ -1045,6 +1045,29 @@ def main():
         check("Pattern to UV は型紙オブジェクトの今の寸法を使う",
               np.allclose(rest_shape.load_pattern(piece), expected, atol=1e-5))
 
+        # Adjust の最中に元に戻す(Ctrl+Z)をしても落ちない。Blender がデータを
+        # 読み直すと、握っていたオブジェクトの参照が無効になる(実機で
+        # ReferenceError が出た)。Dresser は使うたびに引き直す
+        name, pat_name = piece.name, pat_obj.name
+        d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene),
+                              auto_finish=False)
+        for _ in range(3):
+            d.step()
+        bpy.ops.ed.undo_push(message="muslin selftest")
+        bpy.ops.ed.undo_push(message="muslin selftest 2")
+        bpy.ops.ed.undo()
+        try:
+            for _ in range(3):
+                d.step()
+            bpy.data.objects[pat_name].scale.z = 1.3
+            bpy.context.view_layer.update()
+            flowed = d.poll_pattern()
+            saved = d.finish()
+            check("元に戻したあとも Adjust が続けられる", flowed and saved
+                  and rest_shape.is_dressed(bpy.data.objects[name]))
+        except ReferenceError as exc:
+            check("元に戻したあとも Adjust が続けられる", False, str(exc))
+
     # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
     def bend_around(o):
         xs_ = [v.co.x for v in o.data.vertices]

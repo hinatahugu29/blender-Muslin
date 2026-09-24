@@ -43,14 +43,23 @@ DRESS_DAMPING = 0.9
 GRAB_COMPLIANCE = 0.0
 
 
-class _DressProps:
-    """生地の設定のうち、減衰だけを着せ付け用に差し替えて見せる。"""
+class LostCloth(Exception):
+    """着せ付けの途中で布が見つからなくなった(削除された、など)。"""
 
-    def __init__(self, props):
-        self._props = props
+
+class _DressProps:
+    """生地の設定のうち、減衰だけを着せ付け用に差し替えて見せる。
+
+    設定そのものは握らず、読むたびに `lookup()` で引き直す。元に戻す
+    (Ctrl+Z)などで Blender がデータを読み直すと、握っていた参照は
+    無効になり ReferenceError になる(実機の Adjust 中に起きた)。
+    """
+
+    def __init__(self, lookup):
+        self._lookup = lookup
 
     def __getattr__(self, name):
-        value = getattr(self._props, name)
+        value = getattr(self._lookup(), name)
         if name == "damping":
             return max(value, DRESS_DAMPING)
         return value
@@ -60,7 +69,6 @@ class Dresser:
     """1ステップずつ着せ付けを進める。モーダルでも同期でも同じものを使う。"""
 
     def __init__(self, obj, props, dt, max_steps=DEFAULT_MAX_STEPS, auto_finish=True):
-        self.obj = obj
         # False なら落ち着いても上限に達しても止まらない(整えるモード)。
         # 止まるのは人が確定か中止をしたときと、発散したときだけ
         self.auto_finish = auto_finish
@@ -69,11 +77,12 @@ class Dresser:
         # 走っているシミュレーションとは別に回す(タイムラインに触れない)。
         # 重ね着のグループなら、グループの布をまとめて着せる。ソルバーの設定は
         # 組み立てと同じく先頭の布(一番内側)のものを使う
-        self.members = mesh_io.group_members(obj)
-        props = self.members[0].muslin
-        self.props = _DressProps(props)
+        members = mesh_io.group_members(obj)
+        props = members[0].muslin
+        # 布と設定は握らずに、使うたびに引き直す(members / _DressProps を参照)
+        self.props = _DressProps(lambda: self.members[0].muslin)
         self.before = []
-        for m in self.members:
+        for m in members:
             sim_state.stop_simulation(m)
             co = np.empty(len(m.data.vertices) * 3, dtype=np.float32)
             m.data.vertices.foreach_get("co", co)
@@ -92,10 +101,24 @@ class Dresser:
         # レイを当てる三角形(トポロジは着せ付けの間変わらない)。グループでは
         # 布ごとに頂点番号をずらしてつなげる
         self._triangles = []
-        for m, (_key, start, _count) in zip(self.members, self.state["members"]):
+        for m, (_key, start, _count) in zip(members, self.state["members"]):
             m.data.calc_loop_triangles()
             self._triangles += [tuple(start + i for i in t.vertices)
                                 for t in m.data.loop_triangles]
+
+    @property
+    def members(self):
+        """着せている布(先頭が設定を使う布)。使うたびに引き直す。
+
+        Blender は元に戻す(Ctrl+Z)などでデータを読み直すと、Python が
+        持っていたオブジェクトの参照を無効にする。握り続けると次に触った
+        ところで ReferenceError になるので、状態に残した session_uid から
+        引き直す(再生中の状態と同じやり方)。布が消えていれば LostCloth。
+        """
+        members = sim_state.member_objects(self.state)
+        if not members:
+            raise LostCloth("着せ付けていた布が見つかりません(削除されたか、読み直されました)")
+        return members
 
     @property
     def warnings(self):
@@ -319,6 +342,15 @@ class _ClothModal:
                 "   左ドラッグ: つまむ   Enter: 確定   Esc: 中止")
 
     def modal(self, context, event):
+        try:
+            return self._modal(context, event)
+        except LostCloth as exc:
+            # 布が消えたら、書き戻す先も無いので静かに終える
+            self._stop_timer(context)
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+
+    def _modal(self, context, event):
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             return self._finish_modal(context, commit=False)
         if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
@@ -345,10 +377,15 @@ class _ClothModal:
         return {'RUNNING_MODAL'}
 
     def _finish_modal(self, context, commit):
-        context.window_manager.event_timer_remove(self._timer)
+        self._stop_timer(context)
+        return self._end(context, commit)
+
+    def _stop_timer(self, context):
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
         if context.area is not None:
             context.area.header_text_set(None)
-        return self._end(context, commit)
 
 
 class MUSLIN_OT_dress(_ClothModal, bpy.types.Operator):
