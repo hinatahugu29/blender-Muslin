@@ -396,6 +396,8 @@ class MUSLIN_OT_pattern_to_uv(bpy.types.Operator):
         mesh.loop_triangles.foreach_get("vertices", triangles)
         triangles = triangles.reshape(-1, 3)
 
+        from . import pattern_link
+        pattern_link.sync_before_start(obj)     # 型紙オブジェクトの編集を拾う
         pattern = rest_shape.load_pattern(obj)
         source = "型紙"
         if pattern is None:

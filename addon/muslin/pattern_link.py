@@ -70,7 +70,11 @@ def signature(obj):
 
 
 def sync_before_start(obj):
-    """開始前に、型紙オブジェクトがあればそれを布の型紙として記録する。
+    """型紙オブジェクトがあれば、それを布の型紙(`muslin_pattern`)として記録する。
+
+    開始前のほか、型紙の属性を読む操作(Pattern to UV / Restore Pattern)と
+    Dress / Adjust の確定でも呼ぶ。型紙オブジェクトを編集しただけでは属性は
+    古いままなので。
 
     記録したら True。無い(または頂点数が違う)なら False を返し、呼び出し側は
     従来の `rest_shape.sync_pattern_before_start` に任せる。

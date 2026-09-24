@@ -1037,6 +1037,14 @@ def main():
               f"キャッシュ {len(state['cache'])} フレーム")
         sim_state.stop_simulation(piece)
 
+        # 型紙の属性を読む操作は、型紙オブジェクトの編集を先に拾う
+        pat_obj.scale.x = 1.25
+        bpy.context.view_layer.update()
+        bpy.ops.muslin.pattern_to_uv()
+        expected = (co.reshape(-1, 3) * np.array([1.25, 1.0, 1.0])).ravel()
+        check("Pattern to UV は型紙オブジェクトの今の寸法を使う",
+              np.allclose(rest_shape.load_pattern(piece), expected, atol=1e-5))
+
     # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
     def bend_around(o):
         xs_ = [v.co.x for v in o.data.vertices]

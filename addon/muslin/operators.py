@@ -431,8 +431,10 @@ class MUSLIN_OT_restore_pattern(bpy.types.Operator):
         return True
 
     def execute(self, context):
+        from . import pattern_link
         obj = context.active_object
         sim_state.stop_simulation(obj)
+        pattern_link.sync_before_start(obj)     # 型紙オブジェクトの編集を拾う
         if not rest_shape.restore_pattern(obj):
             self.report({'ERROR'}, "型紙と頂点数が合いません(メッシュを編集しましたか)")
             return {'CANCELLED'}

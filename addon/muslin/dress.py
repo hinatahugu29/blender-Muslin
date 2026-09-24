@@ -190,7 +190,10 @@ class Dresser:
             self.cancel()
             return False
         self.show()
+        from . import pattern_link
         for m in self.members:
+            # 型紙オブジェクトを編集していれば、その寸法を布の型紙として残す
+            pattern_link.sync_before_start(m)
             rest_shape.store(m)
             rest_shape.mark_dressed(m)
         return True
