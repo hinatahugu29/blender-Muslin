@@ -317,27 +317,12 @@ def _pattern_to_uv(obj, material):
     return result
 
 
-def sample_pattern_uv():
-    """Pattern to UV の見え方を確かめる場面(CHECKPOINTS の「型紙から UV」)。
+def _dressed_garment(scene):
+    """前身頃と後ろ身頃を脇で縫い、円柱の胴に着せた服を作る(04 / 05 で共通)。
 
-    3つを並べる:
-    - Garment: 前身頃と後ろ身頃を縫って胴に着せた服。後ろ身頃の柄が
-      背中側から見て反転していないか、着せた後も升目がゆがまないか
-    - Sleeve_Flat: 床に寝かせて作ったピース(+Y を上として扱う経路)
-    - Piece_45deg: 縦に立てたまま Z まわりに 45° 回したピース
-      (左右の向きの判定が際どい経路)
+    肩の線を留め、平らなうちに型紙を確定してから Dress する。
+    戻り値: (garment, 縫い目の本数, Dress の結果)
     """
-    print("04_pattern_uv: 型紙から UV の見え方", flush=True)
-    import math
-
-    scene = fresh_scene(frame_end=60)
-    tools = scene.muslin_tools
-    tools.pattern_width = 0.45
-    tools.pattern_height = 0.6
-    tools.pattern_resolution = 0.025
-    material = _checker_material()
-
-    # --- 胴に着せる服 ---
     bpy.ops.mesh.primitive_cylinder_add(radius=0.12, depth=1.4, location=(0.0, 0.0, 0.9))
     body = bpy.context.active_object
     body.name = "Body"
@@ -388,6 +373,31 @@ def sample_pattern_uv():
     # 平らなうちに型紙を確定してから着せる
     assert bpy.ops.muslin.lock_pattern() == {'FINISHED'}
     dressed = bpy.ops.muslin.dress()
+    return garment, made, dressed
+
+
+def sample_pattern_uv():
+    """Pattern to UV の見え方を確かめる場面(CHECKPOINTS の「型紙から UV」)。
+
+    3つを並べる:
+    - Garment: 前身頃と後ろ身頃を縫って胴に着せた服。後ろ身頃の柄が
+      背中側から見て反転していないか、着せた後も升目がゆがまないか
+    - Sleeve_Flat: 床に寝かせて作ったピース(+Y を上として扱う経路)
+    - Piece_45deg: 縦に立てたまま Z まわりに 45° 回したピース
+      (左右の向きの判定が際どい経路)
+    """
+    print("04_pattern_uv: 型紙から UV の見え方", flush=True)
+    import math
+
+    scene = fresh_scene(frame_end=60)
+    tools = scene.muslin_tools
+    tools.pattern_width = 0.45
+    tools.pattern_height = 0.6
+    tools.pattern_resolution = 0.025
+    material = _checker_material()
+
+    # --- 胴に着せる服 ---
+    garment, made, dressed = _dressed_garment(scene)
     uv_garment = _pattern_to_uv(garment, material)
     print(f"  Garment: シーム {made} 本 / Dress {dressed} / UV {uv_garment}", flush=True)
 
@@ -428,11 +438,50 @@ def sample_pattern_uv():
     save("04_pattern_uv.blend")
 
 
+def sample_pattern_link():
+    """型紙オブジェクト(M8)を確かめる場面。
+
+    04 と同じ服を胴に着せ、型紙オブジェクト(Garment_Pattern)を脇に置く。
+    Garment を選んで Adjust を押し、Garment_Pattern を選んで編集モードで
+    縦に伸ばすと、着ている服の丈が伸びる。
+    """
+    print("05_pattern_link: 型紙を直すと服が追従する", flush=True)
+    scene = fresh_scene(frame_end=120)
+    tools = scene.muslin_tools
+    tools.pattern_width = 0.45
+    tools.pattern_height = 0.6
+    tools.pattern_resolution = 0.025
+
+    garment, made, dressed = _dressed_garment(scene)
+    uv = _pattern_to_uv(garment, _checker_material())
+    for o in scene.objects:
+        o.select_set(o is garment)
+    bpy.context.view_layer.objects.active = garment
+    linked = bpy.ops.muslin.create_pattern_object()
+    pattern = garment.muslin.pattern_object
+    print(f"  Garment: シーム {made} 本 / Dress {dressed} / UV {uv} / "
+          f"型紙オブジェクト {linked} ({pattern.name if pattern else None})", flush=True)
+
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.spaces.active.shading.color_type = 'TEXTURE'
+
+    add_note("Garment で Adjust → Garment_Pattern を編集モードで縦に伸ばす → 服の丈が伸びる",
+             location=(0.3, 0.0, 1.85), size=0.06)
+    add_camera_and_light((0.3, 0.0, 0.9), distance=2.6, height=1.6)
+    for o in scene.objects:
+        o.select_set(o is garment)
+    bpy.context.view_layer.objects.active = garment
+    save("05_pattern_link.blend")
+
+
 SAMPLES = {
     "01": sample_drape,
     "02": sample_flag,
     "03": sample_sewing,
     "04": sample_pattern_uv,
+    "05": sample_pattern_link,
 }
 
 
