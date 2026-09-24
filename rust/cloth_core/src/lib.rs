@@ -260,6 +260,15 @@ mod bindings {
                 .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
+        /// 寸法の基準(型紙、ワールド座標のフラット配列)を差し替える。
+        /// 静止長・曲げの重み・質量を作り直す。位置には触らない(走らせたまま使える)
+        fn set_reference(&mut self, positions: Vec<f64>) -> PyResult<()> {
+            let reference = to_vec3s(&positions)?;
+            self.inner
+                .set_reference(&reference)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
         /// 生地の面密度を差し替える(走らせたまま反映できる)。
         fn set_density(&mut self, density: f64) {
             self.inner.set_density(density);

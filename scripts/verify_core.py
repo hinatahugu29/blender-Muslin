@@ -147,6 +147,32 @@ def test_pin_and_stretch():
     check("布が重力で垂れ下がっている", lowest < -0.1, f"最下点 z={lowest:.3f}")
 
 
+def test_set_reference():
+    """型紙の差し替え(M8): 走らせたまま寸法が変わる"""
+    positions, edges, bending, tris, top = build_grid(9, 9, 0.05)
+    center = top[len(top) // 2]
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [center], 0.2, 0.0, 1e-4)
+    for _ in range(40):
+        sim.step(1.0 / 24.0, -9.81, 10, 8, 0.5)
+    wide = list(positions)
+    for i in range(0, len(wide), 3):
+        wide[i] *= 1.3
+    sim.set_reference(wide)
+    for _ in range(120):
+        sim.step(1.0 / 24.0, -9.81, 10, 8, 0.5)
+    pos = sim.get_positions()
+    horizontal = [math.dist(pos[a * 3:a * 3 + 3], pos[b * 3:b * 3 + 3]) / 0.05
+                  for a, b in edges if b == a + 1]
+    ratio = sum(horizontal) / len(horizontal)
+    check("型紙を横に 1.3 倍にすると走っている布の横の辺が伸びる",
+          abs(ratio - 1.3) < 0.03 and sim.is_finite(), f"{ratio:.3f} 倍")
+    try:
+        sim.set_reference(wide[3:])
+        check("頂点数が違う型紙は拒否する", False)
+    except ValueError:
+        check("頂点数が違う型紙は拒否する", True)
+
+
 def test_substep_consistency():
     """減衰後の静止ドレープ形状が substeps に依存しない
     (= compliance が反復設定ではなく生地の物性として効いている)。
@@ -1158,6 +1184,7 @@ def main():
     test_module_surface()
     test_free_fall()
     test_pin_and_stretch()
+    test_set_reference()
     test_substep_consistency()
     test_density_affects_wind_response()
     test_floor_collision()

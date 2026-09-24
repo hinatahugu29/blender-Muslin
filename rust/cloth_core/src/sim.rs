@@ -278,6 +278,9 @@ pub struct ClothSim {
     base_inv_mass: Vec<f64>,
     /// 各頂点が受け持つ面積(m^2)。風圧を力に変換するのに使う。
     pub vertex_area: Vec<f64>,
+    /// 頂点ごとの面密度(kg/m^2)。0 以下は一様質量 1.0。型紙を差し替えたときに
+    /// 質量を面積から出し直すために持つ(生地は服ごとに違いうる)。
+    vertex_density: Vec<f64>,
 
     pub stretch_constraints: Vec<DistanceConstraint>,
     /// 二面角による曲げ制約。距離制約では曲げ剛性を制御できないため
@@ -455,6 +458,7 @@ impl ClothSim {
             inv_mass,
             base_inv_mass,
             vertex_area,
+            vertex_density: vec![density; n],
             constrained_pairs,
             seam_pairs: Default::default(),
             colliders: Vec::new(),
@@ -563,9 +567,18 @@ impl ClothSim {
     /// 組み立て直すと布が初期姿勢に戻ってしまい、見比べられない。
     /// ピン留めした頂点(inv_mass == 0)はピンのまま残す。
     pub fn set_density(&mut self, density: f64) {
-        let uniform = density <= 0.0;
+        self.vertex_density.iter_mut().for_each(|d| *d = density);
+        self.apply_vertex_mass();
+    }
+
+    /// 頂点ごとの面積と密度から質量を出し直す。ピン留めした頂点は質量無限のまま。
+    ///
+    /// 面が無い布は面積を測れないので、組み立て時(`new`)と同じく一様質量 1.0。
+    fn apply_vertex_mass(&mut self) {
+        let uniform = self.triangles.is_empty();
         for i in 0..self.positions.len() {
-            let mass = if uniform {
+            let density = self.vertex_density[i];
+            let mass = if uniform || density <= 0.0 {
                 1.0
             } else {
                 (self.vertex_area[i] * density).max(1e-12)
@@ -615,18 +628,9 @@ impl ClothSim {
             return Err("生地の番号が範囲外".into());
         }
         for i in 0..n {
-            let density = densities[vertex_material[i]];
-            let mass = if density <= 0.0 {
-                1.0
-            } else {
-                (self.vertex_area[i] * density).max(1e-12)
-            };
-            let inv = 1.0 / mass;
-            self.base_inv_mass[i] = inv;
-            if self.inv_mass[i] != 0.0 {
-                self.inv_mass[i] = inv;
-            }
+            self.vertex_density[i] = densities[vertex_material[i]];
         }
+        self.apply_vertex_mass();
         for c in self.stretch_constraints.iter_mut() {
             c.compliance = stretch[vertex_material[c.i0]];
         }
@@ -687,6 +691,45 @@ impl ClothSim {
             c.rest_length = c.initial_length * scale;
         }
         matched
+    }
+
+    /// 寸法の基準(型紙)を差し替える。位置・速度には触らない(M8)。
+    ///
+    /// 組み立て時に型紙から決めた3つを、渡された座標から作り直す:
+    /// 伸びの静止長、曲げの重み、頂点の受け持ち面積(=質量)。走らせたまま
+    /// 呼べば、布は新しい寸法へ向かって伸び縮みする。トポロジは変えられない
+    /// (頂点数が違えば Err)。
+    ///
+    /// ゴム紐の倍率(`set_rest_scales`)は保ち、新しい長さに掛け直す。
+    /// 縫い目は今の位置から測った隙間が基準なので触らない。
+    /// 平らでなくなって重みを決められない曲げ制約は、前の重みのまま残す。
+    pub fn set_reference(&mut self, reference: &[Vec3]) -> Result<(), String> {
+        let n = self.positions.len();
+        if reference.len() != n {
+            return Err(format!("reference length {} != {}", reference.len(), n));
+        }
+        for c in self.stretch_constraints.iter_mut() {
+            let scale = if c.initial_length > 1e-12 {
+                c.rest_length / c.initial_length
+            } else {
+                1.0
+            };
+            c.initial_length = reference[c.i0].sub(reference[c.i1]).length();
+            c.rest_length = c.initial_length * scale;
+        }
+        for c in self.bending_constraints.iter_mut() {
+            if let Some(fresh) =
+                BendingConstraint::new(reference, c.p1, c.p2, c.p3, c.p4, c.compliance)
+            {
+                c.k = fresh.k;
+            }
+        }
+        let triangles: Vec<(usize, usize, usize)> =
+            self.triangles.iter().map(|t| (t[0], t[1], t[2])).collect();
+        let (_, area) = Self::compute_mass_distribution(reference, &triangles, 1.0, &[]);
+        self.vertex_area = area;
+        self.apply_vertex_mass();
+        Ok(())
     }
 
     /// ピン留めを再設定する。面積から算出した質量分布は保持される。
@@ -4076,6 +4119,130 @@ mod tests {
             sim.inv_mass[free_vertex]
         );
         assert_eq!(sim.inv_mass[pinned[0]], 0.0, "ピンが効いていない");
+    }
+
+    fn scaled(points: &[Vec3], sx: f64, sy: f64) -> Vec<Vec3> {
+        points
+            .iter()
+            .map(|p| Vec3::new(p.x * sx, p.y * sy, p.z))
+            .collect()
+    }
+
+    #[test]
+    fn set_reference_rescales_rest_lengths_and_mass() {
+        let (positions, edges, bending, tris, pinned) = build_grid(5, 5, 0.1);
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-4);
+        let before_rest: Vec<f64> = sim.stretch_constraints.iter().map(|c| c.rest_length).collect();
+        let before_mass = sim.inv_mass[0];
+        let before_pos = sim.positions.clone();
+
+        sim.set_reference(&scaled(&positions, 1.5, 1.5)).unwrap();
+
+        for (c, r) in sim.stretch_constraints.iter().zip(before_rest.iter()) {
+            assert!((c.rest_length - r * 1.5).abs() < 1e-12, "{} vs {}", c.rest_length, r * 1.5);
+        }
+        // 面積が 2.25 倍なので質量も 2.25 倍(逆質量は 1/2.25)
+        assert!((sim.inv_mass[0] - before_mass / 2.25).abs() < 1e-9);
+        for &p in &pinned {
+            assert_eq!(sim.inv_mass[p], 0.0, "ピンが外れた");
+        }
+        // 位置には触らない(寸法の基準だけを変える)
+        assert_eq!(sim.positions, before_pos);
+    }
+
+    #[test]
+    fn set_reference_keeps_elastic_scale() {
+        let (positions, edges, bending, tris, pinned) = build_grid(4, 4, 0.1);
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-4);
+        let (a, b) = edges[0];
+        assert_eq!(sim.set_rest_scales(&[(a, b)], &[0.8]), 1);
+
+        sim.set_reference(&scaled(&positions, 2.0, 2.0)).unwrap();
+
+        let c = sim
+            .stretch_constraints
+            .iter()
+            .find(|c| (c.i0, c.i1) == (a, b))
+            .unwrap();
+        assert!((c.rest_length - 0.1 * 2.0 * 0.8).abs() < 1e-12, "{}", c.rest_length);
+        let other = sim
+            .stretch_constraints
+            .iter()
+            .find(|c| (c.i0, c.i1) == edges[1])
+            .unwrap();
+        assert!((other.rest_length - 0.2).abs() < 1e-12, "{}", other.rest_length);
+    }
+
+    #[test]
+    fn set_reference_keeps_per_vertex_material_density() {
+        let (positions, edges, bending, tris, pinned) = build_grid(4, 4, 0.1);
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-4);
+        let n = positions.len();
+        let material: Vec<usize> = (0..n).map(|i| usize::from(i >= n / 2)).collect();
+        sim.set_materials(&material, &[0.1, 0.4], &[0.0, 0.0], &[1e-4, 1e-4])
+            .unwrap();
+        let before: Vec<f64> = sim.inv_mass.clone();
+
+        sim.set_reference(&scaled(&positions, 2.0, 1.0)).unwrap();
+
+        for i in 0..n {
+            if before[i] == 0.0 {
+                assert_eq!(sim.inv_mass[i], 0.0);
+            } else {
+                // 面積 2 倍 → 質量 2 倍。生地の密度は頂点ごとに保たれる
+                assert!((sim.inv_mass[i] - before[i] / 2.0).abs() < 1e-9 * before[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn set_reference_rejects_wrong_length() {
+        let (positions, edges, bending, tris, pinned) = build_grid(3, 3, 0.1);
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &bending, &tris, &pinned, 0.2, 0.0, 1e-4);
+        assert!(sim.set_reference(&positions[1..]).is_err());
+    }
+
+    #[test]
+    fn running_cloth_follows_widened_pattern() {
+        // 上端を留めて吊るした布の型紙を、横にだけ 1.3 倍にする。
+        // 走らせたまま渡すと、横の辺が 1.3 倍に伸び、縦の辺は変わらない
+        let (positions, edges, bending, tris, _) = build_grid(9, 9, 0.05);
+        let top: Vec<usize> = (0..9).map(|x| 8 * 9 + x).collect();
+        // 上端を留めると横に伸びようがないので、上端の中央1点だけを留める
+        let pin = vec![top[4]];
+        let mut sim =
+            ClothSim::new(positions.clone(), &edges, &bending, &tris, &pin, 0.2, 0.0, 1e-4);
+        let params = SimParams {
+            collision_enabled: false,
+            damping: 0.5,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..60 {
+            sim.step(1.0 / 24.0, &params);
+        }
+        sim.set_reference(&scaled(&positions, 1.3, 1.0)).unwrap();
+        for _ in 0..120 {
+            sim.step(1.0 / 24.0, &params);
+        }
+        assert!(sim.is_finite());
+
+        let mean = |horizontal: bool| {
+            let lens: Vec<f64> = edges
+                .iter()
+                .filter(|&&(a, b)| (b == a + 1) == horizontal)
+                .map(|&(a, b)| sim.positions[a].sub(sim.positions[b]).length())
+                .collect();
+            lens.iter().sum::<f64>() / lens.len() as f64
+        };
+        let h = mean(true) / 0.05;
+        let v = mean(false) / 0.05;
+        assert!((h - 1.3).abs() < 0.03, "横の辺 {h:.3} 倍");
+        assert!((v - 1.0).abs() < 0.03, "縦の辺 {v:.3} 倍");
     }
 
     /// テスト用の球メッシュ(UV球)を作る
