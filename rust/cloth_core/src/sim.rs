@@ -378,8 +378,15 @@ pub struct ClothSim {
     friction_epoch: u32,
 
     // --- 広域探索のキャッシュ(cache_broadphase 用) ---
-    /// (頂点, コライダー番号, 三角形番号)。フレーム先頭で作る。
+    /// (頂点, コライダー番号, 三角形番号)。フレーム先頭で作る。頂点の順に並ぶ
     object_candidates: Vec<(u32, u32, u32)>,
+    /// `object_candidates` のうち頂点ごとの区間 (頂点, 始め, 終わり)。
+    /// 頂点ごとに独立に解けるので、この単位で並列に回す
+    object_candidate_ranges: Vec<(u32, u32, u32)>,
+
+    /// これ以上の頂点数なら並列に回す。通常は `PARALLEL_MIN_VERTICES`。
+    /// テストで逐次と並列の結果を比べるために持つ
+    parallel_threshold: usize,
 }
 
 impl ClothSim {
@@ -485,6 +492,8 @@ impl ClothSim {
             friction_touched: Vec::new(),
             friction_epoch: 0,
             object_candidates: Vec::new(),
+            object_candidate_ranges: Vec::new(),
+            parallel_threshold: PARALLEL_MIN_VERTICES,
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
             lambda_seam: Vec::new(),
@@ -1270,95 +1279,161 @@ impl ClothSim {
     /// 以降のサブステップは候補に対する距離判定と押し出しだけを行うので、
     /// BVH 探索と空間ハッシュ再構築がサブステップ数に比例しなくなる。
     fn refresh_broadphase(&mut self, dt: f64, params: &SimParams) {
+        use rayon::prelude::*;
+
         self.object_candidates.clear();
+        self.object_candidate_ranges.clear();
         if params.collision_enabled && !self.colliders.is_empty() {
             let thickness = params.collision_thickness.max(0.0);
             let base_radius = (thickness * 4.0).max(thickness + 0.02);
-            for i in 0..self.positions.len() {
-                if self.inv_mass[i] == 0.0 {
-                    continue;
+            let n = self.positions.len();
+
+            // 頂点ごとに独立(読むだけ)なので並列にできる。区切り方を自分で
+            // 決めて、つなげたときの順序(= 頂点の順)を固定する
+            let collect = |range: std::ops::Range<usize>| {
+                let mut out = Vec::new();
+                for i in range {
+                    if self.inv_mass[i] == 0.0 {
+                        continue;
+                    }
+                    let radius = base_radius + self.motion_margin(i, dt, params);
+                    let p = self.positions[i];
+                    for (ci, collider) in self.colliders.iter().enumerate() {
+                        // 最近傍1個ではフレーム途中で入れ替わったときに足りない。
+                        // 半径内の三角形を全て候補にする。
+                        collider.for_each_triangle_within(p, radius, |tri| {
+                            out.push((i as u32, ci as u32, tri as u32));
+                        });
+                    }
                 }
-                let radius = base_radius + self.motion_margin(i, dt, params);
-                let p = self.positions[i];
-                for (ci, collider) in self.colliders.iter().enumerate() {
-                    // 最近傍1個ではフレーム途中で入れ替わったときに足りない。
-                    // 半径内の三角形を全て候補にする。
-                    collider.for_each_triangle_within(p, radius, |tri| {
-                        self.object_candidates.push((i as u32, ci as u32, tri as u32));
-                    });
-                }
+                out
+            };
+            let chunks: Vec<Vec<(u32, u32, u32)>> = if n >= self.parallel_threshold {
+                (0..n)
+                    .step_by(SELF_COLLISION_CHUNK)
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
+                    .map(|st| collect(st..(st + SELF_COLLISION_CHUNK).min(n)))
+                    .collect()
+            } else {
+                vec![collect(0..n)]
+            };
+            let mut candidates = std::mem::take(&mut self.object_candidates);
+            for chunk in chunks {
+                candidates.extend(chunk);
             }
+
+            let mut idx = 0;
+            while idx < candidates.len() {
+                let vi = candidates[idx].0;
+                let mut end = idx;
+                while end < candidates.len() && candidates[end].0 == vi {
+                    end += 1;
+                }
+                self.object_candidate_ranges.push((vi, idx as u32, end as u32));
+                idx = end;
+            }
+            self.object_candidates = candidates;
         }
 
         self.last_candidate_counts = (self.object_candidates.len(), 0);
     }
 
     /// キャッシュ済み候補を使ったコリジョン解決(BVH 探索をやり直さない)。
+    ///
+    /// 頂点ごとに独立(自分の位置しか書かず、コライダーは読むだけ)なので、
+    /// 頂点の区間ごとに並列に解いても逐次と同じ結果になる。以前は逐次で、
+    /// 20 スレッドの環境では並列のキャッシュ無しの経路より 10 倍遅かった
+    /// (約3万頂点で 122ms 対 12ms)。
     fn resolve_object_collisions_cached(
         &mut self,
         params: &SimParams,
         contacts: &mut Vec<(usize, Vec3, f64)>,
     ) {
+        use rayon::prelude::*;
+
         let thickness = params.collision_thickness.max(0.0);
+        let friction = params.collision_friction;
+        let candidates = &self.object_candidates;
+        let colliders = &self.colliders;
+        let positions = &self.positions;
 
-        // 候補は頂点ごとにまとまっているので、同じ頂点の区間を一気に処理して
-        // その中の最近傍を選び直す(探索し直さずに従来と同じ結果を狙う)。
-        let mut idx = 0;
-        while idx < self.object_candidates.len() {
-            let (vi, ci, _) = self.object_candidates[idx];
-            let mut end = idx;
-            while end < self.object_candidates.len()
-                && self.object_candidates[end].0 == vi
-                && self.object_candidates[end].1 == ci
-            {
-                end += 1;
-            }
+        // 1頂点ぶんを解く。候補はコライダーごとにまとまっているので、同じ
+        // コライダーの区間の中で最近傍を選び直す(探索し直さずに従来と同じ結果を狙う)。
+        // 複数のコライダーに候補があれば、前のコライダーで押し出した位置から続ける
+        let solve = |&(vi, start, end): &(u32, u32, u32)| {
+            let mut p = positions[vi as usize];
+            let mut hits: Vec<Vec3> = Vec::new();
+            let mut idx = start as usize;
+            let end = end as usize;
+            while idx < end {
+                let ci = candidates[idx].1;
+                let mut group_end = idx;
+                while group_end < end && candidates[group_end].1 == ci {
+                    group_end += 1;
+                }
+                let collider = &colliders[ci as usize];
 
-            let vi_us = vi as usize;
-            let collider = &self.colliders[ci as usize];
-            let p = self.positions[vi_us];
+                let mut best: Option<(Vec3, usize, f64)> = None;
+                for entry in &candidates[idx..group_end] {
+                    let tri = entry.2 as usize;
+                    let Some((a, b, c)) = collider.triangle(tri) else {
+                        continue;
+                    };
+                    let q = crate::collision::closest_point_on_triangle(p, a, b, c);
+                    let d2 = q.sub(p).dot(q.sub(p));
+                    if best.map_or(true, |(_, _, bd)| d2 < bd) {
+                        best = Some((q, tri, d2));
+                    }
+                }
+                idx = group_end;
 
-            let mut best: Option<(Vec3, usize, f64)> = None;
-            for entry in &self.object_candidates[idx..end] {
-                let tri = entry.2 as usize;
-                let Some((a, b, c)) = collider.triangle(tri) else {
+                let Some((closest, tri, _)) = best else {
                     continue;
                 };
-                let q = crate::collision::closest_point_on_triangle(p, a, b, c);
-                let d2 = q.sub(p).dot(q.sub(p));
-                if best.is_none() || d2 < best.unwrap().2 {
-                    best = Some((q, tri, d2));
+                let Some(face_normal) = collider.triangle_normal(tri) else {
+                    continue;
+                };
+
+                let offset = p.sub(closest);
+                let dist = offset.length();
+                let signed = offset.dot(face_normal);
+
+                let outward = if signed < 0.0 {
+                    face_normal
+                } else if dist > 1e-9 {
+                    offset.scale(1.0 / dist)
+                } else {
+                    face_normal
+                };
+                let penetration = if signed < 0.0 {
+                    thickness + dist
+                } else {
+                    thickness - dist
+                };
+
+                if penetration > 0.0 {
+                    p = closest.add(outward.scale(thickness));
+                    hits.push(outward);
                 }
             }
-            idx = end;
+            (vi, p, hits)
+        };
 
-            let Some((closest, tri, _)) = best else {
+        let ranges = &self.object_candidate_ranges;
+        let results: Vec<(u32, Vec3, Vec<Vec3>)> = if positions.len() >= self.parallel_threshold {
+            ranges.par_iter().map(solve).collect()
+        } else {
+            ranges.iter().map(solve).collect()
+        };
+
+        for (vi, p, hits) in results {
+            if hits.is_empty() {
                 continue;
-            };
-            let Some(face_normal) = collider.triangle_normal(tri) else {
-                continue;
-            };
-
-            let offset = p.sub(closest);
-            let dist = offset.length();
-            let signed = offset.dot(face_normal);
-
-            let outward = if signed < 0.0 {
-                face_normal
-            } else if dist > 1e-9 {
-                offset.scale(1.0 / dist)
-            } else {
-                face_normal
-            };
-            let penetration = if signed < 0.0 {
-                thickness + dist
-            } else {
-                thickness - dist
-            };
-
-            if penetration > 0.0 {
-                self.positions[vi_us] = closest.add(outward.scale(thickness));
-                contacts.push((vi_us, outward, params.collision_friction));
+            }
+            self.positions[vi as usize] = p;
+            for outward in hits {
+                contacts.push((vi as usize, outward, friction));
             }
         }
     }
@@ -1385,7 +1460,7 @@ impl ClothSim {
         let inv_mass = &self.inv_mass;
 
         // 小さいメッシュでは並列化のオーバーヘッドが上回るので、閾値を設ける
-        let parallel = self.positions.len() >= PARALLEL_MIN_VERTICES;
+        let parallel = self.positions.len() >= self.parallel_threshold;
 
         let solve = |i: usize, p: &mut Vec3| -> Option<(usize, Vec3, f64)> {
             if inv_mass[i] == 0.0 {
@@ -1505,7 +1580,7 @@ impl ClothSim {
         };
 
         pairs.clear();
-        if n >= PARALLEL_MIN_VERTICES {
+        if n >= self.parallel_threshold {
             // 区切り方を自分で決めて順序を固定する。
             // rayon の fold/reduce に任せると分割位置が実行時の事情で変わりうるため、
             // 結合順(= Gauss-Seidel の順序)が揺れて結果が非決定的になりかねない。
@@ -1666,7 +1741,7 @@ impl ClothSim {
                     }
                 };
 
-                if n >= PARALLEL_MIN_VERTICES {
+                if n >= self.parallel_threshold {
                     let starts: Vec<usize> = (0..n).step_by(SELF_COLLISION_CHUNK).collect();
                     let chunks: Vec<Vec<(u32, Vec3)>> = starts
                         .into_par_iter()
@@ -1725,7 +1800,7 @@ impl ClothSim {
         };
 
         pairs.clear();
-        if n >= PARALLEL_MIN_VERTICES {
+        if n >= self.parallel_threshold {
             // 頂点同士のときと同じ理由で、区切り方を自分で決めて順序を固定する
             let starts: Vec<usize> = (0..n).step_by(SELF_COLLISION_CHUNK).collect();
             let chunks: Vec<Vec<(u32, u32)>> = starts
@@ -2977,6 +3052,43 @@ mod tests {
             max_diff < 1e-6,
             "頂点位置が食い違う: 最大差 {max_diff} m"
         );
+    }
+
+    /// キャッシュした候補での衝突解決を並列にしても、逐次と同じ結果になること
+    ///
+    /// 候補は頂点ごとに独立に解ける(自分の位置しか書かない)ので、並列にしても
+    /// 1ビットも変わらないはず。ベイクとスクラブは決定性が前提なので固定しておく。
+    #[test]
+    fn parallel_cached_collision_matches_sequential() {
+        let run = |threshold: usize| {
+            let side = 71; // 5,041頂点。PARALLEL_MIN_VERTICES を超える
+            let (positions, edges, bending, tris, _) = build_grid(side, side, 0.02);
+            let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+            sim.parallel_threshold = threshold;
+            let center = Vec3::new(0.7, 0.7, -0.35);
+            let (sphere_pos, sphere_tris) = build_sphere(center, 0.4, 24, 16);
+            sim.add_collider(sphere_pos, sphere_tris);
+            let params = SimParams {
+                collision_enabled: true,
+                collision_thickness: 0.005,
+                substeps: 4,
+                iterations: 4,
+                cache_broadphase: true,
+                ..Default::default()
+            };
+            let mut contacts = 0;
+            for _ in 0..40 {
+                sim.step(1.0 / 60.0, &params);
+                contacts += sim.last_collision_count();
+            }
+            (sim.positions.clone(), sim.last_candidate_counts(), contacts)
+        };
+        let (seq, seq_counts, seq_contacts) = run(usize::MAX);
+        let (par, par_counts, par_contacts) = run(PARALLEL_MIN_VERTICES);
+        assert!(seq_contacts > 0, "球に触れていない(場面が意味をなしていない)");
+        assert_eq!(seq_counts, par_counts, "候補の数が違う");
+        assert_eq!(seq_contacts, par_contacts, "接触の数が違う");
+        assert!(seq == par, "並列にすると位置が変わった");
     }
 
     /// 自己衝突の並列列挙が決定的であること
