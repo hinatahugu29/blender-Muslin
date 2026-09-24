@@ -86,7 +86,7 @@ def advance(frames, start=1):
 
 def main():
     import muslin
-    from muslin import bake_ops, cache_io, mesh_io, sim_state
+    from muslin import bake_ops, cache_io, mesh_io, rest_shape, sim_state
 
     section("登録と解除")
     muslin.register()
@@ -454,6 +454,7 @@ def main():
     props.collision_enabled = False
     props.pin_vertex_group = ""
 
+    before_bake = positions_of(obj)
     res = bpy.ops.muslin.bake()
     check("Bake to Disk が通る", res == {'FINISHED'}, str(res))
     check("ベイク済みの印がつく", bake_ops.is_baked(obj))
@@ -492,9 +493,36 @@ def main():
         f"差 {max(diff_15, diff_1):.2e} m",
     )
 
+    # 変換はベイク再生で最後に書いたフレームの形のまま呼ばれる。Basis は開始姿勢にする
+    bpy.context.scene.frame_set(15)
+    res = bpy.ops.muslin.bake_to_shape_keys()
+    check("Convert to Shape Keys が通る", res == {'FINISHED'}, str(res))
+    keys = reopened.data.shape_keys.key_blocks
+    basis = [tuple(k.co) for k in keys["Basis"].data]
+    drift = max(math.dist(a, b) for a, b in zip(before_bake, basis))
+    check("Basis はベイク前の形", drift < 1e-5, f"差 {drift:.2e} m")
+    last = [tuple(k.co) for k in keys["muslin_0015"].data]
+    drift = max(math.dist(a, b) for a, b in zip(at_15, last))
+    check("フレームのシェイプキーはそのフレームの形", drift < 1e-5, f"差 {drift:.2e} m")
+    curves = bake_ops._action_fcurves(reopened.data.shape_keys.animation_data.action)
+    modes = {k.interpolation for c in curves for k in c.keyframe_points}
+    check("キーの補間は LINEAR", len(curves) == 15 and modes == {'LINEAR'},
+          f"{len(curves)} 本 / {modes}")
+    reopened.shape_key_clear()
+
     bpy.ops.muslin.free_bake()
     check("Free Bake でキャッシュが消える",
           cache_io.cache_size_bytes(cache_dir) == 0)
+    # ベイクした形のまま残すと、次の開始でそれが開始姿勢(と型紙)として取り込まれる
+    after_free = positions_of(reopened)
+    drift = max(math.dist(a, b) for a, b in zip(before_bake, after_free))
+    check("Free Bake でベイク前の形に戻る", drift < 1e-5, f"差 {drift:.2e} m")
+    bpy.ops.muslin.start_sim()
+    rest = rest_shape.load(reopened).reshape(-1, 3)
+    drift = max(math.dist(a, b) for a, b in zip(before_bake, rest))
+    check("Free Bake の後に開始しても開始姿勢はベイク前のまま", drift < 1e-5,
+          f"差 {drift:.2e} m")
+    bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
     section("パターンと縫製")
@@ -1293,10 +1321,12 @@ def main():
     res = bpy.ops.muslin.bake()
     check("ベイクがグループ全体を書く", res == {'FINISHED'}
           and inner.get("muslin_baked") and outer.get("muslin_baked"), str(res))
+    # 1着で Free Bake を押すと、一緒にベイクしたグループ全体が片付く
     bpy.context.view_layer.objects.active = inner
     bpy.ops.muslin.free_bake()
-    bpy.context.view_layer.objects.active = outer
-    bpy.ops.muslin.free_bake()
+    check("Free Bake がグループ全体を片付ける",
+          not inner.get("muslin_cache_dir") and not outer.get("muslin_cache_dir")
+          and not bake_ops.is_baked(outer))
 
     # ----------------------------------------------------------------
     section("計測機構")

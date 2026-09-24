@@ -16,6 +16,7 @@ import bpy
 
 from . import cache_io
 from . import mesh_io
+from . import rest_shape
 from . import sim_state
 from . import ui_poll
 
@@ -65,6 +66,24 @@ def apply_baked_frame(obj, frame):
     obj.data.vertices.foreach_set("co", positions)
     obj.data.update()
     return True
+
+
+def free_bake(obj):
+    """obj のキャッシュを消し、ベイク前の形(開始姿勢)に戻す。消したファイル数を返す。
+
+    ベイクの再生はメッシュに直接書くが、Muslin が書いた印(`muslin_deformed`)は
+    付けない。ベイクした形のまま残すと、次の開始でそれが人の作った形とみなされ、
+    開始姿勢(型紙を確定していなければ型紙も)として取り込まれてしまう。
+    ベイクは開始姿勢から計算するので、そこへ戻せば元どおりになる。
+    """
+    directory = obj.get("muslin_cache_dir", "")
+    removed = cache_io.clear_cache(directory) if directory else 0
+    for key in ("muslin_baked", "muslin_bake_start",
+                "muslin_bake_end", "muslin_cache_dir"):
+        if key in obj:
+            del obj[key]
+    rest_shape.restore(obj)
+    return removed
 
 
 class MUSLIN_OT_bake(bpy.types.Operator):
@@ -205,16 +224,36 @@ class MUSLIN_OT_free_bake(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        directory = obj.get("muslin_cache_dir", "")
-        removed = cache_io.clear_cache(directory) if directory else 0
+        # 重ね着のグループはまとめてベイクするので、まとめて片付ける
+        targets = [m for m in mesh_io.group_members(obj) if m.get("muslin_cache_dir", "")]
+        if obj not in targets:
+            targets.append(obj)
 
-        for key in ("muslin_baked", "muslin_bake_start",
-                    "muslin_bake_end", "muslin_cache_dir"):
-            if key in obj:
-                del obj[key]
+        removed = 0
+        for m in targets:
+            removed += free_bake(m)
 
-        self.report({'INFO'}, f"キャッシュを削除しました({removed} ファイル)")
+        who = f"{len(targets)} 着の" if len(targets) > 1 else ""
+        self.report({'INFO'}, f"{who}キャッシュを削除しました({removed} ファイル)")
         return {'FINISHED'}
+
+
+def _action_fcurves(action):
+    """アクションの F カーブを全部返す。
+
+    Blender 5.0 でアクションが層構造になり `Action.fcurves` が無くなった。
+    F カーブは 層 → ストリップ → チャンネルバッグ の下にある。
+    4.4 より前は `Action.fcurves` しか無いので、そちらも読む。
+    """
+    legacy = getattr(action, "fcurves", None)
+    if legacy is not None:
+        return list(legacy)
+    curves = []
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                curves += list(bag.fcurves)
+    return curves
 
 
 class MUSLIN_OT_bake_to_shape_keys(bpy.types.Operator):
@@ -251,6 +290,9 @@ class MUSLIN_OT_bake_to_shape_keys(bpy.types.Operator):
         vertex_count = len(mesh.vertices)
 
         if obj.data.shape_keys is None:
+            # 今のメッシュはベイク再生で書いたフレームの形なので、Basis にする前に
+            # 開始姿勢へ戻す(戻さないとそのフレームの形が Basis になる)
+            rest_shape.restore(obj)
             obj.shape_key_add(name="Basis", from_mix=False)
 
         created = 0
@@ -276,7 +318,7 @@ class MUSLIN_OT_bake_to_shape_keys(bpy.types.Operator):
         # 補間を一定にして、意図しないブレンドが起きないようにする
         anim = obj.data.shape_keys.animation_data
         if anim is not None and anim.action is not None:
-            for fcurve in anim.action.fcurves:
+            for fcurve in _action_fcurves(anim.action):
                 for keyframe in fcurve.keyframe_points:
                     keyframe.interpolation = 'LINEAR'
 
