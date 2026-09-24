@@ -848,6 +848,41 @@ def test_pattern_uv():
     check("外側を決められない単独のピースは従来どおり", np.allclose(s_uv, s_old))
 
 
+def test_outline_edges():
+    """型紙の外周の辺(面を1つしか持たない辺)の判定(bpy 非依存)"""
+    if not has_numpy():
+        skip("型紙の外周", "numpy が無い")
+        return
+    import rest_shape
+
+    # 3x2 個の四角形(4x3 頂点)。辺は横 3x3 + 縦 4x2 = 17 本、外周は 10 本
+    nx, ny = 4, 3
+    edges = []
+    index = {}
+    for y in range(ny):
+        for x in range(nx):
+            i = y * nx + x
+            if x + 1 < nx:
+                index[(i, i + 1)] = len(edges)
+                edges.append((i, i + 1))
+            if y + 1 < ny:
+                index[(i, i + nx)] = len(edges)
+                edges.append((i, i + nx))
+    loops = []
+    for y in range(ny - 1):
+        for x in range(nx - 1):
+            a = y * nx + x
+            for e in ((a, a + 1), (a + 1, a + 1 + nx), (a + nx, a + nx + 1), (a, a + nx)):
+                loops.append(index[e])
+    # 面に使われていない辺を1本足す(外周には入らない)
+    edges.append((0, nx * ny - 1))
+    outline = rest_shape.outline_edges(len(edges), loops)
+    check("外周の辺だけを拾う", len(outline) == 10, f"{len(outline)} 本")
+    inner = {index[(5, 6)], index[(1, 5)]}
+    check("内側の辺とぶら下がった辺は拾わない",
+          not inner & set(outline.tolist()) and len(edges) - 1 not in outline)
+
+
 def test_bent_islands():
     """平らでない(曲げて置いた)ピースの判定(bpy 非依存)"""
     if not has_numpy():
@@ -1202,6 +1237,7 @@ def main():
     test_seam_codes()
     test_grab()
     test_pattern_uv()
+    test_outline_edges()
     test_bent_islands()
     test_pattern_mismatch()
     test_cache_io()

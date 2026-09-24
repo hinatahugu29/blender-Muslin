@@ -956,6 +956,25 @@ def main():
         check("型紙オブジェクトは布の頂点属性を持ち越さない",
               pat_obj.data.attributes.get(rest_shape.ATTRIBUTE) is None)
         check("作ると型紙は確定扱い", rest_shape.is_pattern_locked(piece))
+        check("型紙オブジェクトは面を見せる(ワイヤーフレームにしない)",
+              pat_obj.display_type == 'TEXTURED', pat_obj.display_type)
+
+        # ビューポートに描く線: 外周と縫い目(描画そのものはヘッドレスで見られない)
+        from muslin import overlay
+        outline, per_seam = overlay.pattern_lines(pat_obj, piece)
+        face_count = {}
+        for poly in pat_obj.data.polygons:
+            for ek in poly.edge_keys:
+                face_count[ek] = face_count.get(ek, 0) + 1
+        expected_outline = {ek for ek, c in face_count.items() if c == 1}
+        check("型紙の外周の辺を描く",
+              {tuple(sorted(map(int, e))) for e in outline} == expected_outline,
+              f"{len(outline)} 本")
+        codes, _ = mesh_io.read_seam_codes(piece.data)
+        seam_edges = sum(1 for c in codes if c)
+        check("型紙に縫い目の辺を描く(布の縫い目と同じ本数)",
+              sum(len(p) for p in per_seam) == seam_edges and seam_edges > 0,
+              f"{sum(len(p) for p in per_seam)} / {seam_edges} 本")
         check("2つ目は作れない", not bpy.ops.muslin.create_pattern_object.poll())
 
         # 型紙の縦の辺(型紙で z だけが違う辺)の、着ている布での平均の長さ

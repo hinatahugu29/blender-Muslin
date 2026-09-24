@@ -122,8 +122,10 @@ def create(obj, context):
     pattern_obj.location.x += max(width, 0.1) * 1.5
     pattern_obj.rotation_euler = obj.matrix_world.to_euler()
     pattern_obj[PATTERN_OF] = obj.name
-    pattern_obj.display_type = 'WIRE'
-    pattern_obj.show_in_front = True
+    # 面は布と同じマテリアル・UV で見せる(型紙の上に柄が実寸で乗る)。
+    # 輪郭と縫い目は overlay が手前に描く。以前はワイヤーフレームにしていたが、
+    # 線の色がテーマ依存で、黒い背景ではほとんど見えなかった
+    pattern_obj.display_type = 'TEXTURED'
 
     obj.muslin.pattern_object = pattern_obj
     # 型紙の確定と同じ扱いにする。ただし Lock Pattern と違って今の形を

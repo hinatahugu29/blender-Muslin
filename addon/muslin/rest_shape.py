@@ -323,6 +323,17 @@ def bent_islands(positions, edges):
     return bent
 
 
+def outline_edges(edge_count, loop_edges):
+    """型紙の外周(面を1つしか持たない辺)の辺番号を返す。bpy を使わない。
+
+    loop_edges は面の角ごとの辺番号(`mesh.loops` の `edge_index`)。
+    辺が何個の面に使われているかを数え、1つだけのものが外周。
+    面に使われていない辺(ぶら下がった辺)は外周に含めない。
+    """
+    counts = np.bincount(np.asarray(loop_edges, dtype=np.int64), minlength=edge_count)
+    return np.nonzero(counts[:edge_count] == 1)[0]
+
+
 def sync_pattern_before_start(obj):
     """開始前に型紙をどう扱うか決める(`sync_before_start` の後に呼ぶ)。
 
