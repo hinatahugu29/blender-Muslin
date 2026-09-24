@@ -440,6 +440,49 @@ class MUSLIN_OT_restore_pattern(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_create_pattern_object(bpy.types.Operator):
+    """型紙を別のオブジェクトとして脇に置き、この布に結び付ける
+
+    型紙オブジェクトを編集すると、走っている布(再生・Dress・Adjust)の寸法が
+    その場で変わる。頂点の数を変える編集(細分化など)は反映できない。
+    オブジェクトの位置と回転は置き場所だけで、スケールは型紙に効く。
+    """
+
+    bl_idname = "muslin.create_pattern_object"
+    bl_label = "Create Pattern Object"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from . import pattern_link
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        obj = context.active_object
+        if pattern_link.linked_object(obj) is not None:
+            return ui_poll.reject(cls, "型紙オブジェクトはもう結び付いています")
+        if rest_shape.is_deformed(obj) and not rest_shape.has_pattern(obj):
+            # 計算結果の形を型紙にしてしまう事故を防ぐ(Lock Pattern と同じ)
+            return ui_poll.reject(cls, "シミュレーションの結果が表示されています。"
+                                       "Reset で元の形に戻してから作ってください")
+        return True
+
+    def execute(self, context):
+        from . import pattern_link
+        obj = context.active_object
+        pattern_obj = pattern_link.create(obj, context)
+        if pattern_obj is None:
+            self.report({'ERROR'}, "メッシュに頂点がありません")
+            return {'CANCELLED'}
+        self.report(
+            {'INFO'},
+            f"型紙オブジェクト '{pattern_obj.name}' を作りました。"
+            "編集すると走っている布の寸法が変わります",
+        )
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_restart_sim(bpy.types.Operator):
     """シミュレーションを組み立て直す(コライダーや縫い目の変更を反映する)
 
@@ -549,6 +592,7 @@ _classes = (
     MUSLIN_OT_lock_pattern,
     MUSLIN_OT_unlock_pattern,
     MUSLIN_OT_restore_pattern,
+    MUSLIN_OT_create_pattern_object,
 )
 
 

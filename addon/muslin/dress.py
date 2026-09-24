@@ -131,6 +131,18 @@ class Dresser:
             self.calm = 0
         return self.done
 
+    def poll_pattern(self):
+        """型紙オブジェクトの編集を流す(M8)。流したら True。
+
+        寸法が変わると布はまた動き出すので、落ち着きの判定と上限の
+        ステップ数を数え直す(直した直後に「落ち着いた」で終わらないように)。
+        """
+        if not sim_state.poll_pattern(self.state, self.members):
+            return False
+        self.calm = 0
+        self._budget_start = self.steps
+        return True
+
     # ------------------------------------------------------- つまむ
 
     def pick(self, origin, direction):
@@ -313,6 +325,9 @@ class _ClothModal:
         if event.type != 'TIMER':
             # 視点の回転やズームは Blender に任せる(回り込んで見られるように)
             return {'PASS_THROUGH'}
+
+        # 型紙オブジェクトを編集していれば、その寸法で続ける
+        self._dresser.poll_pattern()
 
         # 画面が固まらないよう、1回のタイマーで回すのは短い時間だけ
         import time

@@ -334,6 +334,18 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
                 layout.label(text="曲げて配置する前に確定する", icon='INFO')
             layout.operator("muslin.pattern_to_uv", icon='UV')
 
+            # 型紙オブジェクト(M8)。結び付いていれば、編集が走っている布に流れる
+            from . import pattern_link, sim_state
+            layout.separator()
+            if pattern_link.linked_object(obj) is not None:
+                layout.prop(obj.muslin, "pattern_object", text="型紙")
+                layout.label(text="編集すると走っている布の寸法が変わる", icon='INFO')
+                state = sim_state.get_state(obj)
+                for warning in (state or {}).get("pattern_warnings", []):
+                    layout.label(text=warning, icon='ERROR')
+            else:
+                layout.operator("muslin.create_pattern_object", icon='MOD_MESHDEFORM')
+
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"

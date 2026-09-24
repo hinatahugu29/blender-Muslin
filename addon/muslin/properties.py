@@ -515,6 +515,18 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         unit='LENGTH',
     )
 
+    # --- 型紙オブジェクト(M8) ---
+    pattern_object: bpy.props.PointerProperty(
+        name="Pattern Object",
+        description=(
+            "この布の型紙として使うメッシュ(頂点が布と1対1で対応するもの)。"
+            "編集すると、走っている布(再生・Dress・Adjust)の寸法が変わる。"
+            "オブジェクトの位置と回転は置き場所だけで、スケールは型紙に効く"
+        ),
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'MESH',
+    )
+
     # --- ピン留め ---
     pin_vertex_group: bpy.props.StringProperty(
         name="Pin Vertex Group",

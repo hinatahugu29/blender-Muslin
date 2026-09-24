@@ -617,6 +617,21 @@ def apply_group_elastics(sim, members, offsets):
     return sim.set_rest_scales(pairs, scales)
 
 
+def group_seam_pairs(members, offsets, reference, positions):
+    """グループ全体の縫い合わせる頂点ペア(頂点番号はグループ通し)。
+
+    弧長の対応付けは寸法の問題なので型紙(reference)の上で測り、向きの自動判定は
+    今の形(positions)で行う。どちらもワールド座標の平坦な配列。
+    型紙を差し替えたときに作り直すのにも使う(M8)。
+    """
+    pairs = []
+    for m, (start, count) in zip(members, offsets):
+        ref = list(reference[start * 3:(start + count) * 3])
+        pose = list(positions[start * 3:(start + count) * 3])
+        pairs += [(a + start, b + start) for a, b in build_seam_pairs(m, ref, pose=pose)]
+    return pairs
+
+
 def build_cloth_sim(obj, props):
     """obj(メッシュオブジェクト)から ClothSim を構築する。座標はワールド座標系。
 
@@ -757,5 +772,9 @@ def build_group_sim(members):
         "untangle_remaining": remaining,
         "warnings": warnings,
         "members": [(m.name, s, c) for m, (s, c) in zip(members, offsets)],
+        # 寸法の基準(ワールド座標)。型紙オブジェクトの編集を反映するときに、
+        # 変わっていない布の分をそのまま使うため。create_state が取り出す
+        "reference": reference,
+        "seam_pairs": seam_pairs,
     }
     return sim, info

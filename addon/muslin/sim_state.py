@@ -11,6 +11,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . import mesh_io
+from . import pattern_link
 from . import rest_shape
 
 # オブジェクトキー(session_uid) -> state dict。
@@ -67,14 +68,18 @@ def create_state(obj, props):
         # 元の形をどう扱うかを決めてから組み立てる。
         # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
         rest_shape.sync_before_start(m)
-        # 型紙を作っている段階なら今の形を型紙として取り直し、着せた段階なら固定する
-        rest_shape.sync_pattern_before_start(m)
+        # 型紙オブジェクトがあればそれが型紙。無ければ、型紙を作っている段階なら
+        # 今の形を型紙として取り直し、着せた段階なら固定する
+        if not pattern_link.sync_before_start(m):
+            rest_shape.sync_pattern_before_start(m)
 
     sim, info = mesh_io.build_group_sim(members)
+    reference = info.pop("reference")
+    seam_pairs = info.pop("seam_pairs")
     rest = sim.get_positions()
     start_frame = bpy.context.scene.frame_current
 
-    return {
+    state = {
         "sim": sim,
         "start_frame": start_frame,
         "rest_positions": rest,
@@ -90,7 +95,17 @@ def create_state(obj, props):
         "material": _group_material_signature(members),
         "seam_count": sum(_enabled_seam_count(m) for m in members),
         "elastic": tuple(mesh_io.elastic_signature(m) for m in members),
+        "reference": reference,
+        "seam_pairs": seam_pairs,
+        "pattern_warnings": [],
     }
+    # 組み立てに使った型紙オブジェクトの指紋を覚える(以後の変化だけを流すため)
+    state["pattern_signatures"] = {
+        key: sig for (key, _s, _c), sig in
+        ((entry, pattern_link.signature(m)) for entry, m in zip(state["members"], members))
+        if sig is not None and not isinstance(sig, str)
+    }
+    return state
 
 
 def member_objects(state):
@@ -162,6 +177,38 @@ def _sync_material(state, props, obj=None):
     state["info"]["pinned"] = mesh_io.apply_group_materials(state["sim"], members, offsets)
     state["material"] = signature
     if state["cache"] is not None:
+        state["cache"] = {state["start_frame"]: state["rest_positions"]}
+    return True
+
+
+def poll_pattern(state, members=None):
+    """型紙オブジェクトの編集を、走っている状態へ流す(M8)。流したら True。
+
+    静止長・曲げ・質量はコアの `set_reference` で作り直す。縫い目の弧長の
+    対応付けも型紙で決まるので、変わっていれば張り直す。計算済みのフレームは
+    古い寸法の結果なのでキャッシュは捨てる。
+    """
+    if members is None:
+        members = member_objects(state)
+    if not members:
+        return False
+    reference, changed, reasons = pattern_link.references(state, members)
+    state["pattern_warnings"] = reasons
+    if not changed:
+        return False
+    sim = state["sim"]
+    sim.set_reference(list(reference))
+    state["reference"] = reference
+
+    offsets = [(s, c) for _k, s, c in state["members"]]
+    pairs = mesh_io.group_seam_pairs(members, offsets, reference, sim.get_positions())
+    if pairs != state.get("seam_pairs"):
+        sim.set_seams(pairs, members[0].muslin.seam_compliance)
+        state["seam_pairs"] = pairs
+        state["info"]["seams"] = len(pairs)
+
+    if state.get("cache") is not None:
+        # 今の姿勢から先は新しい寸法で計算し直す。開始フレームだけは残す
         state["cache"] = {state["start_frame"]: state["rest_positions"]}
     return True
 
@@ -341,8 +388,10 @@ def _trim_cache(cache, start_frame):
 
 def _simulate_to(state, props, dt, target_frame, obj=None):
     """target_frame の状態まで進める。キャッシュがあれば活用する。"""
-    # キャッシュを引く前に生地の変化を反映する(古い生地の結果を返さない)
+    # キャッシュを引く前に生地と型紙の変化を反映する(古い結果を返さない)
     _sync_material(state, props, obj)
+    if obj is not None:
+        poll_pattern(state)
 
     cache = state["cache"] if props.use_cache else None
     start_frame = state["start_frame"]

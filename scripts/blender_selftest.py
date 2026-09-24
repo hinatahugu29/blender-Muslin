@@ -938,6 +938,105 @@ def main():
         slope = np.polyfit(xs_front, us_front, 1)[0] if len(front) > 2 else 0.0
         check("巻いた布を外から見て柄が左右反転しない", slope > 0.0, f"傾き {slope:.2f}")
 
+    # ---- 型紙オブジェクト(M8): 型紙を直すと着ている布が追従する ----
+    from muslin import pattern_link
+    piece = make_dress_scene()
+    bpy.ops.muslin.dress()
+    pattern_before = rest_shape.load_pattern(piece).copy()
+    res = bpy.ops.muslin.create_pattern_object()
+    check("Create Pattern Object が通る", res == {'FINISHED'}, str(res))
+    pat_obj = pattern_link.linked_object(piece)
+    check("型紙オブジェクトが結び付く", pat_obj is not None
+          and len(pat_obj.data.vertices) == len(piece.data.vertices))
+    if pat_obj is not None:
+        co = np.empty(len(pat_obj.data.vertices) * 3, dtype=np.float32)
+        pat_obj.data.vertices.foreach_get("co", co)
+        check("型紙オブジェクトの形は型紙(着せた形ではない)",
+              np.allclose(co, pattern_before, atol=1e-6))
+        check("型紙オブジェクトは布の頂点属性を持ち越さない",
+              pat_obj.data.attributes.get(rest_shape.ATTRIBUTE) is None)
+        check("作ると型紙は確定扱い", rest_shape.is_pattern_locked(piece))
+        check("2つ目は作れない", not bpy.ops.muslin.create_pattern_object.poll())
+
+        # 型紙の縦の辺(型紙で z だけが違う辺)の、着ている布での平均の長さ
+        pts = pattern_before.reshape(-1, 3)
+        ev = np.empty(len(piece.data.edges) * 2, dtype=np.int32)
+        piece.data.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        vertical = ev[np.abs(pts[ev[:, 0], 0] - pts[ev[:, 1], 0]) < 1e-6]
+        rest_len = float(np.mean(np.abs(pts[vertical[:, 0], 2] - pts[vertical[:, 1], 2])))
+
+        def vertical_ratio(d):
+            now = np.asarray(d.state["sim"].get_positions()).reshape(-1, 3)
+            lens = np.linalg.norm(now[vertical[:, 0]] - now[vertical[:, 1]], axis=1)
+            return float(np.mean(lens)) / rest_len
+
+        # Adjust と同じ Dresser を回しながら型紙を縦に 1.2 倍にする(丈を伸ばす)
+        d = dress_mod.Dresser(piece, piece.muslin, sim_state.effective_dt(bpy.context.scene),
+                              auto_finish=False)
+        for _ in range(20):
+            d.step()
+        check("型紙が変わっていなければ何もしない", d.poll_pattern() is False)
+        before_ratio = vertical_ratio(d)
+        pat_obj.scale.z = 1.2
+        bpy.context.view_layer.update()
+        check("型紙のスケールを変えると流れる", d.poll_pattern() is True)
+        check("流した直後はもう一度流さない", d.poll_pattern() is False)
+        for _ in range(150):
+            d.step()
+        after_ratio = vertical_ratio(d)
+        check("丈を 1.2 倍にすると着ている布の縦の辺が伸びる",
+              abs(after_ratio / before_ratio - 1.2) < 0.04 and d.state["sim"].is_finite(),
+              f"{before_ratio:.3f} → {after_ratio:.3f} ({after_ratio / before_ratio:.3f} 倍)")
+
+        # 編集モード中の編集も流れる(編集用の BMesh から読む)
+        pat_obj.scale.z = 1.0
+        bpy.context.view_layer.update()
+        d.poll_pattern()
+        for o in bpy.context.scene.objects:
+            o.select_set(o is pat_obj)
+        bpy.context.view_layer.objects.active = pat_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        import bmesh as _bmesh
+        bm = _bmesh.from_edit_mesh(pat_obj.data)
+        for v in bm.verts:
+            v.co.x *= 1.1
+        _bmesh.update_edit_mesh(pat_obj.data)
+        check("編集モード中の編集も流れる", d.poll_pattern() is True)
+
+        # 頂点を足した型紙は反映しない(対応が取れない)
+        bm.verts.new((0.0, 0.0, 5.0))
+        _bmesh.update_edit_mesh(pat_obj.data)
+        check("頂点数の違う型紙は流さない", d.poll_pattern() is False)
+        check("流さない理由を出す", len(d.state["pattern_warnings"]) == 1,
+              str(d.state["pattern_warnings"]))
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bm = _bmesh.from_edit_mesh(pat_obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.verts.remove(bm.verts[len(bm.verts) - 1])
+        _bmesh.update_edit_mesh(pat_obj.data)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        d.cancel()
+
+        # 再生(タイムライン)でも流れる。開始時は型紙オブジェクトが型紙になる
+        for o in bpy.context.scene.objects:
+            o.select_set(o is piece)
+        bpy.context.view_layer.objects.active = piece
+        sim_state.start_simulation(piece, piece.muslin)
+        stored = rest_shape.load_pattern(piece)
+        co = np.empty(len(pat_obj.data.vertices) * 3, dtype=np.float32)
+        pat_obj.data.vertices.foreach_get("co", co)
+        check("開始時は型紙オブジェクトの形が型紙になる", np.allclose(stored, co, atol=1e-6))
+        advance(3, start=2)
+        state = sim_state.get_state(piece)
+        pat_obj.scale.x = 1.1
+        bpy.context.view_layer.update()
+        advance(1, start=5)
+        check("再生中の型紙の変更はフレームごとに流れる",
+              sim_state.poll_pattern(state) is False and len(state["cache"]) <= 2,
+              f"キャッシュ {len(state['cache'])} フレーム")
+        sim_state.stop_simulation(piece)
+
     # ---- 型紙の確定(Lock Pattern): 曲げて配置する前に押す ----
     def bend_around(o):
         xs_ = [v.co.x for v in o.data.vertices]
