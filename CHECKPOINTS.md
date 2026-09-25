@@ -55,11 +55,14 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 ---
 
-最終更新: 2026-09-15 / cloth_core v0.3.0 / アドオン v0.5.0 / Blender 5.2.1 LTS で検証
+最終更新: 2026-09-25 / cloth_core v0.3.0 / アドオン v0.5.0 / Blender 5.2.1 LTS で検証
 （M1・M2・M3・M6 完了。M5 は生地プリセット・オブジェクト単位設定・曲げ制約の
-作り直し・収束加速まで。M4 未着手）
+作り直し・収束加速・品質プリセットまで。M7 型紙から着せて動かす・M8 型紙と連動する
+編集・M9 CPU での制約の色分けと並列化は達成。M4(GPU化)未着手）
 
-自動テストの規模: cargo test 65 / verify_core.py 106 / blender_selftest.py 349
+自動テストの規模: cargo test 76 / verify_core.py 115 / blender_selftest.py 349
+(cargo test と verify_core.py は 2026-09-25 に実行して確認。blender_selftest.py は
+Blender がある環境で確認すること)
 
 ---
 
@@ -90,7 +93,7 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 | A-1-13 | `set_pinned_preserves_mass_distribution` | ピン付け外しで質量分布が壊れない | ✅ |
 | A-1-14〜20 | `collision::tests::*` | 三角形最近接点・BVHが総当たりと一致・探索半径・refit・空間ハッシュ | ✅ |
 
-上の表は M2 までの分。その後に追加した主なものは次のとおり(全 48項目):
+上の表は M2 までの分。その後に追加した主なものは次のとおり(全 76項目):
 
 | テスト | 検証内容 |
 |--------|----------|
@@ -105,6 +108,18 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 | `fast_collider_does_not_pass_through_cloth` | 速く動くコライダーが布を素通りしない |
 | `closest_point_handles_degenerate_triangles` | 退化した三角形で NaN を返さない |
 | `parallel_self_collision_is_deterministic` | 並列化しても結果が決定的 |
+| `seams_stay_closed_after_collisions` | 衝突の後で縫い目が開き直らない(M7) |
+| `seam_pairs_are_excluded_from_self_collision` | 縫い目の頂点対が自己衝突から除かれる(M7) |
+| `restarting_from_dressed_pose_keeps_pattern_size` | 着せ直しても布の寸法が型紙のまま(M7 の土台) |
+| `soft_grab_settles_at_spring_offset_regardless_of_iterations` | つまむ制約の効きが反復数に依存しない(M7) |
+| `rest_scales_shrink_marked_edges_and_can_be_reset` | ゴム紐が縮み、倍率を戻せる(M7) |
+| `single_material_matches_global_material_exactly` | 全頂点を同じ生地にすると従来とビット一致(M7 重ね着) |
+| `layers_keep_inner_cloth_from_being_pushed` | 層の違う布で内側が押し込まれない(M7 重ね着) |
+| `set_reference_rescales_rest_lengths_and_mass` | 型紙の差し替えで静止長・質量が作り直される(M8) |
+| `running_cloth_follows_widened_pattern` | 走っている布が広げた型紙に追従する(M8) |
+| `parallel_colored_constraints_match_sequential` | 色分けした並列求解が逐次とビット一致(M9) |
+| `small_cloth_keeps_constraint_order` | 4,000頂点未満は元の制約順のまま(M9) |
+| `parallel_cached_collision_matches_sequential` | キャッシュ候補の並列衝突が逐次と一致(M9) |
 
 ### A-2. ビルド済み `.pyd` の Python 検証ハーネス
 
@@ -114,7 +129,7 @@ cargo test --no-default-features --release --manifest-path rust/cloth_core/Cargo
 powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1 -Bench
 ```
 
-77項目すべて PASS(2026-09-15 時点)。A-1 に加えて以下も確認している:
+115項目すべて PASS(2026-09-25 時点)。A-1 に加えて以下も確認している:
 
 - `core_version()` が取れる = `.pyd` の更新漏れを検出できる
 - 巻き戻し(`set_positions`)後の再計算が**ビット一致**(決定的)
@@ -160,16 +175,19 @@ CPU シングルスレッド / iterations=10, substeps=4 / Ryzen 環境:
 >
 > - 空間ハッシュを計数ソート方式にして自己衝突が 6倍速くなった
 > - 頂点-三角形の自己衝突を足したので、自己衝突は再び最大項目になった
->   (14,641頂点で 44.3%)。**ただし「GPU化の第一目標」という結論は無効**で、
->   いま制約求解と自己衝突のどちらを狙うべきかは測り直す必要がある
+>   (14,641頂点で 44.3%)
+> - **M9 で制約とコリジョンを並列にした**(この節は1スレッドの数字)。14,641頂点は
+>   37.5 → 8.0ms(自己衝突ありは 52.8 → 21.3ms)。**「GPU化の第一目標は自己衝突」
+>   という結論は無効**で、CPU 並列化で足りるかを先に実測する方針に変わった
 
 ---
 
 ## B. 手動チェック(Blender必須)
 
-> **大半はヘッドレステストで自動化済み** (`blender_selftest.py`、66項目)。
+> **大半はヘッドレステストで自動化済み** (`blender_selftest.py`、349項目)。
 > ここは「自動テストが何を見ているか」を人間向けに書いたものとして残してある。
-> 手で追う必要があるのは、冒頭の「手作業で残っているもの」の4件だけ。
+> 手で追う必要があるのは、冒頭の「手作業で残っているもの」に挙げた
+> 見え方・操作の感触だけ(M8 の未回答 2件を含む)。
 
 準備: `powershell -ExecutionPolicy Bypass -File scripts/package_zip.ps1` を実行し、
 Blender の Preferences > Add-ons > Install... から `dist/muslin.zip` を入れる。
@@ -428,17 +446,21 @@ Blender の Preferences > Add-ons > Install... から `dist/muslin.zip` を入�
 
 | 項目 | 現状 | 対応予定 |
 |------|------|----------|
-| 自己衝突の精度 | 頂点同士 + 頂点-三角形。エッジ同士は未対応だが、**それでしか拾えない違反は実測 0.1%** なので実装しないと決めた。既定の Substeps 4 では厚みの 7.5% まで潰れる対が残るので **Substeps 8 以上が実用的な下限** | 完了 |
+| 自己衝突の精度 | 頂点同士 + 頂点-三角形。エッジ同士は未対応だが、**それでしか拾えない違反は実測 0.1%** なので実装しないと決めた。Substeps 4 では厚みの 7.5% まで潰れる対が残るので **Substeps 8 以上が実用的な下限**(既定の Quality `Normal` は Substeps 8) | 完了 |
 | 初期食い込みで布が吹き飛ぶ | **対処済み**。`Start Simulation` とベイクが開始前に `untangle` を通し、速度を出さずに食い込みを解消する(1.924m 吹き飛んでいたものが 0.020m で静止)。重なっていないシーンでは何も動かさないのでベイクの互換性は保たれる | 完了 |
 | 走行中の深い食い込み | 厚み以上まで食い込むと押し出しが速度に変わって弾かれる。CCD が無いことと同じ話 | M4 |
 | 高速移動時の貫通(コライダー) | 球 60 m/s・直径 2cm の棒 30 m/s でも当たる(サブステップ補間 + 移動量ぶん広げた探索半径)。布が薄い板に落ちる側も 12.5 m/s で抜けない | 対処済み |
 | 高速移動時の貫通(布どうし) | **掃過判定で対処済み**(`Catch Fast Motion`、既定で有効)。上限が 3.84 m/s から 12 m/s に伸びた。費用は 14,641頂点・substeps 4 で +10%、substeps 16 で +1% 未満。残るのは**布どうしが互いに高速ですれ違う**場合だけ(三角形側は現在位置で見ているため) | 対処済み(残りは M4) |
-| 動くコライダー + スクラブ | 飛ばしたフレームの追いつき計算中、コライダー形状が現在フレームで固定される | M6 |
-| 曲げ剛性の反復数依存 | **曲げ制約が収束していない**ため、既定の Substeps 4 では compliance をどう設定しても垂れ比 1.02〜1.04(硬さの上限を決めているのは生地の設定ではなく solver)。広い間隔の制約を足す案は計測で退けた(ドレープが板になる)。硬い生地 + 低 Substeps は警告で知らせている。本筋の解決には階層解法が要る | 階層解法(M4以降) |
-| パターンの2D編集画面 | 専用の2Dビューは無く、3Dビューの編集モードで作る | 将来 |
+| 動くコライダー + スクラブ | 飛ばしたフレームの追いつき計算中、コライダー形状が現在フレームで固定される(ベイクは各フレームで `frame_set` するので影響を受けない) | 将来 |
+| 曲げ剛性の反復数依存 | **曲げ制約が収束していない**ため、Substeps 4 では compliance をどう設定しても垂れ比 1.02〜1.04(硬さの上限を決めているのは生地の設定ではなく solver)。広い間隔の制約を足す案は計測で退けた(ドレープが板になる)。既定の Quality を `Normal`(Substeps 8 + Chebyshev 0.98)にし、硬い生地は `High` 以上で出す運用にした。硬い生地 + 低 Substeps は警告で知らせている。本筋の解決には階層解法が要る | 階層解法(M4以降) |
+| パターンの2D編集画面 | 専用の2Dビューは無く、3Dビューの編集モードで作る。M8 で型紙を別オブジェクトとして脇に置き、編集が走っている布へ反映されるようにした(トポロジが変わらない編集のみ) | 将来 |
 | ピース間の縫製 | 別オブジェクト同士は縫えない(事前に統合が必要) | 将来 |
-| メッシュ編集後の縫い目 | 頂点番号が変わると縫い目が壊れる(`Validate Seams` で検出可) | M6 |
-| サンプルシーン | `samples/` に3つ。自動生成・自動検証 | 完了 |
+| メッシュ編集後の縫い目 | **対処済み(M7)**。縫い目とゴム紐は辺の整数属性で持つので、統合・細分化・無関係な頂点の削除では消えない。辺そのものを消すと失われる(`Validate Seams` で検出可)。属性化より前に作った縫い目だけは今も頂点番号で持つ | 完了 |
+| サンプルシーン | `samples/` に5つ(ドレープ・旗・縫製・型紙から UV・型紙連動)。自動生成・自動検証 | 完了 |
 | Extensions Platform | 対応済み。従来形式の zip も併せて作れる | 完了 |
+| 重ね着の割り切り | 外側の重さは内側に伝わらない(服を体へ押し込まないことを優先)。`Catch Fast Motion` は頂点だけを戻す作りなので層を見ていない | 将来 |
+| 型紙連動の範囲 | トポロジが変わらない編集のみ。頂点数を変える編集は拒否する | 将来(型紙の2D位置で移し替える) |
+| 縫い目が閉じる速さ | 組み立て時の配置距離から `Seam Close Frames` かけて 0 にするので、離して置いたピースほど速く閉じる | 将来 |
+| アバターのポーズずれ | アニメーション開始時に着せた時のポーズとずれていても警告が出ない(ずれたまま始めると最初のフレームで布が貫通する) | 将来 |
 | GPU化 | 未着手。M9 で制約をブロック色分けして並列にし、約3万頂点・自己衝突なしで Normal 相当 70ms(球に被せた場面・20 スレッド)。自己衝突ありは 146ms | M4(実測で必要と分かってから) |
-| モディファイア対応 | ベースメッシュの頂点を直接書き換えている | M6 |
+| モディファイア対応 | ベースメッシュの頂点を直接書き換えている | 将来 |

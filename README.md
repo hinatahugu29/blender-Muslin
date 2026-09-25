@@ -155,7 +155,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1
 powershell -ExecutionPolicy Bypass -File scripts/verify_core.ps1
 ```
 
-`verify_core.ps1` が 77/77 通れば環境は揃っています。
+`verify_core.ps1` が 115/115 通れば環境は揃っています。
 
 必要なもの:
 
@@ -366,7 +366,7 @@ Fabric プリセット(Chiffon / Silk / Knit / Cotton / Wool / Denim / Leather)�
 
 | solver 設定 | 最も柔らかい生地 | 最も硬い生地 | 差 |
 |---|---|---|---|
-| iterations 10 / **substeps 4**(既定) | 0.977 | 0.971 | **0.006** |
+| iterations 10 / substeps 4 | 0.977 | 0.971 | **0.006** |
 | iterations 10 / substeps 16 | 0.977 | 0.913 | 0.064 |
 | iterations 20 / **substeps 32** | 0.974 | 0.666 | **0.309** |
 

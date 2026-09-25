@@ -133,8 +133,8 @@ Blender を必要とする範囲を最小化した 3 層構造:
 
 | 層 | 実行するもの | 項目数 | CI |
 |---|---|---|---|
-| 1. 物理コア | `cargo test --no-default-features` | 65 | ○（3 OS） |
-| 2. 拡張モジュール + bpy 非依存部 | `scripts/verify_core.py` | 106 | ○（3 OS） |
+| 1. 物理コア | `cargo test --no-default-features` | 76 | ○（3 OS） |
+| 2. 拡張モジュール + bpy 非依存部 | `scripts/verify_core.py` | 115 | ○（3 OS） |
 | 3. アドオン層 | `blender --background --python scripts/blender_selftest.py` | 349 | ×（ローカル） |
 
 品質の実測には `scripts/bench_quality.py`（品質段ごとの ms/frame・伸び誤差・垂れ）を使う。
