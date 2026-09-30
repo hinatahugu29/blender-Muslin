@@ -84,7 +84,8 @@ CurveRange = (start_point_uid, t0, end_point_uid, t1)
 
 | 属性 | 型 | 意味 |
 |---|---|---|
-| `muslin_gen_seg` | INT | 境界頂点が乗っている区間の点 uid。内部頂点は -1 |
+| `muslin_gen_seg` | INT | 境界頂点が乗っている区間の**始点**の uid。内部頂点は -1 |
+| `muslin_gen_seg_end` | INT | 同じ区間の**終点**の uid(向きが逆になった輪郭にも uid の組で対応するため) |
 | `muslin_gen_u` | FLOAT | 区間内の弧長比(境界頂点のみ) |
 | `muslin_gen_piece` | INT | どのピースの頂点か |
 | `muslin_gen_pattern` | FLOAT_VECTOR | **型紙空間(2D)での座標**。将来の姿勢転送のために生成時に固定して持つ(§4) |
@@ -121,9 +122,10 @@ GenerationRecord
 `n = round(L / target_edge_length)` を決め、区間内は弧長で等分する。
 
 - 境界頂点: `muslin_gen_seg` と `muslin_gen_u` から、Curve を評価し直して座標を出す(決定的)
-- 内部頂点: 境界を固定した Laplace 系の補間。初期実装は**生成時の辺長を重みにしたバネ緩和**
-  (重み 1/L₀)を、現在の座標から始めた共役勾配法で解く(numpy のみ、反復回数と許容値を固定)。
-  Blender に scipy は無いので使わない
+- 内部頂点: 境界を固定した Laplace 系の補間。初期実装は**生成時の辺長の逆数(1/L₀)を重みにした
+  バネ緩和**で、座標ではなく**生成時からの変位**に対する境界値問題を共役勾配法で解く
+  (numpy のみ、反復回数と許容値を固定)。変位に対して解くので、Curve が変わらなければ内部も
+  生成時のまま動かない。Blender に scipy は無いので使わない
 - 純関数(bpy 非依存)にして `scripts/verify_core.py` の系統でテストできるようにする
 
 ## 6. 判定と状態
@@ -150,11 +152,26 @@ GenerationRecord
 - ペンツールなど他の編集経路での点の追加
 - Blender 4.2 での実測
 
-## 8. 進め方
+## 8. 実装状況
+
+手順 2(bpy 非依存の純関数の層)は実装済み。`scripts/verify_core.py` でテストしている。
+
+| モジュール | 内容 |
+|---|---|
+| `curve_ids.py` | 目印の読み書き(radius + 非線形の検算値)、構造の比較(`diff_outline`)、ピースの対応付け |
+| `curve_eval.py` | Bezier 区間の弧長評価(96 分割の折れ線で弧長比 → 座標) |
+| `delaunay2d.py` | Bowyer-Watson の Delaunay、点の内外判定(偶奇則)、輪郭までの距離 |
+| `curve_discretize.py` | 輪郭 → 派生データ(境界頂点・内部の六角格子・三角形)、seam の区間 → 境界の辺 |
+| `curve_update.py` | Shape Update(境界の再評価 + 内部の緩和)、品質判定、Rebuild Required の判定 |
+
+実装で決めた値(実測して見直す): 輪郭から `0.6 × 目標辺長` 未満の格子点は置かない /
+辺長比(更新後 / 生成時)の許容 0.6〜1.6 / 最小角 8° 以上 / 共役勾配法は最大 400 回。
+幅 1.00m → 1.05m(目標辺長 0.02m)は頂点数を変えずに追従し、辺長比は最大 1.05 だった。
+
+## 9. 進め方
 
 1. ✅ 実機スパイク(完了。結果は curve_spike_results.md)
-2. 純関数の層: 目印の読み書きと分類、離散化(区間分割 + 内部の三角形化)、境界の再評価、
-   内部の緩和、品質判定。bpy なしでテストを書く
+2. ✅ 純関数の層(§8)
 3. Generated Mesh の生成と属性の書き込み、seam の展開(既存の seam 処理に繋ぐ)
 4. `pattern_link` に Curve 経由の入力を足す(`references()` の入力元を切り替えるだけ)
 5. Rebuild Required の表示と Rebuild 操作
