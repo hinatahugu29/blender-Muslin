@@ -476,12 +476,88 @@ def sample_pattern_link():
     save("05_pattern_link.blend")
 
 
+# ------------------------------------------------------------------ 6. Curve Pattern
+
+def sample_curve_pattern():
+    """Curve を型紙にした服。Curve を編集すると、走っている布の寸法が追従する。"""
+    import math
+    import numpy as np
+    from muslin import curve_pattern
+
+    scene = fresh_scene(frame_end=120)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.0, 0.0))
+    body = bpy.context.active_object
+    body.name = "Body"
+
+    # 型紙の Curve: 閉じた Bezier。下辺をゆるく丸くする(点は左下・右下・右上・左上)
+    width, height = 0.5, 0.6
+    cu = bpy.data.curves.new("Shirt_Pattern", 'CURVE')
+    cu.dimensions = '2D'
+    spline = cu.splines.new('BEZIER')
+    spline.bezier_points.add(3)
+    for pt, (x, y) in zip(spline.bezier_points,
+                          [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]):
+        pt.co = (x, y, 0.0)
+        pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+    pts = spline.bezier_points
+    pts[0].handle_right_type = pts[1].handle_left_type = 'FREE'
+    pts[0].handle_right = (width * 0.3, -0.05, 0.0)
+    pts[1].handle_left = (width * 0.7, -0.05, 0.0)
+    spline.use_cyclic_u = True
+    curve = bpy.data.objects.new("Shirt_Pattern", cu)
+    scene.collection.objects.link(curve)
+    curve.location = (1.0, 0.0, 0.0)
+    bpy.context.view_layer.objects.active = curve
+    curve_pattern.initialize(curve, 0.03)
+    cloth, _warnings = curve_pattern.rebuild(bpy.context, curve)
+    cloth.name = "Shirt"
+    curve_pattern.add_seam(curve, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="Side")
+    curve_pattern.apply_seams(curve)
+
+    # 胴のまわりに 3/4 周で曲げて置き、前の上端の中央を留める
+    cloth.location = (0.0, 0.0, 0.0)
+    cloth.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    top = max(v.co.z for v in cloth.data.vertices)
+    group = cloth.vertex_groups.new(name="Pin")
+    group.add([v.index for v in cloth.data.vertices
+               if v.co.z > top - 1e-5 and abs(v.co.x - width / 2) < 0.1], 1.0, "REPLACE")
+    radius = width / (1.5 * math.pi)
+    for v in cloth.data.vertices:
+        theta = (v.co.x - width / 2) / radius
+        v.co.x, v.co.y = radius * math.sin(theta), -radius * math.cos(theta)
+    cloth.data.update()
+    props = cloth.muslin
+    props.pin_vertex_group = "Pin"
+    props.collider_object = body
+    props.collision_enabled = True
+    props.self_collision_enabled = False
+    props.seam_close_frames = 20
+    smooth(cloth)
+
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    dressed = bpy.ops.muslin.dress()
+    print(f"  Shirt: {len(cloth.data.vertices)} 頂点 / Dress {dressed}", flush=True)
+
+    add_note("Shirt で Start Simulation → Shirt_Pattern の点を動かすと服の寸法が変わる。"
+             "点を増やすと Rebuild Required",
+             location=(0.5, 0.0, 1.85), size=0.06)
+    add_camera_and_light((0.5, 0.0, 0.7), distance=3.2, height=1.4)
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    save("06_curve_pattern.blend")
+
+
 SAMPLES = {
     "01": sample_drape,
     "02": sample_flag,
     "03": sample_sewing,
     "04": sample_pattern_uv,
     "05": sample_pattern_link,
+    "06": sample_curve_pattern,
 }
 
 

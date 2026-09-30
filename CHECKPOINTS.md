@@ -24,6 +24,7 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
 `scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 87 項目)が確認している。
 下は**画面と操作の感触**を見る項目で、まだ誰も GUI で触っていない。
+最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
 - [ ] **一連の流れ**: 3D ビューで Bezier の円か、閉じた Bezier の輪郭を作る(2D、XY 平面) →
       N パネル Muslin の **Curve Pattern** で `Initialize Curve Pattern` → `Rebuild Cloth from Curve`
