@@ -45,7 +45,8 @@
 
 ## 2. Curve Pattern object が持つ一次データ
 
-Curve のデータに PropertyGroup(`muslin_curve`)として持つ。
+Curve のデータのカスタムプロパティ `muslin_curve` に **JSON** で持つ(実装。PropertyGroup にしなかったのは、
+Undo と複製にそのまま乗り、登録も要らないため。UI で編集する段階になったら PropertyGroup に移す)。
 
 ```
 CurvePattern
@@ -168,11 +169,33 @@ GenerationRecord
 辺長比(更新後 / 生成時)の許容 0.6〜1.6 / 最小角 8° 以上 / 共役勾配法は最大 400 回。
 幅 1.00m → 1.05m(目標辺長 0.02m)は頂点数を変えずに追従し、辺長比は最大 1.05 だった。
 
+### 手順 3(Blender 側)
+
+`curve_pattern.py` が Blender とのつなぎを持つ。`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 48/48)で確認している。
+
+- `initialize`: 閉じた Bezier の点に uid を振り、ピース(穴は外周に対する入れ子)を記録する
+- `rebuild`: 今の Curve を新しい正として取り込み(`_adopt`)、離散化して布のメッシュを作る。
+  目印が合わない点と、同じ uid の 2 つ目以降には新しい uid を振る
+- `structure_problems` / `current_outlines`: 記録との比較と、Shape Update への入力
+- `reconstruct`: 布のメッシュの頂点属性と生成記録から、離散化の結果を組み直す
+- `add_seam`: `(始点 uid, t0, 終点 uid, t1)` の区間で縫い目を定義する。Rebuild のたびに境界の辺の属性
+  `muslin_seam` へ展開する。既存の `build_seam_pairs` がそのまま動く
+- 演算子: `muslin.curve_pattern_init` / `muslin.curve_pattern_rebuild`(パネルはまだ無い)
+
+実装で分かったこと:
+
+- 区間の途中に点を足しても、seam の範囲は uid の並びから決まるので**自動で保たれる**(Rebuild 後も範囲は右辺全体のまま)。
+  ただし区間を分けた各半分が別々に丸められるので、辺の本数は 1 本前後変わる
+- 布のメッシュは XZ 平面(Y = 0)に立て、面は手前(-Y)を向く。Curve の (x, y) → 布の (x, 0, y)
+- Rebuild は新しいメッシュに差し替える。頂点グループ(ピン)とゴム紐は失われ、警告を出す
+- シミュレーション中の Rebuild は拒否する。停止すれば同じ布のオブジェクトを使い回す
+- Curve と布は ID ポインタ(`muslin_cloth` / `muslin_curve_source`)で結ぶ。保存して開き直しても切れない
+
 ## 9. 進め方
 
 1. ✅ 実機スパイク(完了。結果は curve_spike_results.md)
 2. ✅ 純関数の層(§8)
-3. Generated Mesh の生成と属性の書き込み、seam の展開(既存の seam 処理に繋ぐ)
+3. ✅ Generated Mesh の生成と属性の書き込み、seam の展開(既存の seam 処理に繋ぐ)(§8)
 4. `pattern_link` に Curve 経由の入力を足す(`references()` の入力元を切り替えるだけ)
 5. Rebuild Required の表示と Rebuild 操作
 6. elastic の Curve 側への移行(seam と同じ形)
