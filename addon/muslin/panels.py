@@ -337,7 +337,9 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
             # 型紙オブジェクト(M8)。結び付いていれば、編集が走っている布に流れる
             from . import pattern_link, sim_state
             layout.separator()
-            if pattern_link.linked_object(obj) is not None:
+            if pattern_link.linked_curve(obj) is not None:
+                layout.label(text="型紙は Curve が決めます(Curve Pattern)", icon='CURVE_DATA')
+            elif pattern_link.linked_object(obj) is not None:
                 layout.prop(obj.muslin, "pattern_object", text="型紙")
                 layout.label(text="編集すると走っている布の寸法が変わる", icon='INFO')
                 state = sim_state.get_state(obj)
@@ -345,6 +347,76 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
                     layout.label(text=warning, icon='ERROR')
             else:
                 layout.operator("muslin.create_pattern_object", icon='MOD_MESHDEFORM')
+
+
+class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
+    """Curve Pattern。Curve を型紙の一次データにし、布のメッシュはそこから作る。"""
+
+    bl_label = "Curve Pattern"
+    bl_parent_id = "MUSLIN_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        from . import curve_pattern
+        obj = context.active_object
+        return obj is not None and (obj.type == 'CURVE' or curve_pattern.curve_of(obj) is not None)
+
+    def draw(self, context):
+        from . import curve_pattern, sim_state
+        layout = self.layout
+        obj = context.active_object
+        if obj is None:
+            return
+        curve = obj if obj.type == 'CURVE' else curve_pattern.curve_of(obj)
+        if curve is None:
+            return
+        info = curve_pattern.status(curve)
+
+        if obj.type != 'CURVE':
+            row = layout.row()
+            row.label(text=f"型紙: Curve '{curve.name}'", icon='CURVE_DATA')
+        if not info["initialized"]:
+            layout.label(text="閉じた Bezier の輪郭を型紙にできます", icon='INFO')
+            layout.operator("muslin.curve_pattern_init", icon='CURVE_BEZCIRCLE')
+            return
+
+        cloth = info["cloth"]
+        running = cloth is not None and sim_state.is_running(cloth)
+        col = layout.column(align=True)
+        col.label(text=f"ピース {info['pieces']} / 目標の辺 {info['target'] * 1000:.0f} mm"
+                       + (f" / 世代 {info['gen_id']}" if info["gen_id"] else ""))
+        if cloth is None:
+            col.label(text="布はまだありません(Rebuild で作る)", icon='INFO')
+
+        # 状態: 追従できているか、作り直しが要るか(走行中は Shape Update だけ許す)
+        problems = list(info["problems"])
+        state = sim_state.get_state(cloth) if cloth is not None else None
+        for warning in (state or {}).get("pattern_warnings", []):
+            if warning not in problems:
+                problems.append(warning)
+        if problems and cloth is not None:
+            box = layout.box()
+            box.label(text="Rebuild Required", icon='ERROR')
+            for reason in problems[:4]:
+                box.label(text=reason)
+            if running:
+                box.label(text="走行中は作り直せません。停止してから Rebuild してください")
+        elif cloth is not None:
+            layout.label(text="Curve の変更は布に追従します", icon='CHECKMARK')
+
+        layout.operator("muslin.curve_pattern_rebuild", icon='FILE_REFRESH')
+
+        layout.separator()
+        layout.label(text="縫い目")
+        for uid, name in info["seams"]:
+            row = layout.row(align=True)
+            row.label(text=name, icon='UV_SYNC_SELECT')
+            op = row.operator("muslin.curve_seam_remove", text="", icon='X')
+            op.uid = uid
+        if obj.type == 'CURVE':
+            layout.operator("muslin.curve_seam_add", icon='ADD')
+            layout.label(text="編集モードで 2 か所の点の連なりを選ぶ", icon='INFO')
 
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
@@ -496,6 +568,7 @@ _classes = (
     MUSLIN_PT_collision,
     MUSLIN_PT_pinning,
     MUSLIN_PT_pattern,
+    MUSLIN_PT_curve_pattern,
     MUSLIN_PT_sewing,
     MUSLIN_PT_elastic,
     MUSLIN_PT_bake,

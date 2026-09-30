@@ -368,6 +368,87 @@ def _write_seams(cloth, record, mesh_data):
     return broken
 
 
+def selection_runs_of(curve_obj):
+    """選択中の点の連なり。[(spline の index, [点の index, ...]), ...](輪郭に沿った順)。"""
+    if curve_obj.mode == 'EDIT':
+        curve_obj.update_from_editmode()
+    out = []
+    for si, sp in enumerate(curve_obj.data.splines):
+        if sp.type != 'BEZIER':
+            continue
+        flags = [bool(p.select_control_point) for p in sp.bezier_points]
+        for run in curve_ids.selection_runs(flags, sp.use_cyclic_u):
+            out.append((si, run))
+    return out
+
+
+def seam_from_selection(curve_obj, name=None):
+    """選んだ 2 つの点の連なりを、縫い目の両側にする。戻り値: 縫い目の uid。
+
+    連なりは、最初に選んだ点から最後の点までの区間になる。輪郭の向きは自動で決まる
+    (縫い合わせるとき、向きは今の形から判定するので)。
+    """
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    problems = structure_problems(curve_obj, record)
+    if problems:
+        raise CurvePatternError("点の構成が変わっています(Rebuild してから縫い目を作ってください): "
+                                + problems[0])
+    splines = read_splines(curve_obj)
+    runs = selection_runs_of(curve_obj)
+    ranges = []
+    for si, run in runs:
+        uids = splines[si]["uids"]
+        if len(run) < 2:
+            continue
+        ranges.append((uids[run[0]], 0.0, uids[run[-1]], 0.0))
+    if len(runs) != 2 or len(ranges) != 2:
+        raise CurvePatternError(
+            f"縫い合わせる 2 か所の点の連なりを選んでください(今は {len(runs)} か所。"
+            "各連なりは 2 点以上)")
+    uid = add_seam(curve_obj, [ranges[0]], [ranges[1]], name=name)
+    apply_seams(curve_obj)
+    return uid
+
+
+def remove_seam(curve_obj, uid):
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    before = len(record["seams"])
+    record["seams"] = [s for s in record["seams"] if s["uid"] != uid]
+    if len(record["seams"]) == before:
+        raise CurvePatternError(f"縫い目 {uid} はありません")
+    save_record(curve_obj, record)
+    apply_seams(curve_obj)
+
+
+def apply_seams(curve_obj):
+    """縫い目の定義を、作り直さずに今の布へ書き直す。使えなかった縫い目の名前の一覧を返す。"""
+    cloth = cloth_of(curve_obj)
+    record = load_record(curve_obj)
+    if cloth is None or record is None or generation_record(cloth) is None:
+        return []
+    return _write_seams(cloth, record, reconstruct(cloth))
+
+
+def status(curve_obj):
+    """パネル用の状態。"""
+    record = load_record(curve_obj)
+    if record is None:
+        return {"initialized": False}
+    return {
+        "initialized": True,
+        "pieces": len(record["pieces"]),
+        "target": record["target_edge_length"],
+        "problems": structure_problems(curve_obj, record),
+        "cloth": cloth_of(curve_obj),
+        "seams": [(s["uid"], s["name"]) for s in record["seams"]],
+        "gen_id": record["gen_id"],
+    }
+
+
 # ---------------------------------------------------------------- 派生データ(布のメッシュ)
 
 def _to_local(xy):
@@ -583,6 +664,16 @@ class MUSLIN_OT_curve_pattern_init(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _target_curve(context):
+    """アクティブが Curve ならそれ、Curve Pattern から生成した布ならその Curve。"""
+    obj = context.active_object
+    if obj is None:
+        return None
+    if obj.type == 'CURVE':
+        return obj
+    return curve_of(obj)
+
+
 class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
     """Curve から布のメッシュを作り直す(着せた姿勢は失われる。停止中のみ)"""
 
@@ -590,15 +681,40 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
     bl_label = "Rebuild Cloth from Curve"
     bl_options = {'REGISTER', 'UNDO'}
 
+    edge_length: bpy.props.FloatProperty(
+        name="Target Edge Length", unit='LENGTH', min=0.001, default=0.02,
+        description="メッシュの辺の目標の長さ。変えると頂点数が変わる",
+    )
+
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'CURVE' and context.mode == 'OBJECT'
+        from . import ui_poll
+        from . import sim_state
+        curve = _target_curve(context)
+        if curve is None:
+            return ui_poll.reject(cls, "Curve、または Curve Pattern から作った布を選んでください")
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if load_record(curve) is None:
+            return ui_poll.reject(cls, "先に Initialize Curve Pattern を実行してください")
+        cloth = cloth_of(curve)
+        if cloth is not None and sim_state.is_running(cloth):
+            return ui_poll.reject(cls, "シミュレーション中は Rebuild できません。停止してください")
+        return True
+
+    def invoke(self, context, event):
+        record = load_record(_target_curve(context))
+        self.edge_length = record["target_edge_length"]
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        self.layout.prop(self, "edge_length")
+        self.layout.label(text="着せた姿勢・ピン留め・ゴム紐は失われます", icon='ERROR')
 
     def execute(self, context):
-        obj = context.active_object
+        curve = _target_curve(context)
         try:
-            cloth, warnings = rebuild(context, obj)
+            cloth, warnings = rebuild(context, curve, self.edge_length)
         except CurvePatternError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -608,7 +724,60 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild)
+class MUSLIN_OT_curve_seam_add(bpy.types.Operator):
+    """Curve の点を 2 か所の連なりとして選び、その間を縫い合わせる縫い目にする"""
+
+    bl_idname = "muslin.curve_seam_add"
+    bl_label = "Add Seam from Selection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        obj = context.active_object
+        if obj is None or obj.type != 'CURVE':
+            return ui_poll.reject(cls, "Curve を選んでください")
+        if load_record(obj) is None:
+            return ui_poll.reject(cls, "先に Initialize Curve Pattern を実行してください")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            uid = seam_from_selection(obj)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        name = next(s["name"] for s in load_record(obj)["seams"] if s["uid"] == uid)
+        self.report({'INFO'}, f"縫い目 '{name}' を追加しました")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_curve_seam_remove(bpy.types.Operator):
+    """Curve の縫い目を削除する"""
+
+    bl_idname = "muslin.curve_seam_remove"
+    bl_label = "Remove Curve Seam"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uid: bpy.props.IntProperty(default=0)
+
+    @classmethod
+    def poll(cls, context):
+        obj = _target_curve(context)
+        return obj is not None and load_record(obj) is not None
+
+    def execute(self, context):
+        try:
+            remove_seam(_target_curve(context), self.uid)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+_classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
+            MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
 
 
 def register():

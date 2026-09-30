@@ -462,6 +462,8 @@ class MUSLIN_OT_create_pattern_object(bpy.types.Operator):
         if not ui_poll.mesh_selected(cls, context):
             return False
         obj = context.active_object
+        if pattern_link.linked_curve(obj) is not None:
+            return ui_poll.reject(cls, "この布の型紙は Curve が決めています(Curve Pattern)")
         if pattern_link.linked_object(obj) is not None:
             return ui_poll.reject(cls, "型紙オブジェクトはもう結び付いています")
         if rest_shape.is_deformed(obj) and not rest_shape.has_pattern(obj):

@@ -74,6 +74,53 @@ def mesh_area(mesh):
     return sum(p.area for p in mesh.polygons)
 
 
+class _FakeLayout:
+    """bpy の UILayout のうち、Curve Pattern のパネルが使う分だけを真似る(存在しない名前で落とす)。"""
+
+    def __init__(self, log):
+        self.log = log
+
+    def _child(self, *_a, **_k):
+        return _FakeLayout(self.log)
+
+    row = column = box = split = _child
+
+    def prop(self, data, name, **_k):
+        if name not in data.bl_rna.properties:
+            raise AttributeError(f"{data.bl_rna.identifier} に '{name}' が無い")
+        self.log.append(("prop", name))
+
+    def operator(self, idname, **_k):
+        group, _, name = idname.partition(".")
+        if not hasattr(getattr(bpy.ops, group, None), name):
+            raise AttributeError(f"{idname} というオペレータは無い")
+        self.log.append(("operator", idname))
+        return _FakeLayout(self.log)
+
+    def label(self, **k):
+        self.log.append(("label", k.get("text", "")))
+
+    def separator(self, **_k):
+        pass
+
+
+class _PanelShim:
+    """パネルの draw() を bpy 抜きで呼ぶための代理。"""
+
+    def __init__(self, cls, layout):
+        self._cls = cls
+        self.layout = layout
+
+    def draw(self, context):
+        return self._cls.draw(self, context)
+
+
+def draw_panel(context):
+    log = []
+    _PanelShim(bpy.types.MUSLIN_PT_curve_pattern, _FakeLayout(log)).draw(context)
+    return log
+
+
 def main():
     import muslin
     from muslin import curve_ids, curve_pattern as cp, curve_discretize, curve_update, mesh_io, sim_state
@@ -294,6 +341,57 @@ def main():
     check("Rebuild 後の布は新しい寸法(幅 1.05m)で始まる", abs(span(state2) - 1.05) < 1e-6, f"{span(state2):.4f}")
     sim_state.stop_simulation(cloth_s2)
 
+    section("縫い目を選択から作る")
+    c = make_curve("U")
+    cp.initialize(c, 0.02)
+    cloth_u, _ = cp.rebuild(bpy.context, c)
+    # 右辺(点 2・3)と左辺(点 4・1)を選ぶ。点の index は 1・2 と 3・0
+    select_points(c, {1, 2, 3, 0})
+    check("全部が隣り合っていれば連なりは 1 本", len(cp.selection_runs_of(c)) == 1)
+    select_points(c, {1, 2})
+    check("選んだのが 1 か所だけなら縫い目を作れない", _raises(lambda: cp.seam_from_selection(c)))
+    # 点が 4 つの正方形では、離れた 2 辺は「対辺の 2 点ずつ」= (1,2) と (3,0)。隣り合うので 1 本になる。
+    # 離れた連なりを作るために、点を足した輪郭で試す
+    c2 = make_curve("V", 1.0, 1.0)
+    edit_op(c2, {0, 1, 2, 3}, lambda: bpy.ops.curve.subdivide(number_cuts=1))
+    cp.initialize(c2, 0.05)
+    # 細分化後は 8 点(0,1(中),2,3(中),4,5(中),6,7(中))。1 辺ずつ(0,1,2)と(4,5,6)を選ぶ
+    for sp in c2.data.splines:
+        for i, p in enumerate(sp.bezier_points):
+            p.select_control_point = i in (0, 1, 2, 4, 5, 6)
+    cloth_v, _ = cp.rebuild(bpy.context, c2)
+    uid = cp.seam_from_selection(c2, "Pair")
+    check("離れた 2 か所を選べば縫い目ができる", uid > 0 and len(cp.load_record(c2)["seams"]) == 1)
+    check("布に縫い目が反映される(Rebuild なしで)",
+          len(cloth_v.muslin_seams) == 1 and cloth_v.muslin_seams[0].uid == uid)
+    broken = []
+    pairs = mesh_io.build_seam_pairs(cloth_v, report=broken)
+    check("既存の縫い目処理でペアにできる", bool(pairs) and not broken, f"{len(pairs)} ペア")
+    cp.remove_seam(c2, uid)
+    check("縫い目を削除すると布からも消える", len(cloth_v.muslin_seams) == 0
+          and not any(mesh_io.read_seam_codes(cloth_v.data)[0]))
+
+    section("パネルの描画(Curve Pattern)")
+    bpy.context.view_layer.objects.active = c2
+    log = draw_panel(bpy.context)
+    check("Curve を選んだときのパネルを描ける", any(x[0] == "operator" for x in log), f"{len(log)} 項目")
+    check("初期化済みなら Rebuild ボタンが出る", ("operator", "muslin.curve_pattern_rebuild") in log)
+    check("Curve では縫い目の追加ボタンが出る", ("operator", "muslin.curve_seam_add") in log)
+    fresh = make_curve("W")
+    bpy.context.view_layer.objects.active = fresh
+    log = draw_panel(bpy.context)
+    check("未初期化なら Initialize ボタンが出る", ("operator", "muslin.curve_pattern_init") in log)
+    bpy.context.view_layer.objects.active = cloth_v
+    log = draw_panel(bpy.context)
+    check("布を選んだときは元の Curve を示し、縫い目の追加は出さない",
+          any(x[0] == "label" and "型紙" in x[1] for x in log) and ("operator", "muslin.curve_seam_add") not in log)
+    edit_op(c2, {0}, lambda: bpy.ops.curve.delete(type='VERT'))
+    bpy.context.view_layer.objects.active = c2
+    log = draw_panel(bpy.context)
+    check("構造が変わると Rebuild Required を表示する", ("label", "Rebuild Required") in log)
+    from muslin import pattern_link
+    check("布から元の Curve に辿れる", pattern_link.linked_curve(cloth_v) == c2)
+
     section("保存して開き直す")
     import tempfile
     path = str(Path(tempfile.mkdtemp(prefix="muslin_curve_")) / "curve.blend")
@@ -306,6 +404,14 @@ def main():
     check("開き直しても派生データを組み直せる", len(cp.reconstruct(cp.cloth_of(q))["positions"]) > 0)
 
     muslin.unregister()
+
+
+def _raises(fn):
+    try:
+        fn()
+    except Exception:
+        return True
+    return False
 
 
 def curve_seam_code(uid, side):

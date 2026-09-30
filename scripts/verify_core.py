@@ -1495,6 +1495,22 @@ def test_curve_update():
           step["status"] == cu.SHAPE_UPDATE and len(step["positions"]) == len(gen))
 
 
+def test_curve_selection_runs():
+    """選んだ点の連なり(縫い目の片側を選択から作る。bpy 非依存)"""
+    import curve_ids as ci
+    runs = ci.selection_runs
+    check("選択が無ければ連なりは無い", runs([False] * 5, True) == [])
+    check("離れた 2 か所は 2 本の連なり(輪郭に沿った順)",
+          runs([True, True, False, True, True, False], False) == [[0, 1], [3, 4]])
+    check("cyclic は始点をまたぐ連なりを 1 本にする",
+          runs([True, False, False, True, True], True) == [[3, 4, 0]])
+    check("開いた輪郭は始点をまたがない",
+          runs([True, False, False, True, True], False) == [[0], [3, 4]])
+    check("全部を選ぶと一周分の 1 本", runs([True] * 4, True) == [[0, 1, 2, 3]])
+    check("1 点だけの連なりも返す(呼び出し側が 2 点以上を要求する)", runs([False, True, False], True) == [[1]])
+    check("並びが 0 番始まりでない連なり", runs([False, True, True, False, True], False) == [[1, 2], [4]])
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1546,6 +1562,7 @@ def main():
     test_delaunay2d()
     test_curve_discretize()
     test_curve_update()
+    test_curve_selection_runs()
     test_step_call_matches_signature()
     test_panel_properties_exist()
     compile_addon_modules()

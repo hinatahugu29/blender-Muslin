@@ -193,3 +193,32 @@ def match_pieces(recorded, current):
             taken[si] = best
     gone = sorted(set(recorded) - set(taken.values()))
     return taken, new_splines, gone
+
+
+def selection_runs(selected, cyclic):
+    """選ばれた点の連なり(点の index の並びのリスト)を、輪郭に沿った順で返す。
+
+    cyclic なら末尾と先頭をつなぐ(始点をまたぐ連なりは 1 本になる)。全部が選ばれていれば
+    一周分の 1 本。縫い目の片側を「選んだ連なり」から作るのに使う(bpy 非依存)。
+    """
+    n = len(selected)
+    if n == 0:
+        return []
+    if all(selected):
+        return [list(range(n))]
+    runs = []
+    for i in range(n):
+        if not selected[i]:
+            continue
+        prev = (i - 1) % n if cyclic else i - 1
+        if (cyclic or i > 0) and selected[prev]:
+            continue
+        run = [i]
+        j = i
+        while True:
+            j = (j + 1) % n if cyclic else j + 1
+            if j >= n or not selected[j] or j == i:
+                break
+            run.append(j)
+        runs.append(run)
+    return runs
