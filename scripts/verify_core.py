@@ -1196,6 +1196,305 @@ def test_panel_properties_exist():
         print(f"       panels.py:{line} の \"{name}\" が properties.py に無い")
 
 
+# ------------------------------------------------------------ Curve Pattern
+
+def _curve_rect(w, h, uids=(1, 2, 3, 4), piece_uid=1, hole_of=None, origin=(0.0, 0.0)):
+    import numpy as np
+    x0, y0 = origin
+    co = np.array([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]], dtype=float)
+    return {"piece_uid": piece_uid, "uids": list(uids), "co": co, "hl": co.copy(),
+            "hr": co.copy(), "hole_of": hole_of}
+
+
+def test_curve_ids():
+    """Curve の点の目印(radius + 検算値)と、記録した構造との比較(bpy 非依存)"""
+    if not has_numpy():
+        skip("Curve の点の目印", "numpy が無い")
+        return
+    import random
+    import curve_ids as ci
+
+    roundtrip = all(ci.decode(*ci.encode(u)) == u for u in list(range(1, 3000)) + [ci.MAX_UID - 1])
+    check("目印は uid に復元できる", roundtrip)
+    check("目印の範囲外や検算違いは未知の点",
+          ci.decode(2.5, 50.0) is None and ci.decode(0.0, 50.0) is None
+          and ci.decode(5.0, ci.encode(5)[1] + 1.0) is None)
+
+    # 補間で生まれた点(隣り合う 2 点の線形補間)を既知の点と取り違えない。
+    # 検算値が線形だと約 25% が通ってしまう(スパイクの実測)
+    rng = random.Random(7)
+    wrong = total = 0
+    for _ in range(20000):
+        a, b = rng.randint(1, 5000), rng.randint(1, 5000)
+        if a == b:
+            continue
+        (ra, wa), (rb, wb) = ci.encode(a), ci.encode(b)
+        for t in (0.5, 1 / 3, 2 / 3):
+            total += 1
+            wrong += ci.decode(ra + (rb - ra) * t, wa + (wb - wa) * t) is not None
+    check("補間で生まれた点を既知の点と取り違えない", wrong <= 2, f"{wrong}/{total}")
+
+    rec = [1, 2, 3, 4]
+    d = ci.diff_outline(rec, [1, 2, 3, 4], True, True)
+    check("構造が同じなら SAME", d["status"] == ci.SAME and not d["reasons"])
+    d = ci.diff_outline(rec, [3, 4, 1, 2], True, True)
+    check("cyclic の始点が回っても SAME(回転量を返す)", d["status"] == ci.SAME and d["shift"] == 2, str(d["shift"]))
+    d = ci.diff_outline(rec, [4, 3, 2, 1], True, True)
+    check("向きが逆でも SAME(反転を返す)", d["status"] == ci.SAME and d["reversed"])
+    d = ci.diff_outline(rec, [2, 1, 3, 4], True, True)
+    check("点の並びの入れ替えは REORDERED", d["status"] == ci.REORDERED)
+    d = ci.diff_outline(rec, [1, 2, None, 3, 4], True, True)
+    check("新しい点は NEW_POINTS(前後の既知の点を返す)",
+          d["status"] == ci.NEW_POINTS and d["inserted"] == [(2, 2, 3)], str(d["inserted"]))
+    d = ci.diff_outline(rec, [1, 2, 3, 3, 4], True, True)
+    check("同じ点が 2 つなら DUPLICATED", d["status"] == ci.DUPLICATED and d["duplicated"] == [3])
+    d = ci.diff_outline(rec, [1, 2, 4], True, True)
+    check("点が無くなれば REMOVED", d["status"] == ci.REMOVED and d["removed"] == [3])
+    d = ci.diff_outline(rec, [1, 2, 3, 4], True, False)
+    check("開閉の変更は CYCLIC_CHANGED", d["status"] == ci.CYCLIC_CHANGED)
+    d = ci.diff_outline(rec, [1, 2, 3, 4], False, False)
+    d2 = ci.diff_outline(rec, [2, 3, 4, 1], False, False)
+    check("開いた輪郭は回転を許さない", d["status"] == ci.SAME and d2["status"] == ci.REORDERED)
+    d = ci.diff_outline(rec, [None, None, 3, 4], True, True)
+    check("新しい点が端にあれば輪郭を回り込んで前後を探す", d["inserted"][0][1:] == (4, 3), str(d["inserted"]))
+
+    rec_pieces = {1: [1, 2, 3, 4], 2: [10, 11, 12]}
+    taken, new, gone = ci.match_pieces(rec_pieces, [[10, 11, None, 12], [4, 3, 2, 1]])
+    check("ピースは所属する点の uid で対応付ける(spline の順が入れ替わっても)",
+          taken == {0: 2, 1: 1} and not new and not gone, str(taken))
+    taken, new, gone = ci.match_pieces(rec_pieces, [[1, 2, 3, 4], [50, 51, 52]])
+    check("記録に無い spline は新しく、無くなったピースも分かる",
+          new == [1] and gone == [2], f"new={new} gone={gone}")
+
+
+def test_curve_eval():
+    """Bezier の弧長評価(bpy 非依存)"""
+    if not has_numpy():
+        skip("Bezier の弧長評価", "numpy が無い")
+        return
+    import numpy as np
+    import curve_eval as ce
+
+    co = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+    segs = ce.segments(co, co, co, True)
+    check("直線の区間の長さ", abs(segs[0].length - 1.0) < 1e-12 and abs(segs[2].length - 2 ** 0.5) < 1e-9)
+    p = segs[0].point_at([0.0, 0.25, 1.0])
+    check("直線は弧長比に比例した位置", np.allclose(p, [[0, 0], [0.25, 0], [1, 0]], atol=1e-3))
+
+    # 四分円(制御点で近似したベジェ)の長さは π/2 に近く、弧長比の等分が等間隔になる
+    k = 0.5522847498
+    seg = ce.Segment((1, 0), (1, k), (k, 1), (0, 1))
+    check("四分円の弧長", abs(seg.length - np.pi / 2) < 1e-3, f"{seg.length:.5f}")
+    pts = seg.point_at(np.linspace(0, 1, 11))
+    gap = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    check("弧長比を等分すると点が等間隔", gap.max() / gap.min() < 1.003, f"比 {gap.max() / gap.min():.4f}")
+    check("端点は制御点に一致", np.allclose(pts[0], [1, 0]) and np.allclose(pts[-1], [0, 1], atol=1e-9))
+    open_segs = ce.segments(co, co, co, False)
+    check("開いた輪郭は n-1 区間", len(open_segs) == 2 and len(segs) == 3)
+
+
+def _convex_hull_area(pts):
+    import numpy as np
+    p = sorted(map(tuple, pts))
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for q in p:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], q) <= 0:
+            lower.pop()
+        lower.append(q)
+    for q in reversed(p):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], q) <= 0:
+            upper.pop()
+        upper.append(q)
+    h = np.array(lower[:-1] + upper[:-1])
+    x, y = h[:, 0], h[:, 1]
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def test_delaunay2d():
+    """Delaunay 三角形分割(bpy 非依存)"""
+    if not has_numpy():
+        skip("Delaunay 三角形分割", "numpy が無い")
+        return
+    import numpy as np
+    import delaunay2d as dl
+
+    rng = np.random.default_rng(0)
+    pts = rng.random((200, 2))
+    tris = dl.triangulate(pts)
+    areas = dl.signed_areas(pts, tris)
+    check("三角形はすべて反時計回りで面積が正", (areas > 0).all())
+    # 凸包の面積と三角形の面積の総和が一致する(隙間も重なりも無い)
+    hull = _convex_hull_area(pts)
+    check("三角形の面積の総和 = 凸包の面積", abs(areas.sum() - hull) < 1e-9, f"{areas.sum():.6f} / {hull:.6f}")
+
+    grid = np.array([(i, j) for i in range(12) for j in range(9)], dtype=float)
+    tg = dl.triangulate(grid)
+    check("格子(一直線に並ぶ点を含む)でも面積が合う",
+          abs(dl.signed_areas(grid, tg).sum() - 88.0) < 1e-9 and len(tg) == 176)
+    check("同じ入力なら同じ結果(決定的)", np.array_equal(dl.triangulate(pts), tris))
+
+    outer = np.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=float)
+    hole = np.array([[1, 1], [3, 1], [3, 3], [1, 3]], dtype=float)
+    q = np.array([[0.5, 0.5], [2, 2], [3.5, 3.5], [5, 5], [2, 0.9]])
+    check("穴の内側は外、外周と穴のあいだは内(偶奇則)",
+          list(dl.point_in_rings(q, [outer, hole])) == [True, False, True, False, True])
+    check("輪郭までの距離", np.allclose(dl.distance_to_rings([[2, -1], [2, 2]], [outer]), [1.0, 2.0]))
+
+
+def test_curve_discretize():
+    """輪郭 → 三角形メッシュ(離散化)と、seam の区間の展開(bpy 非依存)"""
+    if not has_numpy():
+        skip("Curve の離散化", "numpy が無い")
+        return
+    import numpy as np
+    import curve_discretize as cd
+    import delaunay2d as dl
+
+    m = cd.discretize([_curve_rect(1.0, 0.7)], 0.02)
+    check("区間ごとの分割数 = round(長さ / 目標辺長)",
+          m["segment_counts"] == {1: 50, 2: 35, 3: 50, 4: 35}, str(m["segment_counts"]))
+    areas = dl.signed_areas(m["positions"], m["triangles"])
+    check("三角形の面積の総和 = 型紙の面積", abs(areas.sum() - 0.7) < 1e-9 and (areas > 0).all(),
+          f"{areas.sum():.6f}")
+    ring = m["rings"][0]
+    be = {tuple(e) for e in cd.boundary_edges(m["triangles"])}
+    ring_edges = set()
+    v = ring["vertices"]
+    for k in range(len(v)):
+        a, b = int(v[k]), int(v[(k + 1) % len(v)])
+        ring_edges.add((min(a, b), max(a, b)))
+    check("外周の辺 = 輪郭の辺(ちょうど 170 本)", be == ring_edges and len(be) == 170, str(len(be)))
+    corners = m["positions"][[int(v[0]), int(v[50]), int(v[85]), int(v[135])]]
+    check("制御点は必ず頂点になる",
+          np.allclose(corners, [[0, 0], [1, 0], [1, 0.7], [0, 0.7]]))
+    check("境界頂点は区間の uid と弧長比を持ち、内部は -1",
+          (m["seg_start"][m["boundary"]] > 0).all() and (m["seg_start"][~m["boundary"]] == -1).all()
+          and m["u"][m["boundary"]].min() == 0.0 and m["u"][m["boundary"]].max() < 1.0)
+    again = cd.discretize([_curve_rect(1.0, 0.7)], 0.02)
+    check("同じ輪郭なら同じメッシュ(決定的)",
+          np.array_equal(m["positions"], again["positions"]) and np.array_equal(m["triangles"], again["triangles"]))
+
+    # 穴のあるピース
+    outer = _curve_rect(1.0, 1.0)
+    hole = _curve_rect(0.4, 0.4, uids=(11, 12, 13, 14), piece_uid=2, hole_of=1, origin=(0.3, 0.3))
+    mh = cd.discretize([outer, hole], 0.05)
+    ah = dl.signed_areas(mh["positions"], mh["triangles"])
+    check("穴のあるピース: 面積 = 外周 - 穴", abs(ah.sum() - (1.0 - 0.16)) < 1e-9, f"{ah.sum():.5f}")
+    cen = mh["positions"][mh["triangles"]].mean(axis=1)
+    in_hole = (cen[:, 0] > 0.3) & (cen[:, 0] < 0.7) & (cen[:, 1] > 0.3) & (cen[:, 1] < 0.7)
+    check("穴の中に三角形が無い", not in_hole.any())
+    check("穴の輪郭も辺として残る", len(cd.boundary_edges(mh["triangles"])) ==
+          sum(mh["segment_counts"].values()))
+
+    # 2 ピース(頂点番号がつながる)
+    two = cd.discretize([_curve_rect(0.5, 0.5), _curve_rect(0.5, 0.5, uids=(21, 22, 23, 24),
+                                                           piece_uid=2, origin=(2.0, 0.0))], 0.05)
+    check("2 ピース: 頂点は通し番号でピースごとに分かれる",
+          set(np.unique(two["piece"])) == {1, 2} and two["triangles"].max() == len(two["positions"]) - 1)
+
+    try:
+        bad = _curve_rect(1.0, 0.7)
+        bad["co"][1] = bad["co"][0]
+        bad["hl"], bad["hr"] = bad["co"].copy(), bad["co"].copy()
+        cd.discretize([bad], 0.02)
+        rejected = False
+    except cd.DiscretizeError:
+        rejected = True
+    check("長さ 0 の区間は理由つきで失敗する", rejected)
+
+    # seam の区間の展開
+    def edges_of(*args):
+        return cd.expand_range(ring, *args)
+
+    whole = edges_of(1, 0.0, 2, 0.0)
+    check("区間 1 まるごとの seam = その区間の辺 50 本(頂点は始点から終点まで)",
+          len(whole) == 50 and whole[0][0] == int(v[0]) and whole[-1][1] == int(v[50]))
+    check("複数の区間をまたぐ seam", len(edges_of(1, 0.0, 3, 0.0)) == 85)
+    check("終点が始点より手前なら一周して回り込む", len(edges_of(4, 0.0, 2, 0.0)) == 85)
+    half = len(edges_of(1, 0.5, 2, 0.5))
+    check("区間の途中から途中まで(弧長比)", half in (42, 43), str(half))
+    check("始点 = 終点なら一周", len(edges_of(1, 0.0, 1, 0.0)) == 170)
+    check("隣り合う 2 本の seam は辺を共有しない",
+          not (set(edges_of(1, 0.0, 2, 0.0)) & set(edges_of(2, 0.0, 3, 0.0))))
+    check("知らない uid は空", edges_of(99, 0.0, 2, 0.0) == [])
+
+
+def test_curve_update():
+    """Shape Update: topology を保ったまま Curve に追従する(bpy 非依存)"""
+    if not has_numpy():
+        skip("Shape Update", "numpy が無い")
+        return
+    import numpy as np
+    import curve_discretize as cd
+    import curve_update as cu
+
+    m = cd.discretize([_curve_rect(1.0, 0.7)], 0.02)
+    gen = m["positions"]
+
+    same = cu.update(m, {1: _curve_rect(1.0, 0.7)}, 0.02)
+    check("Curve が変わらなければ座標も変わらない",
+          same["status"] == cu.SHAPE_UPDATE and np.abs(same["positions"] - gen).max() == 0.0)
+
+    # 幅 1.00m → 1.05m: 頂点数を変えずに追従する
+    wide = cu.update(m, {1: _curve_rect(1.05, 0.7)}, 0.02)
+    p = wide["positions"]
+    check("幅 1.00 → 1.05m は Shape Update(頂点数・接続は不変)",
+          wide["status"] == cu.SHAPE_UPDATE and len(p) == len(gen), str(wide["reasons"]))
+    check("新しい寸法に追従する", abs(p[:, 0].max() - 1.05) < 1e-9 and abs(p[:, 1].max() - 0.7) < 1e-9)
+    check("内部の頂点も伸びに追従する(一様な伸びからのずれが 1mm 未満)",
+          np.abs(p[:, 0] - gen[:, 0] * 1.05).max() < 1e-3, f"{np.abs(p[:, 0] - gen[:, 0] * 1.05).max():.2e}")
+    check("更新後の品質は許容内",
+          wide["quality"]["inverted"] == 0 and 1.0 <= wide["quality"]["edge_ratio_max"] < 1.1)
+    check("同じ入力なら同じ結果(決定的)",
+          np.array_equal(p, cu.update(m, {1: _curve_rect(1.05, 0.7)}, 0.02)["positions"]))
+
+    big = cu.update(m, {1: _curve_rect(3.0, 0.7)}, 0.02)
+    check("大きな変更は Rebuild Required(座標は返さない)",
+          big["status"] == cu.REBUILD_REQUIRED and big["positions"] is None and big["reasons"])
+    check("目標辺長の変更は Rebuild Required",
+          cu.update(m, {1: _curve_rect(1.0, 0.7)}, 0.03)["status"] == cu.REBUILD_REQUIRED)
+    check("構造の変化を受け取ったら Rebuild Required",
+          cu.update(m, {1: _curve_rect(1.0, 0.7)}, 0.02, ["点が増えた"])["reasons"] == ["点が増えた"])
+    changed = cu.update(m, {1: _curve_rect(1.0, 0.7, uids=(1, 2, 3, 9))}, 0.02)
+    check("生成時の区間が今の Curve に無ければ Rebuild Required",
+          changed["status"] == cu.REBUILD_REQUIRED, str(changed["reasons"]))
+
+    # 向きが逆になった輪郭・始点が回った輪郭でも同じ形に追従する(uid で対応するので)
+    for label, order in (("向きが逆", [0, 3, 2, 1]), ("始点が回った", [2, 3, 0, 1])):
+        o = _curve_rect(1.0, 0.7)
+        o["uids"] = [o["uids"][k] for k in order]
+        o["co"] = o["co"][order]
+        o["hl"], o["hr"] = o["co"].copy(), o["co"].copy()
+        r = cu.update(m, {1: o}, 0.02)
+        check(f"輪郭の{label}でも、変わらなければ座標は同じ",
+              r["status"] == cu.SHAPE_UPDATE and np.abs(r["positions"] - gen).max() < 1e-12)
+
+    # 曲線(ハンドルつき)の輪郭でも動く。上辺を膨らませて、その後さらに膨らませる
+    def bulged(amount):
+        o = _curve_rect(1.0, 0.7)
+        # 上辺(点 2 → 点 3)のハンドルを持ち上げる
+        o["hr"][2] = o["co"][2] + [-0.3, amount]
+        o["hl"][3] = o["co"][3] + [0.3, amount]
+        return o
+
+    mc = cd.discretize([bulged(0.1)], 0.02)
+    up = cu.update(mc, {1: bulged(0.14)}, 0.02)
+    check("曲線の輪郭でも Shape Update できる",
+          up["status"] == cu.SHAPE_UPDATE and up["quality"]["inverted"] == 0, str(up["reasons"]))
+    inside = up["positions"][~mc["boundary"]]
+    check("内部の頂点は輪郭の内側に留まる",
+          inside[:, 0].min() > 0 and inside[:, 0].max() < 1.0 and inside[:, 1].min() > 0)
+
+    # 分割数が変わるほどの伸びでも、Shape Update の間は頂点数が同じ(Rebuild は別の判断)
+    step = cu.update(m, {1: _curve_rect(1.09, 0.7)}, 0.02)
+    check("分割数が変わるほどの伸びでも Shape Update の間は頂点数が同じ",
+          step["status"] == cu.SHAPE_UPDATE and len(step["positions"]) == len(gen))
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1242,6 +1541,11 @@ def main():
     test_pattern_mismatch()
     test_cache_io()
     test_transform()
+    test_curve_ids()
+    test_curve_eval()
+    test_delaunay2d()
+    test_curve_discretize()
+    test_curve_update()
     test_step_call_matches_signature()
     test_panel_properties_exist()
     compile_addon_modules()
