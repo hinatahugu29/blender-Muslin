@@ -18,6 +18,31 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 自動化できないのは、**画面に出るものと操作の感触**だけです。
 
+### Curve Pattern(2026-10)で増えた確認項目
+
+Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
+[docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 87 項目)が確認している。
+下は**画面と操作の感触**を見る項目で、まだ誰も GUI で触っていない。
+
+- [ ] **一連の流れ**: 3D ビューで Bezier の円か、閉じた Bezier の輪郭を作る(2D、XY 平面) →
+      N パネル Muslin の **Curve Pattern** で `Initialize Curve Pattern` → `Rebuild Cloth from Curve`
+      (ダイアログで辺の長さを確認)→ 布が脇にできるか。布は XZ 平面に立ち、手前を向くか
+- [ ] **点を動かす**: Curve の編集モードで点やハンドルを動かし、オブジェクトモードに戻ると、
+      再生中(Start Simulation)の布の寸法が追従するか。Dress / Adjust の最中も同じか
+- [ ] **Rebuild Required**: 編集モードで点を細分化・削除・押し出しすると、パネルに赤い
+      `Rebuild Required` と理由が出るか。走行中は Rebuild ボタンが灰色になり、
+      ホバーで理由が出るか。停止すれば押せて、押すと理由が消えるか
+- [ ] **縫い目**: Curve の編集モードで 2 か所の点の連なりを選び(Shift+クリックで 2 点ずつ)、
+      `Add Seam from Selection` → 布の縫い目として動くか。区間の途中に点を足しても縫い目が
+      同じ範囲のままか(Rebuild 後)
+- [ ] **Undo / Redo**: Curve の編集(細分化など)を Ctrl+Z / Ctrl+Shift+Z したとき、
+      点の目印が壊れて `Rebuild Required` が出続けないか(スパイクでは未観測)
+- [ ] **ペンツール**: Draw / Pen で点を足したとき、足した点が新しい点として扱われるか
+- [ ] **保存して開き直す**: Curve と布のつながり(パネルの表示)が残るか
+- [ ] **見え方**: 布の面が向きを間違えて暗くなっていないか(法線は手前を向くはずだが、
+      ヘッドレスでは色を見られない)
+
 ### UI 改修(2026-09-15)で増えた確認項目
 
 ヘッドレスでは仕組みまでしか見られず、見え方は確認できていません。

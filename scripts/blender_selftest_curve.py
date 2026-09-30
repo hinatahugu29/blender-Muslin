@@ -123,6 +123,7 @@ def draw_panel(context):
 
 def main():
     import muslin
+    from muslin import rest_shape
     from muslin import curve_ids, curve_pattern as cp, curve_discretize, curve_update, mesh_io, sim_state
 
     muslin.register()
@@ -403,7 +404,97 @@ def main():
     check("開き直しても構造は同じ", cp.structure_problems(q) == [])
     check("開き直しても派生データを組み直せる", len(cp.reconstruct(cp.cloth_of(q))["positions"]) > 0)
 
+    section("Curve Pattern の布を着せる(Dress)")
+    import math
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_set(1)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.0, 0.0))
+    body = bpy.context.active_object
+    body.name = "Body"
+    dc = make_curve("Shirt", 0.5, 0.6)
+    cp.initialize(dc, 0.03)
+    dc_cloth, _ = cp.rebuild(bpy.context, dc)
+    cp.add_seam(dc, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="Side")
+    cp.apply_seams(dc)
+    dc_cloth.location = (0.0, 0.0, 0.0)
+    dc_cloth.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    top = max(v.co.z for v in dc_cloth.data.vertices)
+    group = dc_cloth.vertex_groups.new(name="Pin")
+    group.add([v.index for v in dc_cloth.data.vertices
+               if v.co.z > top - 1e-5 and abs(v.co.x - 0.25) < 0.1], 1.0, "REPLACE")
+    width = 0.5
+    radius = width / (1.5 * math.pi)
+    for v in dc_cloth.data.vertices:
+        theta = (v.co.x - 0.25) / radius
+        v.co.x, v.co.y = radius * math.sin(theta), -radius * math.cos(theta)
+    dc_cloth.data.update()
+    props = dc_cloth.muslin
+    props.pin_vertex_group = "Pin"
+    props.collider_object = body
+    props.collision_enabled = True
+    props.self_collision_enabled = False
+    props.seam_close_frames = 20
+    for o in bpy.context.scene.objects:
+        o.select_set(o is dc_cloth)
+    bpy.context.view_layer.objects.active = dc_cloth
+
+    def seam_gap(o):
+        pos = mesh_io.get_world_positions(o)
+        gaps = [math.dist(pos[a * 3:a * 3 + 3], pos[b * 3:b * 3 + 3])
+                for a, b in mesh_io.build_seam_pairs(o)]
+        return max(gaps) if gaps else float("inf")
+
+    open_gap = seam_gap(dc_cloth)
+    check("曲げて置いた布は縫い目が開いている", open_gap > 0.05, f"{open_gap * 100:.1f}cm")
+    check("曲げても型紙は平らなまま(Curve から作った型紙が固定されている)",
+          rest_shape.is_pattern_locked(dc_cloth) and
+          np.ptp(rest_shape.load_pattern(dc_cloth).reshape(-1, 3)[:, 1]) < 1e-6)
+    res = bpy.ops.muslin.dress()
+    check("Dress が通る", res == {'FINISHED'}, str(res))
+    check("着せた段階になる", rest_shape.is_dressed(dc_cloth))
+    closed = seam_gap(dc_cloth)
+    check("縫い目が閉じる(Curve の縫い目)", closed < 0.002, f"{closed * 1000:.2f}mm")
+    verts = np.array([tuple(v.co) for v in dc_cloth.data.vertices])
+    check("計算結果は有限", np.isfinite(verts).all())
+
+    # 着せた後でも、型紙(Curve)を変えれば走っている布の寸法が変わる
+    sim_state.start_simulation(dc_cloth, dc_cloth.muslin)
+    st = sim_state.get_state(dc_cloth)
+    ref = np.array(st["reference"]).reshape(-1, 3)
+    w0 = float(np.ptp(ref[:, 0]))
+    pose_before = list(st["sim"].get_positions())
+    pts = dc.data.splines[0].bezier_points
+    for i in (1, 2):
+        pts[i].co.x = 0.55
+        pts[i].handle_left = pts[i].handle_right = pts[i].co
+    check("着せた後に Curve を広げると寸法の基準が変わる", sim_state.poll_pattern(st) is True)
+    ref = np.array(st["reference"]).reshape(-1, 3)
+    check("型紙の幅が 0.50 → 0.55m", abs(float(np.ptp(ref[:, 0])) - 0.55) < 1e-6 and abs(w0 - 0.5) < 1e-6,
+          f"{w0:.3f} → {float(np.ptp(ref[:, 0])):.3f}")
+    check("着せた姿勢(頂点)は保たれる(Shape Update は現在姿勢を維持する)",
+          _maxdiff(st["sim"].get_positions(), pose_before) == 0.0)
+    sim_state.stop_simulation(dc_cloth)
+
+
+    section("Curve Pattern の布に UV を作る(Pattern to UV)")
+    bpy.context.view_layer.objects.active = dc_cloth
+    for o in bpy.context.scene.objects:
+        o.select_set(o is dc_cloth)
+    res = bpy.ops.muslin.pattern_to_uv()
+    check("Pattern to UV が通る", res == {'FINISHED'}, str(res))
+    uv = dc_cloth.data.uv_layers.active
+    uvs = np.array([tuple(d.uv) for d in uv.data]) if uv is not None else np.zeros((0, 2))
+    check("UV は 0〜1 に収まり、面ごとに揃っている",
+          len(uvs) == len(dc_cloth.data.loops) and uvs.min() >= -1e-6 and uvs.max() <= 1 + 1e-6)
+
     muslin.unregister()
+
+
+def _maxdiff(a, b):
+    return float(np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)).max())
 
 
 def _raises(fn):

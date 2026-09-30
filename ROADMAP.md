@@ -1397,3 +1397,21 @@ Jacobi 的に補正を溜めてから適用するかの検討が要る。ペア�
   制約求解の合計が 84% を占める。M4 の的は「自己衝突」ではなく「制約求解」。
 - 優先順位: M1→M2完了で最低限「製品として意味を持つ」状態。M3(縫製)がパターンを縫い合わせるワークフローの核心。M4(GPU化)は機能完成後の性能最適化フェーズ。
 - 各マイルストーンの見積もりはM0: 1〜2週間 / M1: 3〜4週間 / M2: 4〜6週間 / M3: 4〜6週間 / M4: 6〜8週間 / M5: 3〜4週間 / M6: 3〜4週間(目安、要調整)。
+
+---
+
+## M10: Curve Pattern(型紙を Curve で持つ)
+
+設計は [docs/design/curve_pattern.md](docs/design/curve_pattern.md)、Blender の Curve の同一性の
+実測は [docs/design/curve_spike_results.md](docs/design/curve_spike_results.md)。
+Mesh Pattern(M8)は残し、Curve Pattern を**追加の系統**にする。既存の XPBD・`set_reference` は置き換えない。
+
+- [x] 点の同一性(radius + 非線形の検算値)と、記録した構造との比較 — `curve_ids.py`
+- [x] Bezier の弧長評価、Delaunay、離散化(制御点は必ず頂点、内部は六角格子) — `curve_eval.py` / `delaunay2d.py` / `curve_discretize.py`
+- [x] Shape Update(境界は Curve を評価し直し、内部は変位の境界値問題)と Rebuild Required の判定 — `curve_update.py`
+- [x] Blender 側: 初期化・Rebuild・派生データの頂点属性・縫い目の辺属性への展開 — `curve_pattern.py`
+- [x] `pattern_link` に Curve の入力を足し、走行中・Dress・Adjust の布へ Shape Update を流す
+- [x] パネル(状態・Rebuild・縫い目)と、選択から縫い目を作る操作
+- [~] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)
+- [ ] ゴム紐の Curve 側への移行(縫い目と同じ形)
+- [ ] 将来: Rebuild 時の姿勢転送(旧メッシュの型紙空間を介して新頂点へ補間する)
