@@ -12,12 +12,22 @@ Marvelous Designer の「2D で型紙を直すと 3D の服が追従する」を
   指紋を比べ、変わっていればコアの `set_reference` を呼ぶ
 
 頂点数が布と違えば(型紙オブジェクトで頂点を足したなど)反映せず、理由を返す。
+
+型紙の元になるものは 2 種類ある(どちらも「布の型紙をローカル座標で返す」だけが仕事)。
+
+- 型紙オブジェクト(Mesh Pattern): 頂点が布と 1 対 1 のメッシュ。上の説明のとおり
+- Curve Pattern: Curve が一次データで、布のメッシュはそこから生成した派生データ。
+  Curve の形が変わったら、生成時の頂点数・接続のまま座標だけを追従させる(Shape Update)。
+  点の増減など構造が変わったときは追従せず、理由(Rebuild Required)を返す。
+  布と Curve が結ばれていれば Curve が優先される
 """
 
 import bmesh
 import bpy
 import numpy as np
 
+from . import curve_pattern
+from . import curve_update
 from . import rest_shape
 
 # 型紙オブジェクトに付ける印(どの布の型紙か。表示用)
@@ -44,11 +54,75 @@ def _local_coords(pattern_obj):
     return out.astype(np.float64)
 
 
+# Curve Pattern の Shape Update の結果を、入力が変わるまで使い回す。
+# 再生のフレームごとに呼ばれるので、変わっていなければ緩和を解き直さない。
+# キーは布オブジェクトの名前、値は (入力の指紋, (座標 or None, 理由 or None))
+_curve_cache = {}
+_mesh_data_cache = {}
+
+
+def linked_curve(obj):
+    """布 obj が Curve Pattern から生成されたものなら、その Curve オブジェクト。無ければ None。"""
+    return curve_pattern.curve_of(obj)
+
+
+def _curve_fingerprint(obj, curve):
+    """Curve と布の生成記録の指紋(変わったときだけ Shape Update を解き直す)。"""
+    parts = [obj.data.get(curve_pattern.GEN_KEY, ""), curve.data.get(curve_pattern.RECORD_KEY, "")]
+    for s in curve_pattern.read_splines(curve):
+        for key in ("co", "hl", "hr", "radius", "weight"):
+            parts.append(np.round(np.asarray(s[key], dtype=np.float64), 9).tobytes())
+        parts.append(s["cyclic"])
+    return hash(tuple(parts))
+
+
+def _read_curve(obj, curve):
+    """Curve から布の型紙(ローカル座標の平坦な配列)を作る。戻り値は `read` と同じ。"""
+    record = curve_pattern.load_record(curve)
+    if record is None:
+        return None, f"Curve '{curve.name}' は Curve Pattern として初期化されていません"
+    fingerprint = _curve_fingerprint(obj, curve)
+    cached = _curve_cache.get(obj.name)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    result = _solve_curve(obj, curve, record)
+    _curve_cache[obj.name] = (fingerprint, result)
+    return result
+
+
+def _solve_curve(obj, curve, record):
+    problems = curve_pattern.structure_problems(curve, record)
+    if problems:
+        return None, "Rebuild Required: " + " / ".join(problems[:3])
+    gen_key = obj.data.get(curve_pattern.GEN_KEY, "")
+    try:
+        cached = _mesh_data_cache.get(obj.name)
+        if cached is None or cached[0] != gen_key:
+            cached = (gen_key, curve_pattern.reconstruct(obj))
+            _mesh_data_cache[obj.name] = cached
+        mesh_data = cached[1]
+    except curve_pattern.CurvePatternError as exc:
+        return None, f"Rebuild Required: {exc}"
+    result = curve_update.update(mesh_data, curve_pattern.current_outlines(curve, record),
+                                 record["target_edge_length"])
+    if result["status"] != curve_update.SHAPE_UPDATE:
+        return None, "Rebuild Required: " + " / ".join(result["reasons"][:3])
+    xy = result["positions"]
+    local = np.zeros((len(xy), 3))
+    local[:, 0] = xy[:, 0]
+    local[:, 2] = xy[:, 1]
+    return local.ravel(), None
+
+
 def read(obj):
     """布 obj の型紙を、布のローカル座標の平坦な配列で返す。
 
-    戻り値: (座標 or None, 理由 or None)。型紙オブジェクトが無ければ (None, None)。
+    戻り値: (座標 or None, 理由 or None)。型紙の元(型紙オブジェクトも Curve も)が無ければ (None, None)。
     """
+    curve = linked_curve(obj)
+    if curve is not None:
+        return _read_curve(obj, curve)
     pattern_obj = linked_object(obj)
     if pattern_obj is None:
         return None, None

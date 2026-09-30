@@ -247,6 +247,53 @@ def main():
     cloth_r2, _ = cp.rebuild(bpy.context, c)
     check("停止すれば Rebuild できる", cloth_r2 == cloth_r)
 
+    section("走っている布へ Shape Update を流す(pattern_link)")
+    from muslin import pattern_link
+    c = make_curve("S")
+    cp.initialize(c, 0.05)
+    cloth_s, _ = cp.rebuild(bpy.context, c)
+    check("布は Curve に結び付いている", pattern_link.linked_curve(cloth_s) == c)
+    sim_state.start_simulation(cloth_s, cloth_s.muslin)
+    state = sim_state.get_state(cloth_s)
+    n_vertices = len(cloth_s.data.vertices)
+
+    def span(state):
+        ref = np.array(state["reference"]).reshape(-1, 3)
+        return float(np.ptp(ref[:, 0]))
+
+    check("開始時の寸法の基準は Curve のとおり(幅 1.00m)", abs(span(state) - 1.0) < 1e-6, f"{span(state):.4f}")
+    check("変わっていなければ反映しない", sim_state.poll_pattern(state) is False)
+    pts = c.data.splines[0].bezier_points
+    for i in (1, 2):
+        pts[i].co.x = 1.05
+        pts[i].handle_left = pts[i].handle_right = pts[i].co
+    check("Curve を動かすと走っている布へ流れる", sim_state.poll_pattern(state) is True)
+    check("寸法の基準が新しい幅(1.05m)になる", abs(span(state) - 1.05) < 1e-6, f"{span(state):.4f}")
+    check("頂点数は変わらない", len(state["reference"]) == n_vertices * 3)
+    check("警告は出ない", state["pattern_warnings"] == [])
+    check("同じ状態を続けて呼んでも再反映しない", sim_state.poll_pattern(state) is False)
+
+    edit_op(c, {0, 1, 2, 3}, lambda: bpy.ops.curve.subdivide(number_cuts=1))
+    check("点を足すと反映せず Rebuild Required を返す", sim_state.poll_pattern(state) is False)
+    check("理由が保持される(パネルに出る)",
+          any("Rebuild Required" in w for w in state["pattern_warnings"]), str(state["pattern_warnings"]))
+    check("寸法の基準は最後に成功した値のまま", abs(span(state) - 1.05) < 1e-6)
+    check("その間の指紋は理由の文字列", isinstance(pattern_link.signature(cloth_s), str))
+    try:
+        cp.rebuild(bpy.context, c)
+        refused = False
+    except cp.CurvePatternError:
+        refused = True
+    check("走行中は Rebuild Required でも Rebuild しない", refused)
+    sim_state.stop_simulation(cloth_s)
+    cloth_s2, _ = cp.rebuild(bpy.context, c)
+    check("停止して Rebuild すると Rebuild Required が消える", pattern_link.read(cloth_s2)[1] is None
+          and cp.structure_problems(c) == [])
+    sim_state.start_simulation(cloth_s2, cloth_s2.muslin)
+    state2 = sim_state.get_state(cloth_s2)
+    check("Rebuild 後の布は新しい寸法(幅 1.05m)で始まる", abs(span(state2) - 1.05) < 1e-6, f"{span(state2):.4f}")
+    sim_state.stop_simulation(cloth_s2)
+
     section("保存して開き直す")
     import tempfile
     path = str(Path(tempfile.mkdtemp(prefix="muslin_curve_")) / "curve.blend")
