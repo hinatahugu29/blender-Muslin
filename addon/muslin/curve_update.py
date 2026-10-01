@@ -23,7 +23,7 @@ except ImportError:                     # scripts/verify_core.py が単体で読
     import delaunay2d
 
 # 更新後の辺長 / 生成時の辺長 がこの範囲を外れたら Rebuild Required
-EDGE_RATIO_RANGE = (0.6, 1.6)
+EDGE_RATIO_RANGE = (0.35, 2.5)
 # 最小角(度)。これを下回る三角形ができたら Rebuild Required
 MIN_ANGLE_DEGREES = 8.0
 
