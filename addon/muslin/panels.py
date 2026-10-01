@@ -378,6 +378,7 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
             row.label(text=f"型紙: Curve '{curve.name}'", icon='CURVE_DATA')
         if not info["initialized"]:
             layout.label(text="閉じた Bezier の輪郭を型紙にできます", icon='INFO')
+            layout.label(text="ピースは XY 平面に重ならないよう並べる")
             layout.operator("muslin.curve_pattern_init", icon='CURVE_BEZCIRCLE')
             return
 

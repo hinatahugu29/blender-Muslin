@@ -136,6 +136,10 @@ def _polygon_area(poly):
     return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
 
 
+_NESTED_MESSAGE = ("輪郭が XY 平面で 3 重以上に重なっています(Z 方向に重ねたピースも重なりと見なされます)。"
+                   "型紙のピースは XY 平面に重ならないよう並べてください(穴は 1 段だけ作れます)")
+
+
 def _classify_holes(splines):
     """閉じた spline ごとに、外周か穴か(穴なら外側の spline の index)を決める。
 
@@ -151,11 +155,11 @@ def _classify_holes(splines):
         containing = [j for j, other in polys.items()
                       if j != i and delaunay2d.point_in_rings(poly[:1], [other])[0]]
         if len(containing) > 1:
-            raise CurvePatternError("穴の中に島がある入れ子の輪郭には対応していません")
+            raise CurvePatternError(_NESTED_MESSAGE)
         parent[i] = containing[0] if containing else None
     for i, p in parent.items():
         if p is not None and parent.get(p) is not None:
-            raise CurvePatternError("穴の中に島がある入れ子の輪郭には対応していません")
+            raise CurvePatternError(_NESTED_MESSAGE)
     return parent
 
 
