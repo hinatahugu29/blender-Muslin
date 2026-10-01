@@ -5,15 +5,15 @@ Blender 用のクロスシミュレーションアドオン。Marvelous Designer
 完結させることを目指している。物理コアは Rust (XPBD) で書き、PyO3 経由で
 Blender の Python から呼ぶ。
 
-この文書は **2026-09-25 時点のまとめと今後の展望**である。
+この文書は **2026-10-01 時点のまとめと今後の展望**である。
 使い方・パラメータの実測値は [README.md](README.md)、進捗と退けた案は
 [ROADMAP.md](ROADMAP.md)、検証項目は [CHECKPOINTS.md](CHECKPOINTS.md)、
 先行事例の調査は [docs/references/taremin_cloth.md](docs/references/taremin_cloth.md) にある。
 
 - アドオン v0.5.0 / `cloth_core` v0.3.0
-- 動作確認: Blender 5.2.1 LTS / Windows（物理コアは Linux・macOS も CI で検証）
+- 動作確認: Blender 5.2.2 LTS / Windows（物理コアは Linux・macOS も CI で検証）
 - ライセンス: GPL-3.0-or-later（`bpy` と結びつくため GPL 互換が必須）
-- 到達点: M0〜M3・M6 完了、M5 は大部分、**M7（型紙から着せて動かす）・M8（型紙と連動する編集）・M9（CPU 並列化）達成**。M4（GPU 化）未着手
+- 到達点: M0〜M3・M6 完了、M5 は大部分、**M7（型紙から着せて動かす）・M8（型紙と連動する編集）・M9（CPU 並列化）達成**。M4（GPU 化）未着手。**Curve Pattern（Curve を型紙の一次データにする）を試験的に追加**
 
 ---
 
@@ -52,6 +52,7 @@ Blender の Python から呼ぶ。
 | ゴム紐 | `Add Elastic From Selection`。辺属性 `muslin_elastic`、目標長を「型紙の長さ × 倍率」に。走らせたまま倍率変更可 |
 | 重ね着 | 同じ `Group` 名の布を**1 つのシミュレーションにまとめて解く**。布どうしが双方向に押し合う。`Layer` で内側を優先 |
 | 型紙連動 | `Create Pattern Object` で型紙を別オブジェクトに。**編集すると走っている布の寸法がその場で追従**（再生中 / Dress / Adjust） |
+| Curve Pattern（試験的） | 閉じた Bezier の Curve を型紙の一次データにし、そこから布のメッシュを生成する（`Initialize Curve Pattern` / `Rebuild Cloth from Curve`）。Curve の点を動かすと走っている布の寸法が追従（Shape Update、再生中 / Dress / Adjust）。点の増減など構造が変わると `Rebuild Required` を出し、停止中に Rebuild する。縫い目は Curve 上の区間で持つので、作り直しても意味が保たれる。ピースは XY 平面に並べる（別ピースの辺どうしも縫える）。設計は [docs/design/curve_pattern.md](docs/design/curve_pattern.md) |
 | 出力 | `Pattern to UV`（型紙の実寸比を保つ UV）、ディスクへのベイク、シェイプキー変換 |
 | 並列化 | 4,000 頂点以上で制約・衝突を並列求解。**並列でも逐次でも結果は 1 ビットも変わらない** |
 
@@ -121,6 +122,9 @@ addon/muslin/
   grab.py         布をつまむ操作
   pattern_link.py 型紙オブジェクトと布の連動（編集のポーリング）
   pattern_uv.py   型紙から UV（bpy 非依存）
+  curve_pattern.py   Curve Pattern の Blender 側（初期化・Rebuild・縫い目・パネルのオペレータ）
+  curve_ids.py curve_eval.py curve_discretize.py curve_update.py delaunay2d.py
+                  Curve Pattern の bpy 非依存の層（点の目印・Bezier 評価・輪郭の離散化・Shape Update・Delaunay）
   properties.py panels.py previews.py overlay.py ui_poll.py
   mesh_io.py transform.py cache_io.py seams.py rest_shape.py
 ```
@@ -193,6 +197,10 @@ M9 では約 3 万頂点・球に被せた場面・Normal 相当でも測って�
 - 別オブジェクトのパターン同士は縫えない（統合してから縫い目を定義する。
   ただし統合後にピースを足す・細分化するのは可）
 - 縫い目が閉じる速さが組み立て時の配置距離に依存する（離して置いたピースほど速く閉じる）
+- Curve Pattern は**試験的**。型紙は XY 平面の 2D として扱い Z を見ないので、ピースは重ならないよう
+  並べる（Z 方向に重ねると穴や入れ子と解釈され、3 重以上はエラー）。穴は 1 段まで
+- Curve Pattern の Shape Update は、辺の長さが生成時の 0.35〜2.5 倍の範囲で追従する
+  （範囲外は `Rebuild Required`）。点の追加・削除・複製も Rebuild が要る。走行中は Rebuild できない
 - ベースメッシュの頂点を直接書き換えるため、モディファイアスタックとの相性に制約がある
 - アニメーション開始時にアバターの初期ポーズと着せた時のポーズがずれていても警告が出ない
 - 実機（Blender に入れての）確認は Windows のみ
@@ -210,6 +218,13 @@ M9 では約 3 万頂点・球に被せた場面・Normal 相当でも測って�
 - 型紙オブジェクトのピースが布と同じ配置なので前身頃と後ろ身頃が重なって見える。
   Marvelous Designer のように横に並べるか
 - 型紙オブジェクトの線の太さ・色、編集中の追従の見え方
+
+### Curve Pattern の宿題
+
+- GUI 確認が残っている項目（[CHECKPOINTS.md](CHECKPOINTS.md)）: Rebuild Required の表示、Undo / Redo で点の目印が壊れないか、ペンツールで足した点、保存して開き直したときの結び付き、面の向き
+- Dress / Adjust の最中に Shape Update が拒否されても、理由がパネルにもヘッダにも出ない
+- 複数ピースと `sim_group` の対応、`Pattern to UV` の Curve 対応、体に着せるときのピースの配置（今は手作業）
+- Z 方向に重ねた同じ大きさの 2 枚が、エラーにならず穴あきの 1 枚になる
 
 ### 品質面の宿題
 
