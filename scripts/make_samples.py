@@ -485,12 +485,12 @@ def sample_curve_pattern():
     from muslin import curve_pattern
 
     scene = fresh_scene(frame_end=120)
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(0.0, 0.0, 0.0))
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=1.2, location=(0.0, 0.0, 0.0))
     body = bpy.context.active_object
     body.name = "Body"
 
     # 型紙の Curve: 閉じた Bezier。下辺をゆるく丸くする(点は左下・右下・右上・左上)
-    width, height = 0.5, 0.6
+    width, height = 0.65, 0.6
     cu = bpy.data.curves.new("Shirt_Pattern", 'CURVE')
     cu.dimensions = '2D'
     spline = cu.splines.new('BEZIER')
@@ -511,11 +511,12 @@ def sample_curve_pattern():
     curve_pattern.initialize(curve, 0.03)
     cloth, _warnings = curve_pattern.rebuild(bpy.context, curve)
     cloth.name = "Shirt"
+    mark_as_cloth(cloth)
     curve_pattern.add_seam(curve, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="Side")
     curve_pattern.apply_seams(curve)
 
     # 胴のまわりに 3/4 周で曲げて置き、前の上端の中央を留める
-    cloth.location = (0.0, 0.0, 0.0)
+    cloth.location = (0.0, 0.0, -0.2)  # 上端が胴の上面(z=0.6)に重ならないように下げる
     cloth.rotation_euler = (0.0, 0.0, 0.0)
     bpy.context.view_layer.update()
     top = max(v.co.z for v in cloth.data.vertices)

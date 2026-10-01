@@ -1501,6 +1501,7 @@ def main():
     samples = sorted((REPO_ROOT / "samples").glob("*.blend"))
     if not samples:
         check("サンプルがある", False, "samples/ が空。make_samples.py を実行してください")
+    from muslin import rest_shape
     for path in samples:
         try:
             bpy.ops.wm.open_mainfile(filepath=str(path))
@@ -1524,6 +1525,7 @@ def main():
 
         bpy.context.view_layer.objects.active = cloth
         rest = positions_of(cloth)
+        was_dressed = rest_shape.is_dressed(cloth)
         res = bpy.ops.muslin.start_sim()
         if res != {'FINISHED'}:
             check(f"{path.name}: 開始できる", False, str(res))
@@ -1538,7 +1540,10 @@ def main():
         state = sim_state.get_state(cloth)
         check(
             f"{path.name}: 開いて再生すると動く",
-            moved > 0.005 and state["sim"].is_finite(),
+            # 着せて落ち着いたサンプルは、再生しても動かないのが正しい
+            # (その場合は崩れて飛ばないことを見る)
+            (moved < 0.5 if was_dressed else moved > 0.005)
+            and state["sim"].is_finite(),
             f"{cloth.name} {info['vertices']}頂点 / {moved:.4f} m 移動"
             f" / 縫い目 {info['seams']}",
         )
