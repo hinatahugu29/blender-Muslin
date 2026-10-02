@@ -149,14 +149,19 @@ def locate(points, old_xy, old_tris, point_piece=None, old_piece=None):
     return tri_index, bary, outside
 
 
-def transfer(old_xy, old_tris, old_pose, new_xy, old_piece=None, new_piece=None):
+def transfer(old_xy, old_tris, old_pose, new_xy, old_piece=None, new_piece=None, values=None):
     """旧メッシュの姿勢(3D の頂点位置)を、新しい頂点へ写す。
 
     old_xy / new_xy: 型紙空間の座標 / old_pose: 旧頂点の 3D 位置 (N, 3)
-    戻り値: (新頂点の 3D 位置 (M, 3), 旧メッシュの外側だった新頂点の数)
+    values: 旧頂点ごとの値 (N, k)(頂点グループの重みなど)。姿勢と同じ重心座標で補間する
+    戻り値: (新頂点の 3D 位置 (M, 3), 旧メッシュの外側だった新頂点の数)。
+    values を渡したときは、3 つ目に補間した値 (M, k) を足して返す。
     """
     tris = np.asarray(old_tris, dtype=np.int64)
     pose = np.asarray(old_pose, dtype=np.float64)
     index, bary, outside = locate(new_xy, old_xy, tris, new_piece, old_piece)
-    corners = pose[tris[index]]                     # (M, 3, 3)
-    return (bary[:, :, None] * corners).sum(axis=1), outside
+    moved = (bary[:, :, None] * pose[tris[index]]).sum(axis=1)
+    if values is None:
+        return moved, outside
+    vals = np.asarray(values, dtype=np.float64)
+    return moved, outside, (bary[:, :, None] * vals[tris[index]]).sum(axis=1)

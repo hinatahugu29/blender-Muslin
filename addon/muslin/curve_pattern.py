@@ -23,6 +23,7 @@ import numpy as np
 
 from . import curve_discretize
 from . import curve_ids
+from . import curve_transfer
 from . import curve_update
 from . import rest_shape
 from . import seams
@@ -569,9 +570,48 @@ def _cloth_placement(curve_obj, data):
     return curve_obj.matrix_world.translation.copy(), max(width, 0.1) * 1.5
 
 
-def rebuild(context, curve_obj, target_length=None):
-    """Curve から布のメッシュを(作り直して)生成する。着せた姿勢は失われる。
+# 旧メッシュの外側だった新頂点がこの割合を超えたら、姿勢が歪むので警告する
+OUTSIDE_WARN_RATIO = 0.02
+# 頂点グループの重みを補間したあと、この重み以上の頂点だけを新しいグループに入れる
+PIN_WEIGHT_KEEP = 0.5
 
+
+def _prepare_carry(cloth, curve_obj, record):
+    """Rebuild で引き継ぐ姿勢を、旧メッシュを捨てる前に集める。引き継ぐ姿勢が無ければ None。
+
+    姿勢が型紙(平ら)のままなら引き継ぐ意味がない(新しい型紙のまま作ればよい)。
+    旧メッシュが編集されている(生成時と食い違う)ときは引き継げない。
+    頂点グループ(ピン留め)の重みも一緒に集め、姿勢と同じ補間で新しい頂点へ写す。
+    戻り値: (dict(old, pose, old_xy, approximate, dressed, group_names, group_weights) または None, 理由 または None)
+    """
+    try:
+        old = reconstruct(cloth)
+    except CurvePatternError as exc:
+        return None, f"姿勢は引き継げませんでした({exc})"
+    n = len(cloth.data.vertices)
+    pose = np.empty(n * 3, dtype=np.float32)
+    cloth.data.vertices.foreach_get("co", pose)
+    pose = pose.reshape(-1, 3).astype(np.float64)
+    if np.abs(pose - _to_local(old["positions"])).max() < 1e-6:
+        return None, None                      # 平らなまま
+    now = curve_transfer.old_pattern_now(old, current_outlines(curve_obj, record))
+    names = [g.name for g in cloth.vertex_groups]
+    weights = np.zeros((n, len(names)))
+    for v in cloth.data.vertices:
+        for g in v.groups:
+            weights[v.index, g.group] = g.weight
+    return {
+        "old": old, "pose": pose, "group_names": names, "group_weights": weights,
+        "old_xy": old["positions"] if now is None else now,
+        "approximate": now is None,
+        "dressed": rest_shape.is_dressed(cloth),
+    }, None
+
+
+def rebuild(context, curve_obj, target_length=None, keep_pose=True):
+    """Curve から布のメッシュを(作り直して)生成する。
+
+    keep_pose なら、旧メッシュの姿勢(着せた形)を型紙空間を介して新しい頂点へ引き継ぐ。
     走っているシミュレーションがあれば拒否する(構造を作り直すと状態を意味的に保てない)。
     戻り値: (布オブジェクト, 警告の一覧)
     """
@@ -586,7 +626,15 @@ def rebuild(context, curve_obj, target_length=None):
     if cloth is not None and sim_state.is_running(cloth):
         raise CurvePatternError("シミュレーション中は Rebuild できません。停止してから実行してください")
 
-    warnings = _adopt(curve_obj, record)
+    warnings = []
+    carry = None
+    if cloth is not None and keep_pose and generation_record(cloth) is not None:
+        # 点の uid を振り直す前(足された点がまだ未知のうち)に、旧メッシュの位置を今の Curve に置き直す
+        carry, why = _prepare_carry(cloth, curve_obj, record)
+        if why:
+            warnings.append(why)
+
+    warnings += _adopt(curve_obj, record)
     if target_length is not None:
         record["target_edge_length"] = float(target_length)
     outlines = _outlines_for_generation(curve_obj, record)
@@ -600,6 +648,7 @@ def rebuild(context, curve_obj, target_length=None):
     record["gen_id"] += 1
     name = f"{curve_obj.name}_Cloth"
     mesh = _build_mesh(name, data, record)
+    flat = _to_local(data["positions"]).astype(np.float32).ravel()
 
     if cloth is None:
         cloth = bpy.data.objects.new(name, mesh)
@@ -616,7 +665,7 @@ def rebuild(context, curve_obj, target_length=None):
         if old.users == 0:
             bpy.data.meshes.remove(old)
         cloth.vertex_groups.clear()
-        if had_pins:
+        if had_pins and carry is None:
             warnings.append("頂点グループ(ピン留め)は作り直しで失われました。付け直してください")
         if len(cloth.muslin_elastics):
             cloth.muslin_elastics.clear()
@@ -625,11 +674,34 @@ def rebuild(context, curve_obj, target_length=None):
     curve_obj[CLOTH_KEY] = cloth
     cloth[SOURCE_KEY] = curve_obj
 
-    # 型紙は Curve が決めるので確定扱いにする。姿勢は平らな型紙のまま
-    local = _to_local(data["positions"]).astype(np.float32).ravel()
-    rest_shape.store_pattern(cloth, local)
-    rest_shape.store(cloth, local)
-    rest_shape.clear_dressed(cloth)
+    # 型紙は Curve が決めるので確定扱いにする。姿勢は、引き継げれば旧メッシュの姿勢、
+    # 無ければ平らな型紙のまま
+    rest_shape.store_pattern(cloth, flat)
+    if carry is not None:
+        pose, outside, weights = curve_transfer.transfer(
+            carry["old_xy"], carry["old"]["triangles"], carry["pose"], data["positions"],
+            carry["old"]["piece"], data["piece"], values=carry["group_weights"])
+        pose32 = pose.astype(np.float32).ravel()
+        for k, group_name in enumerate(carry["group_names"]):
+            group = cloth.vertex_groups.new(name=group_name)
+            members = np.nonzero(weights[:, k] >= PIN_WEIGHT_KEEP)[0]
+            for vi in members:
+                group.add([int(vi)], float(min(weights[vi, k], 1.0)), 'REPLACE')
+        cloth.data.vertices.foreach_set("co", pose32)
+        cloth.data.update()
+        rest_shape.store(cloth, pose32)
+        if carry["dressed"]:
+            rest_shape.mark_dressed(cloth)
+        else:
+            rest_shape.clear_dressed(cloth)
+        if carry["approximate"]:
+            warnings.append("Curve の点の構成が大きく変わったため、姿勢の引き継ぎは近似です")
+        if outside > OUTSIDE_WARN_RATIO * len(pose):
+            warnings.append(f"頂点の {outside * 100 // len(pose)}% は旧メッシュの外側だったため、"
+                            "縁の姿勢で補っています(Curve を大きく広げたときに起きます)")
+    else:
+        rest_shape.store(cloth, flat)
+        rest_shape.clear_dressed(cloth)
     cloth[rest_shape.LOCKED_FLAG] = True
 
     mesh_data = reconstruct(cloth)
@@ -679,7 +751,7 @@ def _target_curve(context):
 
 
 class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
-    """Curve から布のメッシュを作り直す(着せた姿勢は失われる。停止中のみ)"""
+    """Curve から布のメッシュを作り直す(姿勢は引き継げる。停止中のみ)"""
 
     bl_idname = "muslin.curve_pattern_rebuild"
     bl_label = "Rebuild Cloth from Curve"
@@ -688,6 +760,11 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
     edge_length: bpy.props.FloatProperty(
         name="Target Edge Length", unit='LENGTH', min=0.001, default=0.02,
         description="メッシュの辺の目標の長さ。変えると頂点数が変わる",
+    )
+    keep_pose: bpy.props.BoolProperty(
+        name="Keep Pose", default=True,
+        description="着せた姿勢を新しい頂点へ引き継ぐ(型紙空間を介して補間する)。"
+                    "切ると平らな型紙から作り直す",
     )
 
     @classmethod
@@ -713,12 +790,13 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.prop(self, "edge_length")
-        self.layout.label(text="着せた姿勢・ピン留め・ゴム紐は失われます", icon='ERROR')
+        self.layout.prop(self, "keep_pose")
+        self.layout.label(text="ゴム紐は失われます(姿勢とピン留めは引き継げます)", icon='ERROR')
 
     def execute(self, context):
         curve = _target_curve(context)
         try:
-            cloth, warnings = rebuild(context, curve, self.edge_length)
+            cloth, warnings = rebuild(context, curve, self.edge_length, keep_pose=self.keep_pose)
         except CurvePatternError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

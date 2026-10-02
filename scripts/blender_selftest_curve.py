@@ -479,6 +479,55 @@ def main():
     sim_state.stop_simulation(dc_cloth)
 
 
+    section("Rebuild で着せた姿勢を引き継ぐ")
+    bpy.context.view_layer.objects.active = dc_cloth
+    old_count = len(dc_cloth.data.vertices)
+    old_xyz = np.array([tuple(v.co) for v in dc_cloth.data.vertices])
+    old_radial = np.hypot(old_xyz[:, 0], old_xyz[:, 1])
+    check("Rebuild 前は着せた姿勢(曲がっている)", np.ptp(old_xyz[:, 1]) > 0.05 and rest_shape.is_dressed(dc_cloth))
+    # 目標の辺を細かくして頂点数を変える。点も足す(区間の途中)
+    edit_op(dc, {1, 2}, lambda: bpy.ops.curve.subdivide(number_cuts=1))
+    check("Rebuild Required の状態(点が足された)", cp.structure_problems(dc) != [])
+    cloth_k, warns = cp.rebuild(bpy.context, dc, target_length=0.02)
+    check("同じ布のオブジェクトを使い回す", cloth_k == dc_cloth)
+    new_xyz = np.array([tuple(v.co) for v in cloth_k.data.vertices])
+    check("頂点数が変わる(0.03 → 0.02)", len(new_xyz) > old_count, f"{old_count} → {len(new_xyz)}")
+    check("姿勢は引き継がれる(曲がったまま)", np.ptp(new_xyz[:, 1]) > 0.05 and np.isfinite(new_xyz).all())
+    new_radial = np.hypot(new_xyz[:, 0], new_xyz[:, 1])
+    check("円柱からの距離の範囲が保たれる(旧 ± 3mm)",
+          new_radial.min() > old_radial.min() - 0.003 and new_radial.max() < old_radial.max() + 0.003,
+          f"{old_radial.min():.3f}〜{old_radial.max():.3f} → {new_radial.min():.3f}〜{new_radial.max():.3f}")
+    check("着せた段階のまま", rest_shape.is_dressed(cloth_k))
+    check("元の形(rest)も引き継いだ姿勢",
+          _maxdiff(rest_shape.load(cloth_k), new_xyz.ravel()) < 1e-5 and rest_shape.has_pattern(cloth_k))
+    check("型紙は平らな新しい型紙", np.ptp(rest_shape.load_pattern(cloth_k).reshape(-1, 3)[:, 1]) < 1e-6)
+    check("縫い目は(閉じたまま)壊れていない", seam_gap(cloth_k) < 0.005, f"{seam_gap(cloth_k) * 1000:.2f}mm")
+    check("近似の警告は出ない", not any("近似" in w for w in warns), str(warns))
+    check("ピン留め(頂点グループ)も引き継がれ、失われた警告は出ない",
+          "Pin" in cloth_k.vertex_groups and not any("ピン留め" in w for w in warns), str(warns))
+    pinned = [v.index for v in cloth_k.data.vertices if any(g.weight >= 0.5 for g in v.groups)]
+    top_z = max(v.co.z for v in cloth_k.data.vertices)
+    check("ピンは上端に残る(新しい頂点のうち、旧と同じ場所の頂点)",
+          len(pinned) > 0 and all(cloth_k.data.vertices[i].co.z > top_z - 0.02 for i in pinned),
+          f"{len(pinned)} 頂点")
+    sim_state.start_simulation(cloth_k, cloth_k.muslin)
+    st_k = sim_state.get_state(cloth_k)
+    start_pos = np.array(st_k["sim"].get_positions()).reshape(-1, 3)
+    for f in range(2, 8):
+        scene.frame_set(f)
+    end_pos = np.array(sim_state.get_state(cloth_k)["sim"].get_positions()).reshape(-1, 3)
+    # 型紙は 0.50 → 0.55m に広げてあるので、着せた姿勢より布に余りがあって少し落ち着き直す
+    check("引き継いだ姿勢から再生しても崩れない(6 フレームで最大移動 10cm 未満・有限)",
+          np.isfinite(end_pos).all() and np.abs(end_pos - start_pos).max() < 0.1,
+          f"{np.abs(end_pos - start_pos).max() * 1000:.2f}mm")
+    sim_state.stop_simulation(cloth_k)
+    scene.frame_set(1)
+
+    flat_cloth, _ = cp.rebuild(bpy.context, dc, keep_pose=False)
+    flat_xyz = np.array([tuple(v.co) for v in flat_cloth.data.vertices])
+    check("Keep Pose を切ると平らな型紙から作り直す", np.ptp(flat_xyz[:, 1]) < 1e-6
+          and not rest_shape.is_dressed(flat_cloth))
+
     section("Curve Pattern の布に UV を作る(Pattern to UV)")
     bpy.context.view_layer.objects.active = dc_cloth
     for o in bpy.context.scene.objects:

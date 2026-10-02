@@ -1584,6 +1584,14 @@ def test_curve_transfer():
                "hr": gone["co"][[0, 1, 3]]}}
     check("旧メッシュの点が消えていれば None", ct.old_pattern_now(old, cur) is None)
 
+    # 頂点グループの重みなどの値も、姿勢と同じ重心座標で補間される(線形な値は正確に写る)
+    lin = np.column_stack([old["positions"][:, 0] * 2.0 + 1.0, old["positions"][:, 1] - 0.5])
+    _m, _o, vals = ct.transfer(old["positions"], old["triangles"], pose, new["positions"],
+                               old["piece"], new["piece"], values=lin)
+    want = np.column_stack([new["positions"][:, 0] * 2.0 + 1.0, new["positions"][:, 1] - 0.5])
+    check("頂点ごとの値(ピン留めの重みなど)も同じ補間で写る",
+          vals.shape == (len(new["positions"]), 2) and np.abs(vals - want).max() < 1e-9)
+
     # 2 ピース: 別のピースの三角形には写さない
     two = cd.discretize([_curve_rect(0.5, 0.5), _curve_rect(0.5, 0.5, uids=(21, 22, 23, 24),
                                                            piece_uid=2, origin=(2.0, 0.0))], 0.05)
