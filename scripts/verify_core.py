@@ -1602,6 +1602,61 @@ def test_curve_transfer():
     check("ピースごとに写る(別ピースの姿勢が混ざらない)", np.abs(moved2 - pose2).max() < 1e-9)
 
 
+def test_curve_arrange():
+    """ピースを体の周りに巻き付ける幾何(bpy 非依存)"""
+    if not has_numpy():
+        skip("ピースの配置", "numpy が無い")
+        return
+    import numpy as np
+    import curve_arrange as ca
+
+    # 半径 0.1m の円柱(軸は原点、高さ 0〜1.2m)
+    ang = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    body = np.vstack([np.column_stack([0.1 * np.cos(ang), 0.1 * np.sin(ang), np.full(24, z)]) for z in (0.0, 0.6, 1.2)])
+    check("コライダーの半径(その高さの最大距離)", abs(ca.collider_radius(body, (0, 0), 0.2, 0.5) - 0.1) < 1e-9)
+    bulge = np.vstack([body, [[0.15, 0.0, 0.3]]])
+    check("張り出した所があればそこまで", abs(ca.collider_radius(bulge, (0, 0), 0.2, 0.5) - 0.15) < 1e-9
+          and abs(ca.collider_radius(bulge, (0, 0), 0.8, 1.0) - 0.1) < 1e-9)
+    check("ピース数から向きを決める", ca.auto_angles(1) == [0.0] and ca.auto_angles(2) == [0.0, 180.0]
+          and ca.auto_angles(4) == [0.0, 90.0, 180.0, 270.0])
+
+    xs = np.linspace(0.0, 0.3, 31)
+    xy = np.column_stack([np.repeat(xs, 3), np.tile([0.0, 0.25, 0.5], 31)])
+    piece = {"xy": xy, "z": xy[:, 1] + 0.2}
+    (front, back), warnings = ca.arrange_pieces([piece, piece], body, (0.0, 0.0), 0.02)
+    radial = np.hypot(front[:, 0], front[:, 1])
+    check("巻き付けた頂点は軸から一定の距離(体の半径 + 余裕)", np.allclose(radial, 0.12, atol=1e-9))
+    check("高さは型紙の高さのまま", np.allclose(front[:, 2], piece["z"]))
+    cx = front[np.argmin(np.abs(xy[:, 0] - 0.15))]
+    check("1 枚目はピースの中心が正面(-Y)に来る", cx[1] < -0.119 and abs(cx[0]) < 1e-9)
+    bx = back[np.argmin(np.abs(xy[:, 0] - 0.15))]
+    check("2 枚目は背面(+Y)に来る", bx[1] > 0.119 and abs(bx[0]) < 1e-9)
+    arc = np.linalg.norm(np.diff(front[::3][:, :2], axis=0), axis=1).sum()
+    check("幅(弧長)はほぼ保たれる", abs(arc - 0.3) < 2e-3, f"{arc:.4f}m")
+    right = front[np.argmax(xy[:, 0])]
+    check("型紙の右端は +X 側に来る", right[0] > 0.05)
+
+    wide = {"xy": np.column_stack([np.linspace(0, 1.0, 5), np.zeros(5)]), "z": np.zeros(5)}
+    try:
+        ca.arrange_pieces([wide], body, (0.0, 0.0), 0.02)
+        refused = False
+    except ca.ArrangeError:
+        refused = True
+    check("円周に近い幅のピースは巻けない(理由つきで失敗)", refused)
+    check("angles の数が違えば失敗", _raises_arrange(ca, piece, body))
+    _, warns = ca.arrange_pieces([{"xy": np.column_stack([np.linspace(0, 0.5, 5), np.zeros(5)]), "z": np.zeros(5)}],
+                                 body, (0.0, 0.0), 0.02)
+    check("半周以上巻くときは警告する", bool(warns), str(warns))
+
+
+def _raises_arrange(ca, piece, body):
+    try:
+        ca.arrange_pieces([piece, piece], body, (0.0, 0.0), 0.02, angles=[0.0])
+    except ca.ArrangeError:
+        return True
+    return False
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1655,6 +1710,7 @@ def main():
     test_curve_update()
     test_curve_selection_runs()
     test_curve_transfer()
+    test_curve_arrange()
     test_step_call_matches_signature()
     test_panel_properties_exist()
     compile_addon_modules()
