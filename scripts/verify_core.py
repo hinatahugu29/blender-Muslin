@@ -1511,6 +1511,89 @@ def test_curve_selection_runs():
     check("並びが 0 番始まりでない連なり", runs([False, True, True, False, True], False) == [[1, 2], [4]])
 
 
+def test_curve_transfer():
+    """Rebuild での姿勢の引き継ぎ(型紙空間を介した重心座標の補間。bpy 非依存)"""
+    if not has_numpy():
+        skip("姿勢の引き継ぎ", "numpy が無い")
+        return
+    import numpy as np
+    import curve_discretize as cd
+    import curve_transfer as ct
+
+    def bend(xy):
+        # 型紙(平ら)を円柱に巻き付けた姿勢: 幅 1.0 を 3/4 周
+        r = 1.0 / (1.5 * np.pi)
+        theta = (xy[:, 0] - 0.5) / r
+        return np.column_stack([r * np.sin(theta), -r * np.cos(theta), xy[:, 1]])
+
+    old = cd.discretize([_curve_rect(1.0, 0.7)], 0.03)
+    pose = bend(old["positions"])
+    new = cd.discretize([_curve_rect(1.0, 0.7)], 0.021)      # 辺の長さが違う(頂点数が違う)
+    moved, outside = ct.transfer(old["positions"], old["triangles"], pose,
+                                 new["positions"], old["piece"], new["piece"])
+    expected = bend(new["positions"])
+    err = np.linalg.norm(moved - expected, axis=1)
+    check("頂点数が違うメッシュへ姿勢を写せる", len(moved) == len(new["positions"]) != len(old["positions"]))
+    check("滑らかな姿勢はほぼそのまま写る(最大 3mm、平均 0.5mm 未満)",
+          err.max() < 3e-3 and err.mean() < 5e-4, f"最大 {err.max() * 1000:.2f}mm / 平均 {err.mean() * 1000:.3f}mm")
+    check("同じ輪郭なら旧メッシュの外側の頂点は(ほぼ)無い", outside <= 2, str(outside))
+    same, _ = ct.transfer(old["positions"], old["triangles"], pose, old["positions"],
+                          old["piece"], old["piece"])
+    check("同じメッシュへ写せば元の姿勢に戻る", np.abs(same - pose).max() < 1e-9)
+
+    # 輪郭が広がった分は旧メッシュの外側。縁へ寄せて補間し、壊れない
+    wide = cd.discretize([_curve_rect(1.2, 0.7)], 0.03)
+    moved, outside = ct.transfer(old["positions"], old["triangles"], pose, wide["positions"],
+                                 old["piece"], wide["piece"])
+    check("広がった分は外側として数える(姿勢は有限で、旧メッシュの範囲に収まる)",
+          outside > 0 and np.isfinite(moved).all()
+          and moved[:, 2].max() <= 0.7 + 1e-9 and np.abs(moved[:, :2]).max() <= pose[:, :2].max() * 1.001 + 1e-9,
+          f"外側 {outside} / {len(wide['positions'])}")
+
+    # 旧メッシュの型紙空間は「今の Curve の形」: 輪郭を動かした後の座標を返す
+    def outline_of(w, h, uids=(1, 2, 3, 4)):
+        o = _curve_rect(w, h, uids=uids)
+        return {1: {"uids": list(uids), "co": o["co"], "hl": o["hl"], "hr": o["hr"]}}
+
+    now = ct.old_pattern_now(old, outline_of(1.0, 0.7))
+    check("Curve が変わっていなければ生成時の座標と同じ", now is not None and np.abs(now - old["positions"]).max() < 1e-9)
+    now = ct.old_pattern_now(old, outline_of(1.2, 0.7))
+    check("Curve を広げた後の旧メッシュの座標に追従する(幅 1.2m)",
+          now is not None and abs(now[:, 0].max() - 1.2) < 1e-9 and len(now) == len(old["positions"]))
+
+    # 区間の途中に点が足された(uid は未知 = None)。形は同じなので座標は変わらない
+    sub = _curve_rect(1.0, 0.7)
+    co = np.vstack([sub["co"][:2], [[1.0, 0.35]], sub["co"][2:]])
+    cur = {1: {"uids": [1, 2, None, 3, 4], "co": co, "hl": co.copy(), "hr": co.copy()}}
+    now = ct.old_pattern_now(old, cur)
+    # 弧長の逆引きは折れ線(96 分割)なので、評価のしかたが変わると 0.03mm ほどずれる
+    check("区間の途中に点が足されても、足された点をまたいで対応する",
+          now is not None and np.abs(now - old["positions"]).max() < 1e-4)
+
+    # 向きが逆の輪郭
+    order = [0, 3, 2, 1]
+    rev = _curve_rect(1.0, 0.7)
+    rev_outline = {1: {"uids": [rev["uids"][k] for k in order], "co": rev["co"][order],
+                       "hl": rev["co"][order], "hr": rev["co"][order]}}
+    now = ct.old_pattern_now(old, rev_outline)
+    check("輪郭の向きが逆でも対応する", now is not None and np.abs(now - old["positions"]).max() < 1e-9)
+
+    # 旧メッシュの区間が見つからない(点が消えた)なら None(呼び出し側が生成時の座標で代用する)
+    gone = _curve_rect(1.0, 0.7)
+    cur = {1: {"uids": [1, 2, 4], "co": gone["co"][[0, 1, 3]], "hl": gone["co"][[0, 1, 3]],
+               "hr": gone["co"][[0, 1, 3]]}}
+    check("旧メッシュの点が消えていれば None", ct.old_pattern_now(old, cur) is None)
+
+    # 2 ピース: 別のピースの三角形には写さない
+    two = cd.discretize([_curve_rect(0.5, 0.5), _curve_rect(0.5, 0.5, uids=(21, 22, 23, 24),
+                                                           piece_uid=2, origin=(2.0, 0.0))], 0.05)
+    pose2 = np.column_stack([two["positions"][:, 0] * (1 + two["piece"]), two["positions"][:, 1],
+                             two["piece"].astype(float)])
+    moved2, _ = ct.transfer(two["positions"], two["triangles"], pose2, two["positions"],
+                            two["piece"], two["piece"])
+    check("ピースごとに写る(別ピースの姿勢が混ざらない)", np.abs(moved2 - pose2).max() < 1e-9)
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1563,6 +1646,7 @@ def main():
     test_curve_discretize()
     test_curve_update()
     test_curve_selection_runs()
+    test_curve_transfer()
     test_step_call_matches_signature()
     test_panel_properties_exist()
     compile_addon_modules()
