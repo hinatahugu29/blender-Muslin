@@ -1414,4 +1414,4 @@ Mesh Pattern(M8)は残し、Curve Pattern を**追加の系統**にする。既�
 - [x] パネル(状態・Rebuild・縫い目)と、選択から縫い目を作る操作
 - [~] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)
 - [ ] ゴム紐の Curve 側への移行(縫い目と同じ形)
-- [ ] 将来: Rebuild 時の姿勢転送(旧メッシュの型紙空間を介して新頂点へ補間する)
+- [x] Rebuild 時の姿勢とピン留めの引き継ぎ(旧メッシュの型紙空間を介して新頂点へ補間する) — `curve_transfer.py`
