@@ -539,6 +539,85 @@ def main():
     check("UV は 0〜1 に収まり、面ごとに揃っている",
           len(uvs) == len(dc_cloth.data.loops) and uvs.min() >= -1e-6 and uvs.max() <= 1 + 1e-6)
 
+    section("ピースを体の周りに置く(Arrange Around Collider)")
+    import math
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_set(1)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=1.2, location=(0.0, 0.0, 0.0))
+    body2 = bpy.context.active_object
+    body2.name = "Body2"
+
+    # 前身頃と後身頃(XY 平面に並べた 2 枚。幅 0.3m・高さ 0.5m)
+    cu2 = bpy.data.curves.new("Pair", 'CURVE')
+    cu2.dimensions = '2D'
+    for x0 in (0.0, 1.0):
+        sp = cu2.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points, [(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.5), (x0, 0.5)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    pair = bpy.data.objects.new("Pair", cu2)
+    scene.collection.objects.link(pair)
+    bpy.context.view_layer.objects.active = pair
+    cp.initialize(pair, 0.03)
+    pair_cloth, _ = cp.rebuild(bpy.context, pair)
+    check("2 枚のピースができる", len(cp.load_record(pair)["pieces"]) == 2)
+    # 点: 前身頃 1〜4(左下・右下・右上・左上)、後身頃 5〜8。+X 側で前の右辺と後ろの左辺、-X 側で前の左辺と後ろの右辺を縫う
+    cp.add_seam(pair, [(2, 0.0, 3, 0.0)], [(5 + 3, 0.0, 5, 0.0)], name="Right")
+    cp.add_seam(pair, [(4, 0.0, 1, 0.0)], [(6, 0.0, 7, 0.0)], name="Left")
+    cp.apply_seams(pair)
+    pair_cloth.location = (0.0, 0.0, 0.0)     # 型紙の高さ 0〜0.5m が、体(高さ -0.6〜0.6m)の中に収まる
+    pair_cloth.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    props2 = pair_cloth.muslin
+    props2.collider_object = body2
+    props2.collision_enabled = True
+    props2.self_collision_enabled = False
+    props2.seam_close_frames = 20
+
+    check("コライダーが無ければ配置の操作は使えない(poll)",
+          (setattr(props2, "collider_object", None), bpy.ops.muslin.curve_arrange.poll())[1] is False)
+    props2.collider_object = body2
+    for o in scene.objects:
+        o.select_set(o is pair_cloth)
+    bpy.context.view_layer.objects.active = pair_cloth
+    check("コライダーを指定すれば使える", bpy.ops.muslin.curve_arrange.poll())
+    res = bpy.ops.muslin.curve_arrange()
+    check("Arrange が通る", res == {'FINISHED'}, str(res))
+    xyz = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
+    piece_ids = np.array(list(pair_cloth.data.attributes[cp.ATTR_PIECE].data[i].value
+                              for i in range(len(xyz))))
+    radial = np.hypot(xyz[:, 0], xyz[:, 1])
+    check("すべての頂点が体の外側にある(半径 0.1m より外)", radial.min() > 0.1 + 1e-6 and np.isfinite(xyz).all(),
+          f"最小 {radial.min():.4f}m")
+    first, second = sorted(set(piece_ids))
+    check("1 枚目は正面(-Y)、2 枚目は背面(+Y)",
+          xyz[piece_ids == first, 1].mean() < -0.05 and xyz[piece_ids == second, 1].mean() > 0.05)
+    check("高さは型紙のとおり(0〜0.5m)",
+          abs(xyz[:, 2].min() - 0.0) < 1e-4 and abs(xyz[:, 2].max() - 0.5) < 1e-4)
+    check("置いた形が元の形(rest)になり、着せた段階は解除される",
+          _maxdiff(rest_shape.load(pair_cloth), xyz.ravel()) < 1e-5 and not rest_shape.is_dressed(pair_cloth))
+    check("型紙(寸法の基準)は平らなまま",
+          np.ptp(rest_shape.load_pattern(pair_cloth).reshape(-1, 3)[:, 1]) < 1e-6)
+
+    # 上端の中央を留めて着せる。2 本の縫い目が閉じる
+    top2 = xyz[:, 2].max()
+    grp = pair_cloth.vertex_groups.new(name="Pin")
+    pins = [i for i in range(len(xyz)) if xyz[i, 2] > top2 - 1e-5 and abs(xyz[i, 0]) < 0.05]
+    grp.add(pins, 1.0, "REPLACE")
+    props2.pin_vertex_group = "Pin"
+    open_gap2 = seam_gap(pair_cloth)
+    check("置いただけでは縫い目は開いている", open_gap2 > 0.03, f"{open_gap2 * 100:.1f}cm")
+    res = bpy.ops.muslin.dress()
+    check("Dress が通る(2 ピース・2 本の縫い目)", res == {'FINISHED'}, str(res))
+    check("縫い目が閉じる", seam_gap(pair_cloth) < 0.003, f"{seam_gap(pair_cloth) * 1000:.2f}mm")
+    dressed = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
+    rad = np.hypot(dressed[:, 0], dressed[:, 1])
+    check("着せた後も体の外側にある", rad.min() > 0.1 - 0.004, f"最小 {rad.min():.4f}m")
+
     muslin.unregister()
 
 

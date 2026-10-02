@@ -21,6 +21,7 @@ import bmesh  # noqa: F401  (将来の編集用に読み込んでおく)
 import bpy
 import numpy as np
 
+from . import curve_arrange
 from . import curve_discretize
 from . import curve_ids
 from . import curve_transfer
@@ -713,6 +714,62 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True):
     return cloth, warnings
 
 
+def arrange_around(curve_obj, collider, margin=None, angles=None):
+    """布のピースを、コライダー(体)の縦軸のまわりに巻き付けて置く。姿勢(rest)も置いた形にする。
+
+    ピースは向き(度。0 = 正面 = -Y)ごとに円柱の外側へ置かれる。angles を省略すると、
+    ピース数で周りに等間隔(1 枚は正面、2 枚は正面と背面)。着せた段階は解除される。
+    戻り値: 警告の一覧
+    """
+    from . import sim_state
+
+    cloth = cloth_of(curve_obj)
+    if cloth is None:
+        raise CurvePatternError("布がまだありません(Rebuild で作ってください)")
+    if sim_state.is_running(cloth):
+        raise CurvePatternError("シミュレーション中は置き直せません。停止してください")
+    if collider is None or collider.type != 'MESH':
+        raise CurvePatternError("体にするメッシュ(コライダー)を指定してください")
+    data = reconstruct(cloth)
+
+    mw = np.array(cloth.matrix_world, dtype=np.float64)
+    flat_local = _to_local(data["positions"])
+    flat_world = flat_local @ mw[:3, :3].T + mw[:3, 3]
+
+    cmw = np.array(collider.matrix_world, dtype=np.float64)
+    cv = np.empty(len(collider.data.vertices) * 3, dtype=np.float32)
+    collider.data.vertices.foreach_get("co", cv)
+    collider_points = cv.reshape(-1, 3).astype(np.float64) @ cmw[:3, :3].T + cmw[:3, 3]
+    axis_xy = (float(collider_points[:, 0].min() + collider_points[:, 0].max()) / 2.0,
+               float(collider_points[:, 1].min() + collider_points[:, 1].max()) / 2.0)
+    if margin is None:
+        margin = 2.0 * float(cloth.muslin.collision_thickness) + 0.005
+
+    pieces = sorted(set(int(x) for x in data["piece"]))
+    groups = [np.nonzero(data["piece"] == pid)[0] for pid in pieces]
+    arranged, warnings = _arrange(groups, data, flat_world, collider_points, axis_xy, margin, angles)
+
+    world = np.empty_like(flat_world)
+    for idx, pts in zip(groups, arranged):
+        world[idx] = pts
+    inv = np.linalg.inv(mw)
+    local = world @ inv[:3, :3].T + inv[:3, 3]
+    pose32 = local.astype(np.float32).ravel()
+    cloth.data.vertices.foreach_set("co", pose32)
+    cloth.data.update()
+    rest_shape.store(cloth, pose32)
+    rest_shape.clear_dressed(cloth)
+    return warnings
+
+
+def _arrange(groups, data, flat_world, collider_points, axis_xy, margin, angles):
+    pieces = [{"xy": data["positions"][idx], "z": flat_world[idx][:, 2]} for idx in groups]
+    try:
+        return curve_arrange.arrange_pieces(pieces, collider_points, axis_xy, margin, angles)
+    except curve_arrange.ArrangeError as exc:
+        raise CurvePatternError(str(exc)) from exc
+
+
 # ---------------------------------------------------------------- オペレータ
 
 class MUSLIN_OT_curve_pattern_init(bpy.types.Operator):
@@ -806,6 +863,60 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_curve_arrange(bpy.types.Operator):
+    """ピースを体(コライダー)の周りに巻き付けて置く(アレンジメント)"""
+
+    bl_idname = "muslin.curve_arrange"
+    bl_label = "Arrange Around Collider"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    margin: bpy.props.FloatProperty(
+        name="Margin", unit='LENGTH', min=0.0, default=0.0,
+        description="体の外側に空ける距離。0 なら厚みから自動で決める",
+    )
+    angles: bpy.props.StringProperty(
+        name="Angles", default="",
+        description="ピースごとの向き(度。0 = 正面 = -Y)をカンマで区切る。空なら周りに等間隔",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        from . import sim_state
+        curve = _target_curve(context)
+        if curve is None:
+            return ui_poll.reject(cls, "Curve、または Curve Pattern から作った布を選んでください")
+        cloth = cloth_of(curve)
+        if cloth is None:
+            return ui_poll.reject(cls, "布がまだありません(Rebuild で作ってください)")
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if cloth.muslin.collider_object is None:
+            return ui_poll.reject(cls, "布の Collision で体(コライダー)を指定してください")
+        if sim_state.is_running(cloth):
+            return ui_poll.reject(cls, "シミュレーション中は置き直せません。停止してください")
+        return True
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        cloth = cloth_of(curve)
+        try:
+            angles = [float(a) for a in self.angles.split(",")] if self.angles.strip() else None
+        except ValueError:
+            self.report({'ERROR'}, "Angles は数をカンマで区切ってください(例: 0,180)")
+            return {'CANCELLED'}
+        try:
+            warnings = arrange_around(curve, cloth.muslin.collider_object,
+                                      margin=self.margin or None, angles=angles)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'}, f"'{cloth.name}' のピースを体の周りに置きました")
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_curve_seam_add(bpy.types.Operator):
     """Curve の点を 2 か所の連なりとして選び、その間を縫い合わせる縫い目にする"""
 
@@ -859,7 +970,7 @@ class MUSLIN_OT_curve_seam_remove(bpy.types.Operator):
 
 
 _classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
-            MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
+            MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
 
 
 def register():

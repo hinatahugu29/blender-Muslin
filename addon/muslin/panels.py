@@ -407,6 +407,8 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
             layout.label(text="Curve の変更は布に追従します", icon='CHECKMARK')
 
         layout.operator("muslin.curve_pattern_rebuild", icon='FILE_REFRESH')
+        if cloth is not None:
+            layout.operator("muslin.curve_arrange", icon='MOD_CLOTH')
 
         layout.separator()
         layout.label(text="縫い目")
