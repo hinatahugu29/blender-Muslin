@@ -552,6 +552,73 @@ def sample_curve_pattern():
     save("06_curve_pattern.blend")
 
 
+# ------------------------------------------------------------------ 7. 前身頃と後身頃(Arrange)
+
+def sample_curve_arrange():
+    """2 枚のピース(前身頃・後身頃)を Curve で持ち、体の周りへ置いて両脇を縫って着せる。"""
+    import numpy as np
+    from muslin import curve_pattern
+
+    scene = fresh_scene(frame_end=120)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=1.2, location=(0.0, 0.0, 0.0))
+    body = bpy.context.active_object
+    body.name = "Body"
+
+    # 型紙は XY 平面に並べる(前身頃 x = 0〜0.3、後身頃 x = 1〜1.3。幅 0.3m・高さ 0.5m)
+    cu = bpy.data.curves.new("Pair_Pattern", 'CURVE')
+    cu.dimensions = '2D'
+    for x0 in (0.0, 1.0):
+        sp = cu.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points,
+                              [(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.5), (x0, 0.5)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    curve = bpy.data.objects.new("Pair_Pattern", cu)
+    scene.collection.objects.link(curve)
+    curve.location = (2.0, 0.0, 0.0)
+    bpy.context.view_layer.objects.active = curve
+    curve_pattern.initialize(curve, 0.03)
+    cloth, _warnings = curve_pattern.rebuild(bpy.context, curve)
+    cloth.name = "Pair"
+    mark_as_cloth(cloth)
+    # 点 1〜4 が前身頃、5〜8 が後身頃(左下・右下・右上・左上の順)
+    curve_pattern.add_seam(curve, [(2, 0.0, 3, 0.0)], [(8, 0.0, 5, 0.0)], name="Right")
+    curve_pattern.add_seam(curve, [(4, 0.0, 1, 0.0)], [(6, 0.0, 7, 0.0)], name="Left")
+    curve_pattern.apply_seams(curve)
+
+    cloth.location = (0.0, 0.0, 0.0)
+    cloth.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    props = cloth.muslin
+    props.collider_object = body
+    props.collision_enabled = True
+    props.self_collision_enabled = False
+    props.seam_close_frames = 20
+    curve_pattern.arrange_around(curve, body)
+    top = max(v.co.z for v in cloth.data.vertices)
+    group = cloth.vertex_groups.new(name="Pin")
+    group.add([v.index for v in cloth.data.vertices
+               if v.co.z > top - 1e-5 and abs(v.co.x) < 0.05], 1.0, "REPLACE")
+    props.pin_vertex_group = "Pin"
+    smooth(cloth)
+
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    dressed = bpy.ops.muslin.dress()
+    print(f"  Pair: {len(cloth.data.vertices)} 頂点 / Dress {dressed}", flush=True)
+
+    add_note("Pair_Pattern の点を動かすと服が追従する。Arrange Around Collider で置き直せる",
+             location=(0.0, 0.0, 1.0), size=0.05)
+    add_camera_and_light((0.0, 0.0, 0.3), distance=2.2, height=0.9)
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    save("07_curve_arrange.blend")
+
+
 SAMPLES = {
     "01": sample_drape,
     "02": sample_flag,
@@ -559,6 +626,7 @@ SAMPLES = {
     "04": sample_pattern_uv,
     "05": sample_pattern_link,
     "06": sample_curve_pattern,
+    "07": sample_curve_arrange,
 }
 
 
