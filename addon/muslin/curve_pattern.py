@@ -66,9 +66,34 @@ def save_record(curve_obj, record):
     curve_obj.data[RECORD_KEY] = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
 
-def cloth_of(curve_obj):
+def _stale_cloth(curve_obj):
+    """ビューポートなどで消された布(シーンから外れただけで、Curve からの ID ポインタで
+    データには残っているオブジェクト)。生きている布なら None。"""
     cloth = curve_obj.get(CLOTH_KEY) if curve_obj is not None else None
-    return cloth if cloth is not None and cloth.type == 'MESH' else None
+    if cloth is not None and cloth.type == 'MESH' and not cloth.users_collection:
+        return cloth
+    return None
+
+
+def cloth_of(curve_obj):
+    """Curve の布。消された布(どのコレクションにも無い)は無いものとして扱う。"""
+    cloth = curve_obj.get(CLOTH_KEY) if curve_obj is not None else None
+    if cloth is None or cloth.type != 'MESH' or not cloth.users_collection:
+        return None
+    return cloth
+
+
+def _discard_stale_cloth(curve_obj):
+    """消された布を、データからも片付ける(名前を空けて、新しい布を同じ名前で作れるように)。"""
+    stale = _stale_cloth(curve_obj)
+    if stale is None:
+        return
+    mesh = stale.data
+    if CLOTH_KEY in curve_obj:
+        del curve_obj[CLOTH_KEY]
+    bpy.data.objects.remove(stale)
+    if mesh is not None and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
 
 
 def curve_of(cloth_obj):
@@ -623,6 +648,9 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True):
         raise CurvePatternError("Curve Pattern として初期化されていません")
     if curve_obj.mode == 'EDIT':
         raise CurvePatternError("オブジェクトモードで実行してください")
+    # 布を消してから Rebuild し直したとき、シーンから外れただけの古い布を使い回すと、
+    # メッシュはできても見えない。片付けて、新しい布を作る(姿勢も引き継がない)
+    _discard_stale_cloth(curve_obj)
     cloth = cloth_of(curve_obj)
     if cloth is not None and sim_state.is_running(cloth):
         raise CurvePatternError("シミュレーション中は Rebuild できません。停止してから実行してください")

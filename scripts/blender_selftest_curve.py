@@ -618,6 +618,37 @@ def main():
     rad = np.hypot(dressed[:, 0], dressed[:, 1])
     check("着せた後も体の外側にある", rad.min() > 0.1 - 0.004, f"最小 {rad.min():.4f}m")
 
+    section("布を消してから Rebuild し直す")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    c = make_curve("D")
+    cp.initialize(c, 0.05)
+    cloth_d, _ = cp.rebuild(bpy.context, c)
+    first_name = cloth_d.name
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    cloth_d.select_set(True)
+    bpy.context.view_layer.objects.active = cloth_d
+    bpy.ops.object.delete()
+    bpy.context.view_layer.objects.active = c
+    check("ビューポートで消した布は、無いものとして扱われる", cp.cloth_of(c) is None)
+    check("パネルは布が無い状態になる", cp.status(c)["cloth"] is None)
+    cloth_d2, warns = cp.rebuild(bpy.context, c)
+    check("消した後に Rebuild すると、布がシーンに現れる", cloth_d2.name in bpy.context.scene.objects
+          and len(cloth_d2.users_collection) == 1 and len(cloth_d2.data.vertices) > 0)
+    check("名前は同じ(.001 が付かない)", cloth_d2.name == first_name, cloth_d2.name)
+    check("古い布はデータからも片付けられる",
+          [o.name for o in bpy.data.objects if o.type == 'MESH'] == [first_name])
+    check("警告は出ない", warns == [], str(warns))
+    check("Curve と布は結ばれ直している", cp.cloth_of(c) == cloth_d2 and cp.curve_of(cloth_d2) == c)
+    # 外した(unlink だけ)場合と、データごと消した場合も同じ
+    for c_ in list(cloth_d2.users_collection):
+        c_.objects.unlink(cloth_d2)
+    cloth_d3, _ = cp.rebuild(bpy.context, c)
+    check("コレクションから外しただけでも、Rebuild で現れる", cloth_d3.name in bpy.context.scene.objects)
+    bpy.data.objects.remove(cloth_d3)
+    cloth_d4, _ = cp.rebuild(bpy.context, c)
+    check("データごと消した後も Rebuild で現れる", cloth_d4.name in bpy.context.scene.objects)
+
     muslin.unregister()
 
 
