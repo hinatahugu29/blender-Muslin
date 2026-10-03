@@ -12,12 +12,15 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 
+from . import curve_eval
+from . import curve_pattern
 from . import mesh_io
 from . import rest_shape
 from . import seams
 from . import sim_state
 
 _draw_handle = None
+_label_handle = None
 
 # オブジェクトキー -> (シグネチャ, ペアのリスト)。毎フレームのペア再計算を避けるキャッシュ
 _pair_cache = {}
@@ -97,6 +100,7 @@ def invalidate_cache(obj=None):
     if obj is None:
         _pair_cache.clear()
         _pattern_cache.clear()
+        _curve_cloth_cache.clear()
     else:
         _pair_cache.pop(sim_state.obj_key(obj), None)
 
@@ -218,6 +222,192 @@ def _draw_patterns(context, tools):
         gpu.state.blend_set('NONE')
 
 
+# ---------------------------------------------------------------- Curve Pattern
+
+# 縫い目ごとの色。Curve と布の両方に同じ色で描き、どの辺とどの辺が対応するかを色で追えるようにする
+SEAM_PALETTE = (
+    (1.0, 0.35, 0.1, 1.0), (0.2, 0.9, 0.3, 1.0), (0.3, 0.55, 1.0, 1.0), (1.0, 0.85, 0.1, 1.0),
+    (0.9, 0.3, 0.9, 1.0), (0.1, 0.9, 0.9, 1.0), (1.0, 0.55, 0.65, 1.0), (0.7, 0.55, 0.3, 1.0),
+)
+CURVE_SEAM_WIDTH = 5.0
+LABEL_COLOR = (1.0, 1.0, 1.0, 1.0)
+
+# 布のキー -> (指紋, {縫い目 uid: [(頂点 a, 頂点 b), ...]}, {ピース uid: 頂点の index 配列})
+_curve_cloth_cache = {}
+
+
+def seam_color(index):
+    return SEAM_PALETTE[index % len(SEAM_PALETTE)]
+
+
+def _cloth_seam_edges(cloth):
+    """布の縫い目 uid ごとの辺(頂点対)と、ピースごとの頂点の index(キャッシュ付き)。"""
+    import numpy as np
+    key = sim_state.obj_key(cloth)
+    signature = (_seam_signature(cloth), cloth.data.get(curve_pattern.GEN_KEY, ""))
+    cached = _curve_cloth_cache.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1], cached[2]
+    by_uid = {}
+    codes, edges = mesh_io.read_seam_codes(cloth.data)
+    for code, e in zip(codes or [], edges or []):
+        if code:
+            by_uid.setdefault((code - 1) // 2, []).append(tuple(e))
+    pieces = {}
+    attr = cloth.data.attributes.get(curve_pattern.ATTR_PIECE)
+    if attr is not None and len(attr.data) == len(cloth.data.vertices):
+        values = np.empty(len(attr.data), dtype=np.int32)
+        attr.data.foreach_get("value", values)
+        for pid in sorted(set(int(v) for v in values)):
+            pieces[pid] = np.nonzero(values == pid)[0]
+    _curve_cloth_cache[key] = (signature, by_uid, pieces)
+    return by_uid, pieces
+
+
+def curve_overlay_geometry(curve, cloth):
+    """Curve と布に描く、対応を示す線と文字(描画から切り離してあるので、ヘッドレスで検査できる)。
+
+    戻り値: {"lines": [(色, [ワールド座標, ...])],   # 2 点ずつが 1 本の線分
+             "labels": [(文字, ワールド座標, 色)]}
+    - 縫い目ごとの色で、Curve の該当区間と、布の該当する辺を太く描く(同じ色)
+    - ピースの番号を、Curve と布のそれぞれの中心に出す
+    - 縫い目の名前を、Curve と布のそれぞれの区間の中ほどに出す
+    """
+    import numpy as np
+    from mathutils import Vector
+
+    record = curve_pattern.load_record(curve)
+    if record is None:
+        return {"lines": [], "labels": []}
+    splines = curve_pattern.read_splines(curve)
+    recorded = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    from . import curve_ids
+    taken, _new, _gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
+    ring_of = {}                         # 点 uid → (その輪郭の区間、uid の並び)
+    for si, pid in taken.items():
+        s = splines[si]
+        segs = curve_eval.segments(s["co"], s["hl"], s["hr"], True)
+        for u in s["uids"]:
+            if u is not None:
+                ring_of[u] = (segs, list(s["uids"]), si)
+
+    rot = curve.matrix_world.to_quaternion().to_matrix()
+    origin = curve.matrix_world.translation
+
+    def to_world(xy):
+        return origin + rot @ Vector((float(xy[0]), float(xy[1]), 0.0))
+
+    lines, labels = [], []
+    # ピースの番号(穴は数えない)
+    numbering = [p["piece_uid"] for p in record["pieces"] if p["hole_of"] is None]
+    for number, pid in enumerate(numbering, start=1):
+        si = next((k for k, v in taken.items() if v == pid), None)
+        if si is not None and len(splines[si]["co"]):
+            labels.append((str(number), to_world(splines[si]["co"].mean(axis=0)), LABEL_COLOR))
+
+    cloth_edges, cloth_pieces = _cloth_seam_edges(cloth) if cloth is not None else ({}, {})
+    vertices = cloth.data.vertices if cloth is not None else None
+    if cloth is not None:
+        mw = cloth.matrix_world
+        coords = np.empty(len(vertices) * 3, dtype=np.float32)
+        vertices.foreach_get("co", coords)
+        coords = coords.reshape(-1, 3)
+        for number, pid in enumerate(numbering, start=1):
+            idx = cloth_pieces.get(pid)
+            if idx is not None and len(idx):
+                labels.append((str(number), mw @ Vector(coords[idx].mean(axis=0).tolist()), LABEL_COLOR))
+
+    for index, seam in enumerate(record["seams"]):
+        if not seam.get("enabled", True):
+            continue
+        color = seam_color(index)
+        # Curve 側: 両側の区間を折れ線で
+        for side in ("a", "b"):
+            for start, t0, end, t1 in seam[side]:
+                if start not in ring_of:
+                    continue
+                segs, uids, _si = ring_of[start]
+                pts = curve_eval.range_points(segs, uids, start, t0, end, t1)
+                if pts is None or len(pts) < 2:
+                    continue
+                world = [to_world(p) for p in pts]
+                pairs = []
+                for a, b in zip(world, world[1:]):
+                    pairs += [a, b]
+                lines.append((color, pairs))
+                labels.append((seam["name"], world[len(world) // 2], color))
+        # 布側: 縫い目の辺(両側とも同じ色)
+        if cloth is not None and seam["uid"] in cloth_edges:
+            pairs, centre = [], []
+            for a, b in cloth_edges[seam["uid"]]:
+                pairs += [mw @ Vector(coords[a].tolist()), mw @ Vector(coords[b].tolist())]
+                centre.append(coords[a])
+            if pairs:
+                lines.append((color, pairs))
+                labels.append((seam["name"], mw @ Vector(np.mean(centre, axis=0).tolist()), color))
+    return {"lines": lines, "labels": labels}
+
+
+def _curve_pairs(context):
+    """表示する (Curve, 布) の組。"""
+    out = []
+    for obj in context.view_layer.objects:
+        if obj.type != 'CURVE' or not obj.visible_get():
+            continue
+        if curve_pattern.load_record(obj) is None:
+            continue
+        cloth = curve_pattern.cloth_of(obj)
+        out.append((obj, cloth if cloth is not None and cloth.visible_get() else None))
+    return out
+
+
+def _draw_curve_patterns(context, tools):
+    """Curve Pattern の縫い目を、縫い目ごとの色で Curve と布に描く。"""
+    pairs = _curve_pairs(context)
+    if not pairs:
+        return
+    region = context.region
+    shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+    shader.uniform_float("viewportSize", (region.width, region.height))
+    gpu.state.blend_set('ALPHA')
+    try:
+        for curve, cloth in pairs:
+            try:
+                geometry = curve_overlay_geometry(curve, cloth)
+            except (AttributeError, ReferenceError, IndexError):
+                continue
+            shader.uniform_float("lineWidth", CURVE_SEAM_WIDTH)
+            for color, coords in geometry["lines"]:
+                shader.uniform_float("color", color)
+                batch_for_shader(shader, 'LINES', {"pos": coords}).draw(shader)
+    finally:
+        gpu.state.blend_set('NONE')
+
+
+def _draw_labels():
+    """ピースの番号と縫い目の名前(画面に重ねる文字)。"""
+    import blf
+    from bpy_extras import view3d_utils
+    context = bpy.context
+    tools = getattr(context.scene, "muslin_tools", None)
+    region, rv3d = context.region, context.region_data
+    if tools is None or not tools.show_seams or region is None or rv3d is None:
+        return
+    blf.size(0, 15.0)
+    for curve, cloth in _curve_pairs(context):
+        try:
+            geometry = curve_overlay_geometry(curve, cloth)
+        except (AttributeError, ReferenceError, IndexError):
+            continue
+        for text, location, color in geometry["labels"]:
+            point = view3d_utils.location_3d_to_region_2d(region, rv3d, location)
+            if point is None:
+                continue
+            blf.color(0, *color)
+            blf.position(0, point.x + 4.0, point.y + 4.0, 0.0)
+            blf.draw(0, text)
+
+
 def _draw():
     context = bpy.context
     scene = context.scene
@@ -225,6 +415,8 @@ def _draw():
     if tools is None:
         return
     _draw_patterns(context, tools)
+    if tools.show_seams:
+        _draw_curve_patterns(context, tools)
     if not tools.show_seams:
         return
 
@@ -280,17 +472,25 @@ def _draw():
 
 
 def register():
-    global _draw_handle
+    global _draw_handle, _label_handle
     if _draw_handle is None:
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             _draw, (), 'WINDOW', 'POST_VIEW'
         )
+    if _label_handle is None:
+        _label_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_labels, (), 'WINDOW', 'POST_PIXEL'
+        )
 
 
 def unregister():
-    global _draw_handle
+    global _draw_handle, _label_handle
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
+    if _label_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_label_handle, 'WINDOW')
+        _label_handle = None
     _pair_cache.clear()
     _pattern_cache.clear()
+    _curve_cloth_cache.clear()

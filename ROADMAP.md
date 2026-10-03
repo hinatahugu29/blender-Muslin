@@ -1414,5 +1414,6 @@ Mesh Pattern(M8)は残し、Curve Pattern を**追加の系統**にする。既�
 - [x] パネル(状態・Rebuild・縫い目)と、選択から縫い目を作る操作
 - [~] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)
 - [x] ピースを体の周りへ巻き付けて置く(Arrange Around Collider。向きは 0° = 正面。自動で等間隔) — `curve_arrange.py`
+- [x] Curve と布の対応の表示(縫い目ごとの色で Curve の辺と布の辺を描く。ピースの番号と縫い目の名前) — `overlay.py`
 - [ ] ゴム紐の Curve 側への移行(縫い目と同じ形)
 - [x] Rebuild 時の姿勢とピン留めの引き継ぎ(旧メッシュの型紙空間を介して新頂点へ補間する) — `curve_transfer.py`

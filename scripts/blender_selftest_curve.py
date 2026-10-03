@@ -618,6 +618,43 @@ def main():
     rad = np.hypot(dressed[:, 0], dressed[:, 1])
     check("着せた後も体の外側にある", rad.min() > 0.1 - 0.004, f"最小 {rad.min():.4f}m")
 
+    section("対応の表示(Curve と布の縫い目の色・ピースの番号)")
+    from muslin import overlay
+    geo = overlay.curve_overlay_geometry(pair, pair_cloth)
+    colors = [c for c, _ in geo["lines"]]
+    check("縫い目 2 本 × (Curve 側 2 辺 + 布側 1 本) = 6 本の線", len(geo["lines"]) == 6, str(len(geo["lines"])))
+    check("縫い目ごとに別の色(2 色)で、各色が Curve 2 本 + 布 1 本",
+          len(set(colors)) == 2 and all(colors.count(c) == 3 for c in set(colors)))
+    check("Curve と布の同じ縫い目は同じ色", colors[:3] == [colors[0]] * 3 and colors[3:] == [colors[3]] * 3)
+    right_front = geo["lines"][0][1]
+    xs = [v.x for v in right_front]
+    ys = [v.y for v in right_front]
+    check("Curve 側の線は縫い目の区間(前身頃の右辺 x = 0.3、y = 0〜0.5)をなぞる",
+          all(abs(x - 0.3) < 1e-3 for x in xs) and abs(min(ys)) < 1e-3 and abs(max(ys) - 0.5) < 1e-3)
+    codes_, edges_ = mesh_io.read_seam_codes(pair_cloth.data)
+    seam_uids = [s_["uid"] for s_ in cp.load_record(pair)["seams"]]
+    n_edges = sum(1 for c_ in codes_ if c_ and (c_ - 1) // 2 == seam_uids[0])
+    check("布側の線は縫い目の辺(両側)と同じ数", len(geo["lines"][2][1]) == 2 * n_edges, f"{n_edges} 辺")
+    texts = sorted(t for t, _, _ in geo["labels"])
+    check("ピースの番号は Curve と布に 1 つずつ(1 と 2 が 2 回ずつ)", texts.count("1") == 2 and texts.count("2") == 2)
+    check("縫い目の名前も出る(Right・Left が Curve の 2 辺と布の 1 か所)",
+          texts.count("Right") == 3 and texts.count("Left") == 3, str(texts))
+    piece_labels = [(t, v) for t, v, _ in geo["labels"] if t == "1"]
+    check("番号 1 の位置は Curve の前身頃の中心と、布の前身頃の中心(正面 = -Y 側)",
+          abs(piece_labels[0][1].x - 0.15) < 1e-3 and piece_labels[1][1].y < -0.05, str(piece_labels))
+    pair.location = (5.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    moved = overlay.curve_overlay_geometry(pair, pair_cloth)
+    check("Curve を動かせば、描く位置も動く(ワールド座標)", abs(min(v.x for v in moved["lines"][0][1]) - 5.3) < 1e-3)
+    pair.location = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    only_curve = overlay.curve_overlay_geometry(pair, None)
+    check("布が無ければ Curve 側だけを出す", len(only_curve["lines"]) == 4)
+    check("Curve Pattern でない Curve は何も出さない",
+          overlay.curve_overlay_geometry(make_curve("Plain"), None) == {"lines": [], "labels": []})
+    overlay.invalidate_cache()
+    check("描画のハンドラが登録されている(線と文字)", overlay._draw_handle is not None and overlay._label_handle is not None)
+
     section("布を消してから Rebuild し直す")
     bpy.ops.wm.read_factory_settings(use_empty=True)
     c = make_curve("D")
