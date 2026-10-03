@@ -59,3 +59,34 @@ def segments(co, hl, hr, cyclic):
 
 def outline_length(segs):
     return float(sum(s.length for s in segs))
+
+
+def range_points(segs, uids, start_uid, t0, end_uid, t1, per_segment=16):
+    """輪郭の区間 (start_uid, t0, end_uid, t1) に沿った折れ線の点 (n, 2)。
+
+    start_uid の区間の弧長比 t0 から、end_uid の区間の弧長比 t1 まで、輪郭の向きに沿って進む。
+    終点が始点より手前なら一周して回り込み、同じ位置なら一周。uid が輪郭に無ければ None。
+    seam の区間を画面に描くときに使う(離散化と同じ弧長比の約束)。
+    """
+    if start_uid not in uids or end_uid not in uids:
+        return None
+    total = len(segs)
+    s0 = uids.index(start_uid) + t0
+    s1 = uids.index(end_uid) + t1
+    span = (s1 - s0) % total
+    if span < 1e-9:
+        span = float(total)
+    count = max(2, int(np.ceil(span * per_segment)) + 1)
+    out = []
+    for offset in np.linspace(0.0, span, count):
+        s = (s0 + offset) % total
+        k = int(np.floor(s + 1e-12))
+        if k >= total:
+            k = total - 1
+        u = min(max(s - k, 0.0), 1.0)
+        # 区間の終わりぴったりは、次の区間の始まりではなく手前の区間の u = 1 で評価する
+        if offset >= span - 1e-12 and abs(s - round(s)) < 1e-9 and round(s) > 0:
+            k = int(round(s)) - 1
+            u = 1.0
+        out.append(segs[k % total].point_at([u])[0])
+    return np.array(out)

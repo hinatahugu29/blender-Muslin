@@ -1657,6 +1657,36 @@ def _raises_arrange(ca, piece, body):
     return False
 
 
+def test_curve_range_points():
+    """seam の区間を折れ線にする(画面に描くため。bpy 非依存)"""
+    if not has_numpy():
+        skip("seam の区間の折れ線", "numpy が無い")
+        return
+    import numpy as np
+    import curve_eval as ce
+
+    o = _curve_rect(1.0, 0.7)
+    segs = ce.segments(o["co"], o["hl"], o["hr"], True)
+    uids = o["uids"]
+    p = ce.range_points(segs, uids, 2, 0.0, 3, 0.0)
+    check("区間 1 本は始点から終点までの直線", np.allclose(p[0], [1.0, 0.0], atol=1e-3)
+          and np.allclose(p[-1], [1.0, 0.7], atol=1e-3) and np.allclose(p[:, 0], 1.0, atol=1e-3))
+    p = ce.range_points(segs, uids, 1, 0.0, 3, 0.0)
+    check("複数の区間をまたぐ(下辺 → 右辺)", np.allclose(p[0], [0, 0], atol=1e-3)
+          and np.allclose(p[-1], [1.0, 0.7], atol=1e-3) and any(np.allclose(q, [1.0, 0.0], atol=2e-2) for q in p))
+    p = ce.range_points(segs, uids, 4, 0.0, 2, 0.0)
+    check("終点が始点より手前なら一周して回り込む(左辺 → 下辺)",
+          np.allclose(p[0], [0, 0.7], atol=1e-3) and np.allclose(p[-1], [1.0, 0.0], atol=1e-3))
+    p = ce.range_points(segs, uids, 1, 0.5, 2, 0.5)
+    check("区間の途中から途中まで(弧長比)", np.allclose(p[0], [0.5, 0], atol=1e-3)
+          and np.allclose(p[-1], [1.0, 0.35], atol=1e-3))
+    p = ce.range_points(segs, uids, 1, 0.0, 1, 0.0)
+    check("始点 = 終点なら一周(閉じた折れ線)", np.allclose(p[0], p[-1], atol=1e-3) and len(p) > 30)
+    check("知らない uid は None", ce.range_points(segs, uids, 99, 0.0, 3, 0.0) is None)
+    check("点の数は区間の長さに応じて増える",
+          len(ce.range_points(segs, uids, 1, 0.0, 3, 0.0)) > len(ce.range_points(segs, uids, 1, 0.0, 2, 0.0)))
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1711,6 +1741,7 @@ def main():
     test_curve_selection_runs()
     test_curve_transfer()
     test_curve_arrange()
+    test_curve_range_points()
     test_step_call_matches_signature()
     test_panel_properties_exist()
     compile_addon_modules()
