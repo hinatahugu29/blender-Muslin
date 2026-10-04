@@ -74,6 +74,16 @@ for a in args:
         old.hide_set(True)
         print(f"   体の円柱を {seg} 角形にした(元は {len(old.data.vertices) // 2} 角形)", flush=True)
 
+if "pin" in args:
+    # 上端の正面の中央(ワールドで x ≈ 0)を留める。ピン留めがあれば回らないかを見る
+    world = {v.index: cloth.matrix_world @ v.co for v in cloth.data.vertices}
+    top = max(w.z for w in world.values())
+    members = [i for i, w in world.items() if w.z > top - 0.012 and abs(w.x) < 0.06]
+    group = cloth.vertex_groups.new(name="Pin")
+    group.add(members, 1.0, "REPLACE")
+    p.pin_vertex_group = "Pin"
+    print(f"   ピン留め {len(members)} 頂点", flush=True)
+
 if nobend:
     mesh_io.build_seam_bending = lambda *a, **k: ([], [])
 
