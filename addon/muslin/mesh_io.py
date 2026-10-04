@@ -13,6 +13,7 @@ import numpy as np
 
 from . import cloth_core
 from . import rest_shape
+from . import seam_bending
 from . import seams
 from .transform import transform as _transform
 
@@ -617,6 +618,47 @@ def apply_group_elastics(sim, members, offsets):
     return sim.set_rest_scales(pairs, scales)
 
 
+def build_seam_bending(obj, reference, triangles, pose=None):
+    """オブジェクトの縫い目をまたぐ曲げ制約。(items, rest) を頂点番号は布の中の番号で返す。
+
+    縫い目は距離の制約だけだと蝶番になるので、閉じた縫い目も 1 枚の布の折り目と同じように
+    曲げに抵抗させる(コアの `set_seam_bending`)。reference は型紙の座標(ワールド、平坦な配列)、
+    pose は縫い合わせる向きの自動判定に使う今の形。triangles は布の三角形(布の中の番号)。
+    """
+    if not getattr(obj, "muslin_seams", None):
+        return [], []
+    if pose is None:
+        pose = reference
+    wings = seam_bending.boundary_wings(triangles)
+    codes, edges = read_seam_codes(obj.data)
+    items, rest = [], []
+    for seam in obj.muslin_seams:
+        if not seam.enabled:
+            continue
+        resolved = resolve_seam(obj, seam, pose, codes, edges)
+        if resolved is None:
+            continue
+        chain_a, chain_b, flipped = resolved
+        pairs = seams.pair_chains(chain_a, chain_b, reference, flipped)
+        ordered_b = list(reversed(chain_b)) if flipped else list(chain_b)
+        it, rs = seam_bending.rungs(pairs, chain_a, ordered_b, wings, reference)
+        items += it
+        rest += rs
+    return items, rest
+
+
+def group_seam_bending(members, offsets, reference, positions, member_triangles):
+    """グループ全体の縫い目をまたぐ曲げ制約(頂点番号はグループ通し)。型紙の差し替えでも作り直す。"""
+    items, rest = [], []
+    for m, (start, count), tris in zip(members, offsets, member_triangles):
+        ref = list(reference[start * 3:(start + count) * 3])
+        pose = list(positions[start * 3:(start + count) * 3])
+        it, rs = build_seam_bending(m, ref, tris, pose=pose)
+        items += [tuple(i + start for i in t) for t in it]
+        rest += rs
+    return items, rest
+
+
 def group_seam_pairs(members, offsets, reference, positions):
     """グループ全体の縫い合わせる頂点ペア(頂点番号はグループ通し)。
 
@@ -658,6 +700,7 @@ def build_group_sim(members):
     positions, reference = [], []
     edges, bending_quads, triangles = [], [], []
     seam_pairs, offsets, layers = [], [], []
+    member_triangles, bend_items, bend_rest = [], [], []
     for m in members:
         start = len(positions) // 3
         mp = m.muslin
@@ -691,6 +734,11 @@ def build_group_sim(members):
                 "縫い目の辺を消したか、片側が途切れて2本以上に分かれています。縫い直してください"
             )
 
+        m_bend_items, m_bend_rest = build_seam_bending(m, m_reference, m_tris, pose=m_positions)
+        bend_items += [tuple(i + start for i in t) for t in m_bend_items]
+        bend_rest += m_bend_rest
+        member_triangles.append(m_tris)
+
         positions += m_positions
         reference += m_reference
         edges += [(a + start, b + start) for a, b in m_edges]
@@ -720,6 +768,10 @@ def build_group_sim(members):
     if seam_pairs:
         sim.set_seams(seam_pairs, props.seam_compliance)
         sim.set_seam_closure(0.0)
+    if bend_items:
+        sim.set_seam_bending(bend_items, bend_rest, props.bending_compliance)
+        if len(members) > 1:
+            apply_group_materials(sim, members, offsets)    # 布ごとの生地の曲げを縫い目の曲げにも
 
     elastic_count = apply_group_elastics(sim, members, offsets)
 
@@ -776,5 +828,8 @@ def build_group_sim(members):
         # 変わっていない布の分をそのまま使うため。create_state が取り出す
         "reference": reference,
         "seam_pairs": seam_pairs,
+        # 縫い目の曲げ制約を型紙の差し替えで作り直すのに使う(create_state が取り出す)
+        "member_triangles": member_triangles,
+        "seam_bending": len(bend_items),
     }
     return sim, info

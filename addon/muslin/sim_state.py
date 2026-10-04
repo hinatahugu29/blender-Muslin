@@ -78,6 +78,7 @@ def create_state(obj, props):
     sim, info = mesh_io.build_group_sim(members)
     reference = info.pop("reference")
     seam_pairs = info.pop("seam_pairs")
+    member_triangles = info.pop("member_triangles")
     rest = sim.get_positions()
     start_frame = bpy.context.scene.frame_current
 
@@ -99,6 +100,7 @@ def create_state(obj, props):
         "elastic": tuple(mesh_io.elastic_signature(m) for m in members),
         "reference": reference,
         "seam_pairs": seam_pairs,
+        "member_triangles": member_triangles,
         "pattern_warnings": [],
     }
     # 組み立てに使った型紙オブジェクトの指紋を覚える(以後の変化だけを流すため)
@@ -208,6 +210,14 @@ def poll_pattern(state, members=None):
         sim.set_seams(pairs, members[0].muslin.seam_compliance)
         state["seam_pairs"] = pairs
         state["info"]["seams"] = len(pairs)
+
+    # 縫い目をまたぐ曲げ制約も、新しい型紙から作り直す(静止形状が型紙で決まるため)
+    if state.get("member_triangles") is not None:
+        items, rest = mesh_io.group_seam_bending(
+            members, offsets, reference, sim.get_positions(), state["member_triangles"])
+        sim.set_seam_bending(items, rest, members[0].muslin.bending_compliance)
+        if len(members) > 1:
+            mesh_io.apply_group_materials(sim, members, offsets)
 
     if state.get("cache") is not None:
         # 今の姿勢から先は新しい寸法で計算し直す。開始フレームだけは残す

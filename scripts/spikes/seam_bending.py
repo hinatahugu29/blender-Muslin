@@ -14,10 +14,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "addon" / "muslin"))
 sys.path.insert(0, str(REPO / "scripts"))
 import cloth_core  # noqa: E402
+import seam_bending  # noqa: E402
 from verify_core import build_grid  # noqa: E402
 
 EDGE, NY, CLAMP = 0.005, 9, 7
-SUBSTEPS = (8, 16, 32, 64)
+SUBSTEPS = (8, 32, 64)
 
 
 def strip(nx_total, split_at=None):
@@ -41,7 +42,7 @@ def strip(nx_total, split_at=None):
     return pos, edges, tris, seams, nx_total
 
 
-def droop(nx_total, split_at, compliance, substeps, seam_compliance=0.0):
+def droop(nx_total, split_at, compliance, substeps, seam_compliance=0.0, bend=False):
     pos, edges, tris, seams, _ = strip(nx_total, split_at)
     quads = cloth_core.bending_quads_from_triangles(tris)
     # 固定: 1 枚目の左の CLAMP 列
@@ -51,6 +52,13 @@ def droop(nx_total, split_at, compliance, substeps, seam_compliance=0.0):
     if seams:
         sim.set_seams(seams, seam_compliance)
         sim.set_seam_closure(0.0)
+        if bend:
+            # 縫い目をまたぐ曲げ制約(M10)。縫い目の辺は列 split_at
+            a_nx = split_at + 1
+            chain_a = [y * a_nx + split_at for y in range(NY)]
+            chain_b = [s_[1] for s_ in seams]
+            items, rest = seam_bending.rungs(seams, chain_a, chain_b, seam_bending.boundary_wings(tris), pos)
+            sim.set_seam_bending(items, rest, compliance)
     for _ in range(300):
         sim.step(1.0 / 60.0, -9.81, 20, substeps, 0.6, (0.0, 0.0, 0.0),
                  False, 0.0, 0.3, False, 0.0, 0.3, False, 0.0, 2, False)
@@ -65,16 +73,16 @@ def droop(nx_total, split_at, compliance, substeps, seam_compliance=0.0):
 
 def main():
     nx = 41
-    print(f"{'compliance':>10} {'substeps':>8} {'1枚':>8} {'2枚(縫い目)':>12} {'差':>8}")
-    for compliance in (0.0, 1e-3, 5e-3, 2e-2, 5e-2):
+    print(f"{'compliance':>10} {'substeps':>8} {'1枚':>8} {'縫い目のみ':>10} {'曲げ制約つき':>12} {'残る差':>8}", flush=True)
+    for compliance in (0.0, 1e-3, 5e-3):
         for sub in SUBSTEPS:
             one, _ = droop(nx, None, compliance, sub)
             two, _ = droop(nx, 20, compliance, sub)
-            diff = None if one is None or two is None else two - one
-            print(f"{compliance:>10} {sub:>8} "
-                  f"{('%.3f' % one) if one is not None else 'NaN':>8} "
-                  f"{('%.3f' % two) if two is not None else 'NaN':>12} "
-                  f"{('%+.3f' % diff) if diff is not None else '':>8}")
+            fixed, _ = droop(nx, 20, compliance, sub, bend=True)
+            fmt = lambda v: ('%.3f' % v) if v is not None else 'NaN'
+            diff = None if one is None or fixed is None else fixed - one
+            print(f"{compliance:>10} {sub:>8} {fmt(one):>8} {fmt(two):>10} {fmt(fixed):>12} "
+                  f"{('%+.3f' % diff) if diff is not None else '':>8}", flush=True)
 
 
 if __name__ == "__main__":

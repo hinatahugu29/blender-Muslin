@@ -1224,16 +1224,20 @@ def main():
         d.move_grab((hit[0], hit[1], hit[2] + 0.08))        # 8cm 持ち上げる
         for _ in range(30):
             d.step()
+        # つまんでいる間に、布が着せた形から動いていること(手を離すと、縫い目の曲げ抵抗などで
+        # 元の形へ戻りうるので、動いたかどうかは離す前に見る)
+        _now = np.asarray(d.state["sim"].get_positions(), dtype=np.float64).reshape(-1, 3)
+        held = float(np.linalg.norm(_now - np.asarray(dressed), axis=1).max())
         d.end_grab()
         for _ in range(60):
             d.step()
         check("確定すると保存する", d.finish() and rest_shape.is_dressed(piece))
         moved = max(math.dist(a, b) for a, b in zip(dressed, positions_of(piece)))
         check("つまんで整えた形が開始姿勢になる",
-              moved > 0.01 and np.allclose(rest_shape.load(piece),
-                                            np.asarray(positions_of(piece), np.float32).ravel(),
-                                            atol=1e-6),
-              f"着せた形から最大 {moved * 100:.1f}cm")
+              held > 0.01 and np.allclose(rest_shape.load(piece),
+                                           np.asarray(positions_of(piece), np.float32).ravel(),
+                                           atol=1e-6),
+              f"つまんでいる間 最大 {held * 100:.1f}cm / 確定時 着せた形から最大 {moved * 100:.1f}cm")
         check("整えても縫い目は閉じたまま", seam_gap(piece) < 0.002,
               f"{seam_gap(piece) * 1000:.2f}mm")
 

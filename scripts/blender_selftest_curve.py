@@ -672,6 +672,30 @@ def main():
     # 後の検査のために、消した縫い目を足し直す(順番は Right、Left のまま)
     cp.add_seam(pair, [(4, 0.0, 1, 0.0)], [(6, 0.0, 7, 0.0)], name="Left")
     cp.apply_seams(pair)
+    # 縫い目をまたぐ曲げ制約(蝶番にならないように)。縫い目 2 本 × 頂点 17 本ぶんの隣り合う対
+    sim_state.start_simulation(pair_cloth, pair_cloth.muslin)
+    st_p = sim_state.get_state(pair_cloth)
+    bend_n = st_p["sim"].seam_bending_count
+    check("縫い目をまたぐ曲げ制約がコアに渡される", bend_n > 10 and st_p["info"]["seam_bending"] == bend_n, f"{bend_n} 組")
+    start_p = np.array(st_p["sim"].get_positions()).reshape(-1, 3)
+    for f in range(2, 8):
+        scene.frame_set(f)
+    end_p = np.array(sim_state.get_state(pair_cloth)["sim"].get_positions()).reshape(-1, 3)
+    check("曲げ制約があっても着せた姿勢から崩れない(6 フレームで最大移動 3cm 未満)",
+          np.isfinite(end_p).all() and np.abs(end_p - start_p).max() < 0.03, f"{np.abs(end_p - start_p).max() * 1000:.2f}mm")
+    # 型紙(Curve)を変えると、静止形状が型紙で決まるので作り直される
+    pts_p = pair.data.splines[0].bezier_points
+    for i in (1, 2):
+        pts_p[i].co.x = 0.32
+        pts_p[i].handle_left = pts_p[i].handle_right = pts_p[i].co
+    check("型紙を変えても縫い目の曲げ制約は残る", sim_state.poll_pattern(st_p) is True
+          and st_p["sim"].seam_bending_count == bend_n)
+    sim_state.stop_simulation(pair_cloth)
+    scene.frame_set(1)
+    for i in (1, 2):
+        pts_p[i].co.x = 0.3
+        pts_p[i].handle_left = pts_p[i].handle_right = pts_p[i].co
+
     dressed = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
     rad = np.hypot(dressed[:, 0], dressed[:, 1])
     check("着せた後も体の外側にある", rad.min() > 0.1 - 0.004, f"最小 {rad.min():.4f}m")

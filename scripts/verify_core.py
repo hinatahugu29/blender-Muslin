@@ -1687,6 +1687,80 @@ def test_curve_range_points():
           len(ce.range_points(segs, uids, 1, 0.0, 3, 0.0)) > len(ce.range_points(segs, uids, 1, 0.0, 2, 0.0)))
 
 
+def test_seam_bending():
+    """縫い目をまたぐ曲げ制約: 縫い合わせた短冊が、1 枚の短冊に近い硬さになる(M10)"""
+    if not has_numpy():
+        skip("縫い目をまたぐ曲げ制約", "numpy が無い")
+        return
+    import seam_bending as sb
+
+    nx, ny, edge, clamp, split = 41, 9, 0.005, 7, 20
+    params = (1.0 / 60.0, -9.81, 20, 32, 0.6, (0.0, 0.0, 0.0),
+              False, 0.0, 0.3, False, 0.0, 0.3, False, 0.0, 2, False)
+
+    def one_piece():
+        positions, edges, _b, tris, _t = build_grid(nx, ny, edge)
+        quads = cloth_core.bending_quads_from_triangles(tris)
+        pinned = [y * nx + x for y in range(ny) for x in range(clamp)]
+        sim = cloth_core.ClothSim(positions, edges, quads, tris, pinned, 0.15, 0.0, 0.0)
+        tip = [y * nx + nx - 1 for y in range(ny)]
+        return sim, tip
+
+    def two_pieces(with_bending):
+        a_nx, b_nx = split + 1, nx - split
+        pa, ea, _b, ta, _t = build_grid(a_nx, ny, edge)
+        pb, eb, _b, tb, _t = build_grid(b_nx, ny, edge)
+        for k in range(0, len(pb), 3):
+            pb[k] += split * edge
+        n_a = len(pa) // 3
+        positions = pa + pb
+        edges = ea + [(i + n_a, j + n_a) for i, j in eb]
+        tris = ta + [(i + n_a, j + n_a, k + n_a) for i, j, k in tb]
+        quads = cloth_core.bending_quads_from_triangles(tris)
+        pinned = [y * a_nx + x for y in range(ny) for x in range(clamp)]
+        sim = cloth_core.ClothSim(positions, edges, quads, tris, pinned, 0.15, 0.0, 0.0)
+        chain_a = [y * a_nx + split for y in range(ny)]
+        chain_b = [n_a + y * b_nx for y in range(ny)]
+        pairs = list(zip(chain_a, chain_b))
+        sim.set_seams(pairs, 0.0)
+        sim.set_seam_closure(0.0)
+        count = 0
+        if with_bending:
+            items, rest = sb.rungs(pairs, chain_a, chain_b, sb.boundary_wings(tris), positions)
+            count = len(items)
+            sim.set_seam_bending(items, rest, 0.0)
+        tip = [n_a + y * b_nx + b_nx - 1 for y in range(ny)]
+        return sim, tip, count
+
+    def droop(sim, tip):
+        for _ in range(300):
+            sim.step(*params)
+        if not sim.is_finite():
+            return None
+        p = sim.get_positions()
+        return -sum(p[i * 3 + 2] for i in tip) / len(tip) / ((nx - clamp) * edge)
+
+    one = droop(*one_piece())
+    hinge = droop(*two_pieces(False)[:2])
+    sim, tip, count = two_pieces(True)
+    fixed = droop(sim, tip)
+    check("縫い目の隣り合う頂点対ごとに曲げ制約ができる(9 頂点 = 8 組)", count == ny - 1 and sim.seam_bending_count == ny - 1,
+          f"{count} 組")
+    check("前提: 縫い目だけでは蝶番になる(1 枚より大きく垂れる)", one is not None and hinge is not None and hinge > one + 0.1,
+          f"1枚 {one:.3f} / 縫い目のみ {hinge:.3f}" if one is not None and hinge is not None else "発散")
+    check("縫い目の曲げ制約で、縫い合わせた短冊が 1 枚に近い硬さになる",
+          fixed is not None and abs(fixed - one) < 0.5 * abs(hinge - one),
+          f"1枚 {one:.3f} / 縫い目のみ {hinge:.3f} / 曲げ制約つき {fixed:.3f}" if fixed is not None else "発散")
+
+    # 頂点対の組み立て
+    tri_list = [(0, 1, 4), (1, 5, 4)]
+    wings = sb.boundary_wings(tri_list)
+    check("外周の辺の対角頂点を引ける", wings.get((0, 1)) == 4 and wings.get((1, 5)) == 4 and (0, 4) in wings)
+    check("頂点数が違う辺どうし(1 対多)は飛ばす",
+          sb.rungs([(0, 10), (1, 10)], [0, 1], [10, 11], {}, [0.0] * 36)[0] == [])
+    check("縫い目の羽根が無ければ飛ばす", sb.rungs([(0, 10), (1, 11)], [0, 1], [10, 11], {}, [0.0] * 36)[0] == [])
+
+
 def compile_addon_modules():
     """bpy 依存モジュールの構文チェック(import はできないので compile のみ)"""
     ok = True
@@ -1725,6 +1799,7 @@ def main():
     test_bending_stiffness()
     test_timings()
     test_seam_logic()
+    test_seam_bending()
     test_seam_codes()
     test_grab()
     test_pattern_uv()
