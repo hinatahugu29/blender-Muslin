@@ -1415,6 +1415,8 @@ Mesh Pattern(M8)は残し、Curve Pattern を**追加の系統**にする。既�
 - [~] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)
 - [x] ピースを体の周りへ巻き付けて置く(Arrange Around Collider。向きは 0° = 正面。自動で等間隔) — `curve_arrange.py`
 - [x] Curve と布の対応の表示(縫い目ごとの色で Curve の辺と布の辺を描く。ピースの番号と縫い目の名前) — `overlay.py`
+- [x] 縫い目の溶接(`Weld Seams`。縫い目の頂点を頂点グループに入れ、Weld モディファイアを付ける。表示・書き出し用で、シミュレーションの頂点は変えない) — `weld.py`
+- [ ] 縫い目をまたぐ曲げ抵抗(今の縫い目は距離の制約だけで、閉じた縫い目では折れやすい可能性がある。要調査)
 - [ ] ゴム紐の Curve 側への移行(縫い目と同じ形)
 - [x] Rebuild 時の姿勢とピン留めの引き継ぎ(旧メッシュの型紙空間を介して新頂点へ補間する) — `curve_transfer.py`
 
