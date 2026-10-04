@@ -1,6 +1,12 @@
 import bpy
 
 
+def _weld_update(self, context):
+    """`weld_seams` / `weld_distance` が変わったとき。循環 import を避けるため遅延 import する。"""
+    from . import weld
+    weld.update_property(self, context)
+
+
 # 生地プリセット。
 #
 # `density` は実際の目付(g/m^2)を kg/m^2 に直したもので、根拠のある値。
@@ -549,6 +555,25 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=0.01,
         precision=6,
+    )
+    weld_seams: bpy.props.BoolProperty(
+        name="Weld Seams",
+        description=(
+            "閉じた縫い目の頂点をつなげて表示する(Weld モディファイアを縫い目の頂点グループに付ける)。"
+            "シミュレーションの頂点は変わらず、最後に Apply すれば閉じた 1 枚のメッシュになる"
+        ),
+        default=False,
+        update=lambda self, ctx: _weld_update(self, ctx),
+    )
+    weld_distance: bpy.props.FloatProperty(
+        name="Weld Distance",
+        description="溶接する距離。0 なら辺の長さの 2%(最小 0.5mm)から自動で決める",
+        default=0.0,
+        min=0.0,
+        soft_max=0.01,
+        unit='LENGTH',
+        precision=4,
+        update=lambda self, ctx: _weld_update(self, ctx),
     )
 
     # --- キャッシュ ---

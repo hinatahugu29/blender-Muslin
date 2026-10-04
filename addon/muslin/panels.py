@@ -457,6 +457,10 @@ class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
         col.prop(tools, "show_seams")
         col.prop(props, "seam_close_frames")
         col.prop(props, "seam_compliance")
+        col.prop(props, "weld_seams")
+        if props.weld_seams:
+            col.prop(props, "weld_distance")
+            layout.operator("muslin.update_weld", icon='FILE_REFRESH')
 
 
 class MUSLIN_UL_elastics(bpy.types.UIList):

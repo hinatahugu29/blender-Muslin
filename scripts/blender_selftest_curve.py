@@ -121,6 +121,20 @@ def draw_panel(context):
     return log
 
 
+def evaluated_stats(obj):
+    """モディファイア適用後のメッシュの (頂点数, 外周の辺の数)。"""
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = obj.evaluated_get(dg)
+    mesh = ev.to_mesh()
+    try:
+        loops = np.empty(len(mesh.loops), dtype=np.int32)
+        mesh.loops.foreach_get("edge_index", loops)
+        from muslin import rest_shape as _rs
+        return len(mesh.vertices), len(_rs.outline_edges(len(mesh.edges), loops))
+    finally:
+        ev.to_mesh_clear()
+
+
 def main():
     import muslin
     from muslin import rest_shape
@@ -611,9 +625,53 @@ def main():
     props2.pin_vertex_group = "Pin"
     open_gap2 = seam_gap(pair_cloth)
     check("置いただけでは縫い目は開いている", open_gap2 > 0.03, f"{open_gap2 * 100:.1f}cm")
+    # 縫い目の溶接(Weld Seams): 縫い目が開いている間は何も溶接されない
+    from muslin import weld
+    base_count = len(pair_cloth.data.vertices)
+    before_v, before_b = evaluated_stats(pair_cloth)
+    props2.weld_seams = True
+    group = pair_cloth.vertex_groups.get(weld.GROUP_NAME)
+    seam_v = weld.seam_vertices(pair_cloth)
+    check("Weld Seams を入れると頂点グループと Weld モディファイアができる",
+          group is not None and weld._our_modifier(pair_cloth) is not None and len(seam_v) > 0, f"{len(seam_v)} 頂点")
+    check("モディファイアは先頭で、頂点グループに限って溶接する",
+          list(pair_cloth.modifiers)[0].name == weld.MODIFIER_NAME
+          and pair_cloth.modifiers[weld.MODIFIER_NAME].vertex_group == weld.GROUP_NAME
+          and pair_cloth.modifiers[weld.MODIFIER_NAME].mode == 'ALL')
+    members = sorted(v.index for v in pair_cloth.data.vertices if any(g.group == group.index for g in v.groups))
+    check("頂点グループは縫い目の頂点と一致する", members == seam_v)
+    check("距離は辺の長さの 2%", abs(pair_cloth.modifiers[weld.MODIFIER_NAME].merge_threshold
+                                   - max(weld.MIN_DISTANCE, 0.02 * mesh_io.median_edge_length(pair_cloth.data))) < 1e-9)
+    open_v, open_b = evaluated_stats(pair_cloth)
+    check("縫い目が開いている間は溶接されない(頂点数・外周が変わらない)",
+          open_v == before_v == base_count and open_b == before_b, f"{open_v} 頂点 / 外周 {open_b}")
+
     res = bpy.ops.muslin.dress()
     check("Dress が通る(2 ピース・2 本の縫い目)", res == {'FINISHED'}, str(res))
     check("縫い目が閉じる", seam_gap(pair_cloth) < 0.003, f"{seam_gap(pair_cloth) * 1000:.2f}mm")
+    closed_v, closed_b = evaluated_stats(pair_cloth)
+    check("縫い目が閉じると、その頂点が溶接されて減る", closed_v < base_count, f"{base_count} → {closed_v}")
+    check("溶接で縫い目が外周でなくなる(外周の辺が減る)", closed_b < open_b, f"{open_b} → {closed_b}")
+    check("溶接で減った頂点数は縫い目の頂点のおよそ半分(2 枚の頂点が対になる)",
+          0.35 * len(seam_v) < base_count - closed_v < 0.65 * len(seam_v), f"{base_count - closed_v} / {len(seam_v)}")
+    check("ベースメッシュ(シミュレーションの頂点)は溶接されない", len(pair_cloth.data.vertices) == base_count)
+    props2.weld_distance = 0.0001
+    check("距離を設定すればモディファイアに反映される",
+          abs(pair_cloth.modifiers[weld.MODIFIER_NAME].merge_threshold - 0.0001) < 1e-9)
+    props2.weld_distance = 0.0
+    cp.remove_seam(pair, cp.load_record(pair)["seams"][1]["uid"])      # Left を消す(後で足し直す)
+    check("縫い目を消すと頂点グループも合わせて更新される",
+          len(weld.seam_vertices(pair_cloth)) < len(seam_v)
+          and sorted(v.index for v in pair_cloth.data.vertices
+                     if any(g.group == pair_cloth.vertex_groups[weld.GROUP_NAME].index for g in v.groups))
+          == weld.seam_vertices(pair_cloth))
+    props2.weld_seams = False
+    check("Weld Seams を切ると、モディファイアと頂点グループが片付く",
+          weld._our_modifier(pair_cloth) is None and weld.GROUP_NAME not in pair_cloth.vertex_groups
+          and "Pin" in pair_cloth.vertex_groups)
+    # 後の検査のために、消した縫い目を足し直す(順番は Right、Left のまま)
+    cp.add_seam(pair, [(4, 0.0, 1, 0.0)], [(6, 0.0, 7, 0.0)], name="Left")
+    cp.apply_seams(pair)
     dressed = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
     rad = np.hypot(dressed[:, 0], dressed[:, 1])
     check("着せた後も体の外側にある", rad.min() > 0.1 - 0.004, f"最小 {rad.min():.4f}m")

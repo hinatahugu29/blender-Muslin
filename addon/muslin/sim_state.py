@@ -64,7 +64,9 @@ def create_state(obj, props):
     まとめて1つの状態にする。props は互換のために受け取るが、設定は各布から取る。
     """
     members = mesh_io.group_members(obj)
+    from . import weld
     for m in members:
+        weld.sync_if_enabled(m)
         # 元の形をどう扱うかを決めてから組み立てる。
         # (Muslin が書いた形なら戻す / 人が作った形ならそれを元の形にする)
         rest_shape.sync_before_start(m)

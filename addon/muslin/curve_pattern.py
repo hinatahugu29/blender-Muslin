@@ -396,6 +396,8 @@ def _write_seams(cloth, record, mesh_data):
     if attr is None:
         attr = mesh.attributes.new(seams.SEAM_ATTRIBUTE, 'INT', 'EDGE')
     attr.data.foreach_set("value", codes)
+    from . import weld
+    weld.sync_if_enabled(cloth)
     return broken
 
 

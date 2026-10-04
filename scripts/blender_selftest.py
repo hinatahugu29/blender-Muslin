@@ -831,6 +831,45 @@ def main():
           f"{open_gap * 100:.1f}cm → {closed_gap * 1000:.2f}mm")
     check("型紙は変わらない",
           abs(float(np.ptp(rest_shape.load_pattern(piece)[1::3]))) < 1e-6)
+
+    # 縫い目の溶接(Mesh Pattern の布でも動く。縫い目の操作で頂点グループが更新される)
+    from muslin import weld
+    piece_base = len(piece.data.vertices)
+    piece.muslin.weld_seams = True
+    seam_verts = weld.seam_vertices(piece)
+    check("Weld Seams: 頂点グループと Weld モディファイアができる",
+          weld.GROUP_NAME in piece.vertex_groups and weld._our_modifier(piece) is not None and len(seam_verts) > 0)
+    _dg = bpy.context.evaluated_depsgraph_get()
+    _ev = piece.evaluated_get(_dg)
+    _mesh = _ev.to_mesh()
+    welded = len(_mesh.vertices)
+    _ev.to_mesh_clear()
+    check("Weld Seams: 閉じた縫い目の頂点が溶接されて減る(ベースは変わらない)",
+          welded < piece_base and len(piece.data.vertices) == piece_base, f"{piece_base} → {welded}")
+    # 縫い目の操作で頂点グループが更新される(複製に対して行い、後の検査のために元は残す)
+    dup = piece.copy()
+    dup.data = piece.data.copy()
+    bpy.context.scene.collection.objects.link(dup)
+    for o in bpy.context.scene.objects:
+        o.select_set(o is dup)
+    bpy.context.view_layer.objects.active = dup
+    bpy.ops.muslin.remove_seam()
+    dup_group = dup.vertex_groups[weld.GROUP_NAME]
+    check("縫い目を消すと、溶接の頂点グループも空になる",
+          len(dup.muslin_seams) == 0 and weld.seam_vertices(dup) == []
+          and not any(g.group == dup_group.index for v in dup.data.vertices for g in v.groups))
+    bpy.data.objects.remove(dup)
+    for o in bpy.context.scene.objects:
+        o.select_set(o is piece)
+    bpy.context.view_layer.objects.active = piece
+    piece.muslin_seams[0].enabled = False
+    weld.sync(piece)
+    check("縫い目を無効にすると、溶接の対象から外れる", weld.seam_vertices(piece) == [])
+    piece.muslin_seams[0].enabled = True
+    weld.sync(piece)
+    check("有効に戻すと対象に戻る", weld.seam_vertices(piece) == seam_verts)
+    piece.muslin.weld_seams = False
+    check("Weld Seams を切ると片付く", weld._our_modifier(piece) is None and weld.GROUP_NAME not in piece.vertex_groups)
     check("シミュレーションを走らせたままにしない", not sim_state.is_running(piece))
 
     # 以後のアニメーションは着せた姿勢から始まる(縫い目の閉じる数十フレームが入らない)

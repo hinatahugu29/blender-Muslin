@@ -25,6 +25,15 @@ def _bm_world_positions(bm, matrix_world):
 
 # ------------------------------------------------------ 縫い目の属性の操作
 
+def _weld_sync(obj):
+    """縫い目が変わったあとに、溶接の頂点グループを今の縫い目に合わせる(有効な布だけ)。"""
+    from . import weld
+    if obj.mode == 'OBJECT':
+        weld.sync_if_enabled(obj)
+    # 編集モードのときは、オブジェクトモードに戻ってから Update Weld で更新する
+
+
+
 def _edge_index_map(mesh):
     return {tuple(sorted(e.vertices)): e.index for e in mesh.edges}
 
@@ -577,6 +586,7 @@ class MUSLIN_OT_add_seam(bpy.types.Operator):
             f"[muslin] シーム追加: {len(chain_a)}頂点({length_a:.3f}m) <-> "
             f"{len(chain_b)}頂点({length_b:.3f}m), ペア {len(pairs)}, flipped={flipped}"
         )
+        _weld_sync(obj)
         message = f"{seam.name}: {len(chain_a)} <-> {len(chain_b)} 頂点 / {len(pairs)} ペア"
         if overwritten:
             self.report(
@@ -606,6 +616,7 @@ class MUSLIN_OT_remove_seam(bpy.types.Operator):
             _clear_seam_codes(obj, [obj.muslin_seams[index].uid])
             obj.muslin_seams.remove(index)
             obj.muslin_seam_active = max(0, index - 1)
+        _weld_sync(obj)
         return {'FINISHED'}
 
 
@@ -625,6 +636,7 @@ class MUSLIN_OT_clear_seams(bpy.types.Operator):
         count = len(obj.muslin_seams)
         _clear_seam_codes(obj, [s.uid for s in obj.muslin_seams if s.uid])
         obj.muslin_seams.clear()
+        _weld_sync(obj)
         self.report({'INFO'}, f"{count} 本の縫い目を削除しました")
         return {'FINISHED'}
 
