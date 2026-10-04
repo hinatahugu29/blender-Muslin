@@ -292,6 +292,44 @@ mod bindings {
             self.inner.set_seams(&as_usize_pairs(&pairs), compliance);
         }
 
+        /// 縫い目をまたぐ曲げ制約を設定する(差し替え。空で解除)。
+        ///
+        /// items の各要素は (p1, p2, p3, p4, a0, b0, a1, b1)。rest は 1 件あたり 12 個の数
+        /// (p1〜p4 の仮想の静止位置 x, y, z を順に)。縫い目が閉じている間だけ効く
+        #[pyo3(signature = (items, rest, compliance = 0.0))]
+        fn set_seam_bending(
+            &mut self,
+            items: Vec<(u32, u32, u32, u32, u32, u32, u32, u32)>,
+            rest: Vec<f64>,
+            compliance: f64,
+        ) -> PyResult<()> {
+            if rest.len() != items.len() * 12 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "rest must have 12 numbers per item",
+                ));
+            }
+            let idx: Vec<_> = items
+                .iter()
+                .map(|t| {
+                    (
+                        t.0 as usize, t.1 as usize, t.2 as usize, t.3 as usize,
+                        t.4 as usize, t.5 as usize, t.6 as usize, t.7 as usize,
+                    )
+                })
+                .collect();
+            let pts = to_vec3s(&rest)?;
+            let rest: Vec<[Vec3; 4]> = pts.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+            self.inner
+                .set_seam_bending(&idx, &rest, compliance)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// 縫い目をまたぐ曲げ制約の数
+        #[getter]
+        fn seam_bending_count(&self) -> usize {
+            self.inner.seam_bending_count()
+        }
+
         /// 頂点をつまんで target(ワールド座標)へ引く。compliance 0 で硬く引く
         #[pyo3(signature = (index, target, compliance = 0.0))]
         fn set_grab(&mut self, index: usize, target: (f64, f64, f64), compliance: f64) -> PyResult<()> {

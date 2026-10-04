@@ -63,10 +63,20 @@ impl BendingConstraint {
         p4: usize,
         compliance: f64,
     ) -> Option<Self> {
-        let a = positions[p1];
-        let b = positions[p2];
-        let c = positions[p3];
-        let d = positions[p4];
+        Self::from_points(
+            [positions[p1], positions[p2], positions[p3], positions[p4]],
+            [p1, p2, p3, p4],
+            compliance,
+        )
+    }
+
+    /// 4 頂点の静止位置を直接渡して作る。`new` の本体。
+    ///
+    /// 縫い目をまたぐ曲げ制約のように、頂点の実際の位置ではなく**仮想の静止形状**
+    /// (片側のピースを共有辺の向こうへ展開した形)から重みを決めたいときに使う。
+    pub fn from_points(rest: [Vec3; 4], idx: [usize; 4], compliance: f64) -> Option<Self> {
+        let [a, b, c, d] = rest;
+        let [p1, p2, p3, p4] = idx;
 
         let (alpha, beta, gamma) = barycentric(d, a, b, c)?;
         let mut k = [alpha, beta, gamma, -1.0];
@@ -170,6 +180,55 @@ pub fn solve_bending(
             }
             positions[idx[i]] = positions[idx[i]].add(dir.scale(w[i] * c.k[i] * d_lambda));
         }
+    }
+}
+
+/// 縫い目をまたぐ曲げ制約。閉じた縫い目を、1 枚の布の折り目と同じように曲げに抵抗させる。
+///
+/// 縫い目は距離の制約だけだと**蝶番**になる(硬い生地を高品質で解くと、縫い目の位置だけ
+/// 折れ曲がる。ROADMAP M10)。縫い目の隣り合う頂点対 `(a0, b0)`・`(a1, b1)` について、
+/// 共有辺を `(a0, a1)`、両側の対角頂点を A 側と B 側のピースの三角形から取って折り目にする。
+/// 静止形状は片側を共有辺の向こうへ展開した仮想の平面から決める(呼び出し側が渡す)。
+///
+/// 縫い目がまだ開いている間は効かせない。B 側の頂点が A 側の辺から離れているのに、
+/// 平らに保とうとして縫い合わせの動きと綱引きになるため。`partners` の 2 対の距離が
+/// `tolerance` 以下のときだけ解く。
+#[derive(Clone, Copy, Debug)]
+pub struct SeamBending {
+    pub c: BendingConstraint,
+    /// 縫い合わせる頂点対 `(a0, b0)`, `(a1, b1)`
+    pub partners: [(usize, usize); 2],
+    /// 縫い目が「閉じた」とみなす隙間の上限
+    pub tolerance: f64,
+}
+
+impl SeamBending {
+    fn closed(&self, positions: &[Vec3]) -> bool {
+        self.partners
+            .iter()
+            .all(|&(a, b)| positions[a].sub(positions[b]).length() <= self.tolerance)
+    }
+}
+
+/// 縫い目の曲げ制約を 1 掃引ぶん解く(逐次。縫い目の数は少ないので色分けしない)。
+pub fn solve_seam_bending(
+    positions: &mut [Vec3],
+    inv_mass: &[f64],
+    items: &[SeamBending],
+    lambdas: &mut [f64],
+    inv_dt2: f64,
+) {
+    for (ci, item) in items.iter().enumerate() {
+        if !item.closed(positions) {
+            continue;
+        }
+        solve_bending(
+            positions,
+            inv_mass,
+            std::slice::from_ref(&item.c),
+            &mut lambdas[ci..ci + 1],
+            inv_dt2,
+        );
     }
 }
 

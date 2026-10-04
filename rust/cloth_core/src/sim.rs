@@ -7,7 +7,7 @@
 //! - XPBD の λ(ラグランジュ乗数)はサブステップごとにリセットし、反復内で累積する
 //!   (これにより compliance が実際の物性値として反復回数に依存しなくなる)。
 
-use crate::bending::{solve_bending_colored, BendingConstraint};
+use crate::bending::{solve_bending_colored, solve_seam_bending, BendingConstraint, SeamBending};
 use crate::collision::{SpatialHash, TriangleBvh};
 use crate::math::Vec3;
 
@@ -288,6 +288,8 @@ pub struct ClothSim {
     pub bending_constraints: Vec<BendingConstraint>,
     /// 縫製制約(M3)。`seam_closure` によって rest_length が変化する。
     pub seam_constraints: Vec<DistanceConstraint>,
+    /// 縫い目をまたぐ曲げ制約。閉じた縫い目が蝶番にならないようにする。
+    pub seam_bending: Vec<SeamBending>,
 
     /// 伸び・曲げの制約の、色ごとのブロックの区間(M9)。制約は色の順に並べてある。
     /// 同じ色のブロックは頂点を共有しないので並列に解ける
@@ -308,6 +310,7 @@ pub struct ClothSim {
     lambda_stretch: Vec<f64>,
     lambda_bending: Vec<f64>,
     lambda_seam: Vec<f64>,
+    lambda_seam_bending: Vec<f64>,
 
     /// サブステップ開始時の位置。掃過判定で「どこから来たか」に使う。
     substep_start: Vec<Vec3>,
@@ -531,12 +534,14 @@ impl ClothSim {
             lambda_stretch: vec![0.0; stretch_constraints.len()],
             lambda_bending: vec![0.0; bending_constraints.len()],
             lambda_seam: Vec::new(),
+            lambda_seam_bending: Vec::new(),
             substep_start: vec![Vec3::zero(); n],
             stretch_constraints,
             bending_constraints,
             stretch_colors,
             bending_colors,
             seam_constraints: Vec::new(),
+            seam_bending: Vec::new(),
             seam_closure: 0.0,
             grab: None,
             layers: Vec::new(),
@@ -645,6 +650,9 @@ impl ClothSim {
         for c in self.bending_constraints.iter_mut() {
             c.compliance = bending;
         }
+        for sb in self.seam_bending.iter_mut() {
+            sb.c.compliance = bending;
+        }
     }
 
     /// 頂点ごとに生地を割り当てる(重ね着で服ごとに生地が違うとき。M7)。
@@ -681,6 +689,9 @@ impl ClothSim {
         }
         for c in self.bending_constraints.iter_mut() {
             c.compliance = bending[vertex_material[c.p1]];
+        }
+        for sb in self.seam_bending.iter_mut() {
+            sb.c.compliance = bending[vertex_material[sb.c.p1]];
         }
         Ok(())
     }
@@ -910,6 +921,50 @@ impl ClothSim {
         self.apply_seam_closure();
     }
 
+    /// 縫い目をまたぐ曲げ制約を設定する(差し替え)。空で解除。
+    ///
+    /// `items[i]` は `(p1, p2, p3, p4, a0, b0, a1, b1)`:
+    /// 共有辺 `(p1, p2)` = 縫い目の A 側の隣り合う頂点、`p3` = A 側の対角頂点、
+    /// `p4` = B 側の対角頂点、`(a0, b0)`・`(a1, b1)` = 縫い合わせる頂点対。
+    /// `rest` は i 番目の 4 頂点の仮想の静止位置 `[p1, p2, p3, p4]`(片側を展開した平面。
+    /// 4 点が平面上にあること)。`compliance` は曲げの compliance。
+    /// 縫い目が「閉じた」とみなす隙間は共有辺の長さの 0.3 倍。
+    pub fn set_seam_bending(
+        &mut self,
+        items: &[(usize, usize, usize, usize, usize, usize, usize, usize)],
+        rest: &[[Vec3; 4]],
+        compliance: f64,
+    ) -> Result<(), String> {
+        if items.len() != rest.len() {
+            return Err(format!("items {} != rest {}", items.len(), rest.len()));
+        }
+        let n = self.positions.len();
+        let mut out = Vec::with_capacity(items.len());
+        for (it, r) in items.iter().zip(rest.iter()) {
+            let (p1, p2, p3, p4, a0, b0, a1, b1) = *it;
+            if [p1, p2, p3, p4, a0, b0, a1, b1].iter().any(|&i| i >= n) {
+                return Err("seam bending index out of range".into());
+            }
+            let Some(c) = BendingConstraint::from_points(*r, [p1, p2, p3, p4], compliance) else {
+                continue; // 縮退した形(静止形状を決められない)は飛ばす
+            };
+            let edge = r[0].sub(r[1]).length();
+            out.push(SeamBending {
+                c,
+                partners: [(a0, b0), (a1, b1)],
+                tolerance: 0.3 * edge,
+            });
+        }
+        self.lambda_seam_bending = vec![0.0; out.len()];
+        self.seam_bending = out;
+        Ok(())
+    }
+
+    /// 縫い目をまたぐ曲げ制約の数。
+    pub fn seam_bending_count(&self) -> usize {
+        self.seam_bending.len()
+    }
+
     /// 頂点 `index` をつまんで `target` へ引く(ビューポートで布を動かす操作)。
     ///
     /// ピン留めと違い、コンプライアンスを持つ XPBD の制約として解く。
@@ -1035,6 +1090,7 @@ impl ClothSim {
         self.lambda_stretch.iter_mut().for_each(|l| *l = 0.0);
         self.lambda_bending.iter_mut().for_each(|l| *l = 0.0);
         self.lambda_seam.iter_mut().for_each(|l| *l = 0.0);
+        self.lambda_seam_bending.iter_mut().for_each(|l| *l = 0.0);
         if let Some(g) = self.grab.as_mut() {
             g.lambda = 0.0;
         }
@@ -1093,6 +1149,13 @@ impl ClothSim {
                 &self.inv_mass,
                 &self.seam_constraints,
                 &mut self.lambda_seam,
+                inv_dt2,
+            );
+            solve_seam_bending(
+                &mut self.positions,
+                &self.inv_mass,
+                &self.seam_bending,
+                &mut self.lambda_seam_bending,
                 inv_dt2,
             );
             self.timings.seam += ms_since(t);
@@ -2517,6 +2580,140 @@ mod tests {
             soft > stiff + 0.15 && medium > stiff,
             "compliance が曲げ剛性として効いていない: 硬い {stiff:.3} / 中 {medium:.3} / 柔 {soft:.3}"
         );
+    }
+
+    /// 縫い目をまたぐ曲げ制約(M10)。
+    ///
+    /// 縫い目は距離の制約だけだと蝶番になり、硬い生地を高品質で解くと、真ん中で縫い合わせた
+    /// 短冊は 1 枚の短冊より大きく垂れる。縫い目をまたぐ曲げ制約を足せば、1 枚に近づく。
+    #[test]
+    fn seam_bending_makes_sewn_strip_as_stiff_as_one_piece() {
+        let (nx, ny, edge, clamp) = (41usize, 9usize, 0.005, 7usize);
+        let overhang = (nx - clamp) as f64 * edge;
+        let split = 20usize; // 列 20 で 2 枚に分ける(縫い目の頂点は同じ位置に重ねる)
+
+        // 1 枚の短冊の先端の垂れ。sewn が true なら、2 枚に分けて縫い合わせる
+        let droop = |sewn: bool, with_bending: bool| -> f64 {
+            let params = SimParams {
+                iterations: 20,
+                substeps: 32,
+                damping: 0.6,
+                collision_enabled: false,
+                ..Default::default()
+            };
+            if !sewn {
+                let (positions, edges, quads, tris, _) = build_grid(nx, ny, edge);
+                let idx = |x: usize, y: usize| y * nx + x;
+                let pinned: Vec<usize> = (0..ny)
+                    .flat_map(|y| (0..clamp).map(move |x| idx(x, y)))
+                    .collect();
+                let mut sim =
+                    ClothSim::new(positions, &edges, &quads, &tris, &pinned, 0.15, 0.0, 0.0);
+                for _ in 0..300 {
+                    sim.step(1.0 / 60.0, &params);
+                }
+                assert!(sim.is_finite());
+                let tip: f64 =
+                    (0..ny).map(|y| sim.positions[idx(nx - 1, y)].z).sum::<f64>() / ny as f64;
+                return -tip / overhang;
+            }
+
+            // A: 列 0..=split、B: 列 split..nx-1(B の最初の列は A の最後の列と同じ位置)
+            let a_nx = split + 1;
+            let b_nx = nx - split;
+            let (pa, ea, _qa, ta, _) = build_grid(a_nx, ny, edge);
+            let (mut pb, eb, _qb, tb, _) = build_grid(b_nx, ny, edge);
+            for p in pb.iter_mut() {
+                p.x += split as f64 * edge;
+            }
+            let n_a = pa.len();
+            let mut positions = pa.clone();
+            positions.extend(pb.iter().cloned());
+            let mut edges = ea.clone();
+            edges.extend(eb.iter().map(|&(i, j)| (i + n_a, j + n_a)));
+            let mut tris = ta.clone();
+            tris.extend(tb.iter().map(|&(i, j, k)| (i + n_a, j + n_a, k + n_a)));
+            let quads = crate::bending::quads_from_triangles(&tris);
+            let a_idx = |x: usize, y: usize| y * a_nx + x;
+            let b_idx = |x: usize, y: usize| n_a + y * b_nx + x;
+            let pinned: Vec<usize> = (0..ny)
+                .flat_map(|y| (0..clamp).map(move |x| a_idx(x, y)))
+                .collect();
+            let mut sim =
+                ClothSim::new(positions.clone(), &edges, &quads, &tris, &pinned, 0.15, 0.0, 0.0);
+            let seams: Vec<(usize, usize)> =
+                (0..ny).map(|y| (a_idx(split, y), b_idx(0, y))).collect();
+            sim.set_seams(&seams, 0.0);
+
+            if with_bending {
+                // 縫い目の隣り合う頂点対 (y, y+1) ごとに 1 つ。共有辺 = A の縫い目の辺、
+                // 対角頂点 = A 側は 1 列手前、B 側は 1 列先。仮想の静止形状は B 側を共有辺の向こうへ展開した位置
+                let mut items = Vec::new();
+                let mut rest = Vec::new();
+                for y in 0..ny - 1 {
+                    let (p1, p2) = (a_idx(split, y), a_idx(split, y + 1));
+                    // 対角頂点(三角形の 3 番目の頂点)は、辺の隣の列の頂点
+                    let p3 = a_idx(split - 1, y);
+                    let p4 = b_idx(1, y);
+                    items.push((p1, p2, p3, p4, p1, b_idx(0, y), p2, b_idx(0, y + 1)));
+                    // 平らな連続した布なら、p4 は p3 の反対側に同じ間隔で並ぶ
+                    let e1 = positions[p1];
+                    let e2 = positions[p2];
+                    let w3 = positions[p3];
+                    rest.push([e1, e2, w3, Vec3::new(e1.x + edge, e1.y, e1.z)]);
+                }
+                sim.set_seam_bending(&items, &rest, 0.0).unwrap();
+                assert_eq!(sim.seam_bending_count(), ny - 1);
+            }
+            sim.set_seam_closure(0.0);
+            for _ in 0..300 {
+                sim.step(1.0 / 60.0, &params);
+            }
+            assert!(sim.is_finite());
+            let tip: f64 = (0..ny).map(|y| sim.positions[b_idx(b_nx - 1, y)].z).sum::<f64>()
+                / ny as f64;
+            -tip / overhang
+        };
+
+        let one = droop(false, false);
+        let hinge = droop(true, false);
+        let fixed = droop(true, true);
+        assert!(
+            hinge > one + 0.1,
+            "前提が崩れた: 縫い目だけでは 1 枚と同じ硬さにならないはず (1枚 {one:.3} / 縫い {hinge:.3})"
+        );
+        assert!(
+            (fixed - one).abs() < 0.5 * (hinge - one).abs(),
+            "縫い目の曲げ制約で 1 枚に近づかない: 1枚 {one:.3} / 縫い目のみ {hinge:.3} / 曲げ制約つき {fixed:.3}"
+        );
+    }
+
+    /// 縫い目が開いている間は、縫い目の曲げ制約は効かない(縫い合わせの動きと綱引きにならない)
+    #[test]
+    fn seam_bending_is_inactive_while_the_seam_is_open() {
+        // 2 本の短い線(各 3 頂点)を 0.5 m 離して置き、縫い目で寄せる。共有辺は A の 2 頂点
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.1, 0.0),
+            Vec3::new(-0.1, 0.0, 0.0), // A の対角
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::new(0.5, 0.1, 0.0),
+            Vec3::new(0.6, 0.0, 0.0), // B の対角
+        ];
+        let mut sim = ClothSim::new(positions.clone(), &[], &[], &[], &[2, 5], 0.1, 0.0, 0.0);
+        sim.set_seams(&[(0, 3), (1, 4)], 0.0);
+        let rest = [positions[0], positions[1], positions[2], Vec3::new(0.1, 0.0, 0.0)];
+        sim.set_seam_bending(&[(0, 1, 2, 5, 0, 3, 1, 4)], &[rest], 0.0).unwrap();
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            collision_enabled: false,
+            ..Default::default()
+        };
+        // 開いている間(隙間 0.5m)に 1 ステップ。曲げ制約が効けば p1/p2 が大きく動く
+        sim.step(1.0 / 60.0, &params);
+        let moved = (sim.positions[0].sub(positions[0]).length())
+            .max(sim.positions[1].sub(positions[1]).length());
+        assert!(moved < 0.05, "縫い目が開いているのに曲げ制約が効いた: {moved:.3} m");
     }
 
     /// 制約なしの単一頂点は自由落下する: z = -0.5*g*t^2
