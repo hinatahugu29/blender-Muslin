@@ -182,6 +182,8 @@ Blender をインストールしていても PATH に入っていないことが
 [CHECKPOINTS.md](CHECKPOINTS.md) にあります。**退けた案は理由と実測値ごと
 残してあります**。同じ案を再検討するときは先にそちらを読んでください。
 
+> 別の環境で Pull して作業を再開するときは、[docs/RESUME.md](docs/RESUME.md) に手順と現在地をまとめてあります。
+
 ## ビルド
 
 必要なもの: Rust (rustup/cargo)、maturin、Python 3.11 以降
