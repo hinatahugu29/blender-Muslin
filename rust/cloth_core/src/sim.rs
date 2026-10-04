@@ -928,7 +928,7 @@ impl ClothSim {
     /// `p4` = B 側の対角頂点、`(a0, b0)`・`(a1, b1)` = 縫い合わせる頂点対。
     /// `rest` は i 番目の 4 頂点の仮想の静止位置 `[p1, p2, p3, p4]`(片側を展開した平面。
     /// 4 点が平面上にあること)。`compliance` は曲げの compliance。
-    /// 縫い目が「閉じた」とみなす隙間は共有辺の長さの 0.3 倍。
+    /// 縫い目が「閉じた」とみなす隙間は共有辺の長さの 0.3 倍(有効にする)、1.5 倍を超えたら無効に戻す。
     pub fn set_seam_bending(
         &mut self,
         items: &[(usize, usize, usize, usize, usize, usize, usize, usize)],
@@ -953,6 +953,8 @@ impl ClothSim {
                 c,
                 partners: [(a0, b0), (a1, b1)],
                 tolerance: 0.3 * edge,
+                release: 1.5 * edge,
+                active: false,
             });
         }
         self.lambda_seam_bending = vec![0.0; out.len()];
@@ -1154,7 +1156,7 @@ impl ClothSim {
             solve_seam_bending(
                 &mut self.positions,
                 &self.inv_mass,
-                &self.seam_bending,
+                &mut self.seam_bending,
                 &mut self.lambda_seam_bending,
                 inv_dt2,
             );

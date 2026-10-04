@@ -191,22 +191,44 @@ pub fn solve_bending(
 /// 静止形状は片側を共有辺の向こうへ展開した仮想の平面から決める(呼び出し側が渡す)。
 ///
 /// 縫い目がまだ開いている間は効かせない。B 側の頂点が A 側の辺から離れているのに、
-/// 平らに保とうとして縫い合わせの動きと綱引きになるため。`partners` の 2 対の距離が
-/// `tolerance` 以下のときだけ解く。
+/// 平らに保とうとして縫い合わせの動きと綱引きになるため。
+///
+/// **オン・オフには履歴(ヒステリシス)を持たせる。** 「閉じた」の判定を 1 つのしきい値にすると、
+/// 境目で制約が効く・効かないを毎反復繰り返し、エネルギーを注いで布が震え続けた(円柱の
+/// まわりを回り続ける不具合の原因)。隙間が `tolerance` 以下になったら有効にし、
+/// `release` を超えるまでは有効のままにする。
 #[derive(Clone, Copy, Debug)]
 pub struct SeamBending {
     pub c: BendingConstraint,
     /// 縫い合わせる頂点対 `(a0, b0)`, `(a1, b1)`
     pub partners: [(usize, usize); 2],
-    /// 縫い目が「閉じた」とみなす隙間の上限
+    /// 縫い目が「閉じた」とみなす隙間の上限(これ以下で有効にする)
     pub tolerance: f64,
+    /// 有効な制約を無効に戻す隙間(`tolerance` より十分大きい)
+    pub release: f64,
+    /// いま有効か(履歴)
+    pub active: bool,
 }
 
 impl SeamBending {
-    fn closed(&self, positions: &[Vec3]) -> bool {
+    /// 縫い合わせた 2 対の隙間のうち大きいほう。
+    fn gap(&self, positions: &[Vec3]) -> f64 {
         self.partners
             .iter()
-            .all(|&(a, b)| positions[a].sub(positions[b]).length() <= self.tolerance)
+            .map(|&(a, b)| positions[a].sub(positions[b]).length())
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// 隙間から、有効・無効を更新する。
+    fn update_active(&mut self, positions: &[Vec3]) {
+        let gap = self.gap(positions);
+        if self.active {
+            if gap > self.release {
+                self.active = false;
+            }
+        } else if gap <= self.tolerance {
+            self.active = true;
+        }
     }
 }
 
@@ -214,12 +236,13 @@ impl SeamBending {
 pub fn solve_seam_bending(
     positions: &mut [Vec3],
     inv_mass: &[f64],
-    items: &[SeamBending],
+    items: &mut [SeamBending],
     lambdas: &mut [f64],
     inv_dt2: f64,
 ) {
-    for (ci, item) in items.iter().enumerate() {
-        if !item.closed(positions) {
+    for (ci, item) in items.iter_mut().enumerate() {
+        item.update_active(positions);
+        if !item.active {
             continue;
         }
         solve_bending(
