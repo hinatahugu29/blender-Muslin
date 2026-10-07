@@ -176,9 +176,63 @@ def main():
     from muslin import rest_shape
     check("型紙(muslin_pattern)と元の形が平らな型紙で入り、固定されている",
           rest_shape.has_pattern(cloth) and rest_shape.has_rest(cloth) and rest_shape.is_pattern_locked(cloth))
-    ys = np.array([v.co.y for v in mesh.vertices])
-    check("XZ 平面(Y = 0)に立っている", np.abs(ys).max() < 1e-6)
-    check("面は手前(-Y)を向く", all(p.normal.y < -0.99 for p in mesh.polygons))
+    zs = np.array([v.co.z for v in mesh.vertices])
+    check("既定は描いた平面のまま(Z = 0)", np.abs(zs).max() < 1e-6 and cp.orientation_of(cp.load_record(curve)) == 'FLAT')
+    check("面は上(+Z)を向く", all(p.normal.z > 0.99 for p in mesh.polygons))
+
+    def world_box(o, xyz):
+        bpy.context.view_layer.update()      # location を変えた直後は matrix_world が古い
+        mw = np.array(o.matrix_world, dtype=np.float64)
+        w = np.asarray(xyz, dtype=np.float64) @ mw[:3, :3].T + mw[:3, 3]
+        return w.min(axis=0), w.max(axis=0)
+
+    curve_pts = np.array([tuple(pt.co) for sp in curve.data.splines for pt in sp.bezier_points])
+    c_lo, c_hi = world_box(curve, curve_pts)
+    m_lo, m_hi = world_box(cloth, [tuple(v.co) for v in mesh.vertices])
+    check("布は Curve の輪郭の +X 側に、既定の隙間(0.1m)を空けて置かれる",
+          abs((m_lo[0] - c_hi[0]) - cp.DEFAULT_GAP) < 1e-4 and abs(m_lo[1] - c_lo[1]) < 1e-4,
+          f"隙間 {m_lo[0] - c_hi[0]:.4f}m")
+
+    section("向きと置き場所を選んで作る")
+    for side, axis, sign in (('-Y', 1, -1.0), ('+X', 0, 1.0)):
+        cs = make_curve(f"Place{side}", 1.0, 0.7)
+        cs.location = (3.0, 2.0, 0.5)
+        bpy.context.view_layer.update()
+        cp.initialize(cs, 0.05)
+        orient = 'STANDING' if side == '+X' else 'FLAT'
+        cloth_s, _ = cp.rebuild(bpy.context, cs, orientation=orient, side=side, gap=0.2)
+        pts_s = np.array([tuple(pt.co) for sp in cs.data.splines for pt in sp.bezier_points])
+        c_lo, c_hi = world_box(cs, pts_s)
+        m_lo, m_hi = world_box(cloth_s, [tuple(v.co) for v in cloth_s.data.vertices])
+        gap = (c_lo[axis] - m_hi[axis]) if sign < 0 else (m_lo[axis] - c_hi[axis])
+        check(f"{side} 側に 0.2m の隙間で置かれる({orient})", abs(gap - 0.2) < 1e-4, f"{gap:.4f}m")
+        check(f"向き {orient} が記録に残る", cp.orientation_of(cp.load_record(cs)) == orient)
+    # オペレータから(ダイアログ・F9 と同じ経路)
+    co = make_curve("PlaceOp", 0.5, 0.5)
+    bpy.context.view_layer.update()
+    bpy.context.view_layer.objects.active = co
+    cp.initialize(co, 0.05)
+    res = bpy.ops.muslin.curve_pattern_rebuild(orientation='STANDING', side='-X', gap=0.3)
+    cloth_o = cp.cloth_of(co)
+    pts_o = np.array([tuple(pt.co) for sp in co.data.splines for pt in sp.bezier_points])
+    c_lo, c_hi = world_box(co, pts_o)
+    m_lo, m_hi = world_box(cloth_o, [tuple(v.co) for v in cloth_o.data.vertices])
+    check("Rebuild の操作で向き・方向・隙間を選べる",
+          res == {'FINISHED'} and cp.orientation_of(cp.load_record(co)) == 'STANDING'
+          and abs((c_lo[0] - m_hi[0]) - 0.3) < 1e-4, f"隙間 {c_lo[0] - m_hi[0]:.4f}m")
+
+    ys = np.array([v.co.y for v in cloth_s.data.vertices])
+    check("STANDING は XZ 平面(Y = 0)に立ち、面は手前(-Y)を向く",
+          np.abs(ys).max() < 1e-6 and all(p.normal.y < -0.99 for p in cloth_s.data.polygons))
+    before = cloth_s.matrix_world.copy()
+    cloth_s.location.x += 1.0
+    bpy.context.view_layer.update()
+    moved = cloth_s.matrix_world.copy()
+    cloth_s2, _ = cp.rebuild(bpy.context, cs, orientation='FLAT', side='-X', gap=1.0)
+    check("すでに布があれば、Rebuild しても位置と向きは変わらない",
+          cloth_s2 == cloth_s and cloth_s.matrix_world == moved and moved != before
+          and cp.orientation_of(cp.load_record(cs)) == 'STANDING'
+          and np.abs([v.co.y for v in cloth_s.data.vertices]).max() < 1e-6)
 
     section("派生データの復元(Shape Update の入力)")
     data = cp.reconstruct(cloth)
@@ -285,10 +339,10 @@ def main():
     edge_vs = [tuple(e.vertices) for e in cloth_q2.data.edges]
     side_a = sorted({v for c, e in zip(codes, edge_vs) if c == curve_seam_code(uid, 0) for v in e})
     co = cloth_q2.data.vertices
-    zs_a = [co[v].co.z for v in side_a]
-    check("縫い目 A は右辺の全体(x = 1、z が 0〜0.7)のまま",
+    ys_a = [co[v].co.y for v in side_a]
+    check("縫い目 A は右辺の全体(x = 1、y が 0〜0.7)のまま",
           all(abs(co[v].co.x - 1.0) < 1e-6 for v in side_a)
-          and abs(min(zs_a)) < 1e-6 and abs(max(zs_a) - 0.7) < 1e-6 and 34 <= n_a <= 36, f"{n_a} 本")
+          and abs(min(ys_a)) < 1e-6 and abs(max(ys_a) - 0.7) < 1e-6 and 34 <= n_a <= 36, f"{n_a} 本")
     check("縫い目 B(左辺)は変わらない", n_b == 35, f"{n_b} 本")
     broken = []
     check("縫い目は壊れていない", mesh_io.build_seam_pairs(cloth_q2, report=broken) and not broken)
@@ -429,7 +483,8 @@ def main():
     body.name = "Body"
     dc = make_curve("Shirt", 0.5, 0.6)
     cp.initialize(dc, 0.03)
-    dc_cloth, _ = cp.rebuild(bpy.context, dc)
+    # この節は着せ付けを見るので、体の前に立てた向きで作る(円柱に巻くのが z を高さとして扱う)
+    dc_cloth, _ = cp.rebuild(bpy.context, dc, orientation='STANDING')
     cp.add_seam(dc, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="Side")
     cp.apply_seams(dc)
     dc_cloth.location = (0.0, 0.0, 0.0)
@@ -614,8 +669,17 @@ def main():
           abs(xyz[:, 2].min() - 0.0) < 1e-4 and abs(xyz[:, 2].max() - 0.5) < 1e-4)
     check("置いた形が元の形(rest)になり、着せた段階は解除される",
           _maxdiff(rest_shape.load(pair_cloth), xyz.ravel()) < 1e-5 and not rest_shape.is_dressed(pair_cloth))
-    check("型紙(寸法の基準)は平らなまま",
-          np.ptp(rest_shape.load_pattern(pair_cloth).reshape(-1, 3)[:, 1]) < 1e-6)
+    check("型紙(寸法の基準)は平らなまま(描いた平面 = Z が一定)",
+          np.ptp(rest_shape.load_pattern(pair_cloth).reshape(-1, 3)[:, 2]) < 1e-6)
+    check("平らに出した布でも、立てて体の周りへ置ける(高さに幅がある)", np.ptp(xyz[:, 2]) > 0.49)
+
+    # 高さを指定すると、型紙の下端がその高さに来る(F9 で変える Height)
+    res = bpy.ops.muslin.curve_arrange(height=0.1)
+    xyz_h = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
+    check("Height を指定すると下端がその高さ(0.1〜0.6m)",
+          res == {'FINISHED'} and abs(xyz_h[:, 2].min() - 0.1) < 1e-4 and abs(xyz_h[:, 2].max() - 0.6) < 1e-4,
+          f"{xyz_h[:, 2].min():.4f}〜{xyz_h[:, 2].max():.4f}")
+    bpy.ops.muslin.curve_arrange()            # 既定(布の原点の高さ)に戻して先へ進む
 
     # 上端の中央を留めて着せる。2 本の縫い目が閉じる
     top2 = xyz[:, 2].max()

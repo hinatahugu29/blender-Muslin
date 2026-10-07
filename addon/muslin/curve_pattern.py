@@ -11,8 +11,12 @@ curve_discretize / curve_update にあり、ここは Blender とのつなぎだ
   区間の uid と弧長比を持ち、Shape Update で Curve を評価し直せる
 - 布のオブジェクトと Curve は ID ポインタで相互に結ぶ(名前を変えても切れない)
 
-座標の対応: Curve の (x, y) → 布のローカル座標 (x, 0, y)。既存の型紙(Add Pattern Piece)と同じく
-XZ 平面に立てる。Curve オブジェクトのスケールは型紙の寸法として掛ける。
+座標の対応は記録の `orientation` で決まる(布を初めて作るときに選ぶ):
+- `FLAT`(既定): Curve の (x, y) → 布のローカル座標 (x, y, 0)。描いた平面のまま出す
+- `STANDING`: (x, y) → (x, 0, y)。Add Pattern Piece と同じく XZ 平面に立てる
+布は Curve と同じ向きで、Curve の輪郭の外側(選んだ方向に隙間を空けて)に置く。
+体の周りへ立てて置くのは Arrange Around Collider の役目。
+Curve オブジェクトのスケールは型紙の寸法として掛ける。
 """
 
 import json
@@ -103,7 +107,19 @@ def curve_of(cloth_obj):
 
 def _new_record(target_length):
     return {"version": RECORD_VERSION, "gen_id": 0, "target_edge_length": float(target_length),
-            "next_uid": 1, "next_piece_uid": 1, "pieces": [], "seams": []}
+            "next_uid": 1, "next_piece_uid": 1, "pieces": [], "seams": [],
+            "orientation": DEFAULT_ORIENTATION}
+
+
+# 布の向き。記録に持ち、布を初めて作るときに決める(以後は変えない)
+ORIENTATIONS = ('FLAT', 'STANDING')
+DEFAULT_ORIENTATION = 'FLAT'
+
+
+def orientation_of(record):
+    """記録の向き。持っていなければ既定(平ら)。"""
+    value = record.get("orientation", DEFAULT_ORIENTATION)
+    return value if value in ORIENTATIONS else DEFAULT_ORIENTATION
 
 
 # ---------------------------------------------------------------- Curve の読み出し
@@ -484,17 +500,18 @@ def status(curve_obj):
 
 # ---------------------------------------------------------------- 派生データ(布のメッシュ)
 
-def _to_local(xy):
-    """型紙の座標 (x, y) → 布のローカル座標 (x, 0, y)。"""
+def to_local(xy, orientation):
+    """型紙の座標 (x, y) → 布のローカル座標。FLAT なら (x, y, 0)、STANDING なら (x, 0, y)。"""
+    xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
     out = np.zeros((len(xy), 3))
     out[:, 0] = xy[:, 0]
-    out[:, 2] = xy[:, 1]
+    out[:, 2 if orientation == 'STANDING' else 1] = xy[:, 1]
     return out
 
 
 def _build_mesh(name, data, record):
     mesh = bpy.data.meshes.new(name)
-    verts = _to_local(data["positions"])
+    verts = to_local(data["positions"], orientation_of(record))
     mesh.from_pydata(verts.tolist(), [], data["triangles"].tolist())
     mesh.update()
 
@@ -593,9 +610,24 @@ def reconstruct(cloth):
     }
 
 
-def _cloth_placement(curve_obj, data):
-    width = float(np.ptp(data["positions"][:, 0])) if len(data["positions"]) else 1.0
-    return curve_obj.matrix_world.translation.copy(), max(width, 0.1) * 1.5
+# 布を初めて作るときに置く方向(Curve の輪郭の外側のどちらへ出すか)
+SIDES = {'+X': (0, 1.0), '-X': (0, -1.0), '+Y': (1, 1.0), '-Y': (1, -1.0)}
+DEFAULT_GAP = 0.1
+
+
+def placement_offset(local, rotation, side='+X', gap=DEFAULT_GAP):
+    """布を Curve の輪郭に重ねず、`side` の方向に `gap` だけ空けて置くためのずらし量(ワールド)。
+
+    布は Curve と同じ原点・同じ向きで作ると、Curve の線にちょうど重なる(FLAT のとき)。
+    そこから、輪郭のその方向の幅 + 隙間だけずらす。bpy に依存しない。
+    local: 布のローカル座標 (n, 3) / rotation: Curve の回転行列 (3, 3)
+    """
+    axis, sign = SIDES.get(side, SIDES['+X'])
+    world = np.asarray(local, dtype=np.float64) @ np.asarray(rotation, dtype=np.float64).T
+    extent = float(np.ptp(world[:, axis])) if len(world) else 0.0
+    offset = np.zeros(3)
+    offset[axis] = sign * (extent + max(gap, 0.0))
+    return offset
 
 
 # 旧メッシュの外側だった新頂点がこの割合を超えたら、姿勢が歪むので警告する
@@ -620,7 +652,7 @@ def _prepare_carry(cloth, curve_obj, record):
     pose = np.empty(n * 3, dtype=np.float32)
     cloth.data.vertices.foreach_get("co", pose)
     pose = pose.reshape(-1, 3).astype(np.float64)
-    if np.abs(pose - _to_local(old["positions"])).max() < 1e-6:
+    if np.abs(pose - to_local(old["positions"], orientation_of(record))).max() < 1e-6:
         return None, None                      # 平らなまま
     now = curve_transfer.old_pattern_now(old, current_outlines(curve_obj, record))
     names = [g.name for g in cloth.vertex_groups]
@@ -636,10 +668,13 @@ def _prepare_carry(cloth, curve_obj, record):
     }, None
 
 
-def rebuild(context, curve_obj, target_length=None, keep_pose=True):
+def rebuild(context, curve_obj, target_length=None, keep_pose=True,
+            orientation=None, side='+X', gap=DEFAULT_GAP):
     """Curve から布のメッシュを(作り直して)生成する。
 
     keep_pose なら、旧メッシュの姿勢(着せた形)を型紙空間を介して新しい頂点へ引き継ぐ。
+    orientation / side / gap は布を初めて作るときだけ効く(向きは記録に残り、以後は変えない。
+    すでに布があれば、その位置と向きのまま中身だけを作り直す)。
     走っているシミュレーションがあれば拒否する(構造を作り直すと状態を意味的に保てない)。
     戻り値: (布オブジェクト, 警告の一覧)
     """
@@ -676,18 +711,27 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True):
     except curve_discretize.DiscretizeError as exc:
         raise CurvePatternError(str(exc)) from exc
 
+    if cloth is None and orientation is not None:
+        if orientation not in ORIENTATIONS:
+            raise CurvePatternError(f"向きは {' / '.join(ORIENTATIONS)} のどれかです")
+        record["orientation"] = orientation
     record["gen_id"] += 1
     name = f"{curve_obj.name}_Cloth"
     mesh = _build_mesh(name, data, record)
-    flat = _to_local(data["positions"]).astype(np.float32).ravel()
+    local_flat = to_local(data["positions"], orientation_of(record))
+    flat = local_flat.astype(np.float32).ravel()
 
     if cloth is None:
         cloth = bpy.data.objects.new(name, mesh)
         collections = list(curve_obj.users_collection) or [context.collection]
         collections[0].objects.link(cloth)
-        loc, dx = _cloth_placement(curve_obj, data)
-        cloth.location = loc
-        cloth.location.x += dx
+        # Curve と同じ原点・向きで作り、輪郭の外側へずらす(Curve の線に重ねない)
+        rotation = curve_obj.matrix_world.to_3x3().normalized()
+        offset = placement_offset(local_flat, rotation, side, gap)
+        cloth.location = curve_obj.matrix_world.translation.copy()
+        cloth.location.x += offset[0]
+        cloth.location.y += offset[1]
+        cloth.location.z += offset[2]
         cloth.rotation_euler = curve_obj.matrix_world.to_euler()
     else:
         old = cloth.data
@@ -744,11 +788,14 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True):
     return cloth, warnings
 
 
-def arrange_around(curve_obj, collider, margin=None, angles=None):
+def arrange_around(curve_obj, collider, margin=None, angles=None, base_z=None):
     """布のピースを、コライダー(体)の縦軸のまわりに巻き付けて置く。姿勢(rest)も置いた形にする。
 
     ピースは向き(度。0 = 正面 = -Y)ごとに円柱の外側へ置かれる。angles を省略すると、
     ピース数で周りに等間隔(1 枚は正面、2 枚は正面と背面)。着せた段階は解除される。
+    高さは型紙の y をそのまま使い、型紙の y = 0 をワールドの高さ base_z に置く。
+    base_z を省略すると布の原点の高さ。布が平らでも立っていても同じ置き方になる
+    (以前は今の布の高さを使っていたので、平らに寝かせた布は1つの高さに潰れた)。
     戻り値: 警告の一覧
     """
     from . import sim_state
@@ -763,8 +810,8 @@ def arrange_around(curve_obj, collider, margin=None, angles=None):
     data = reconstruct(cloth)
 
     mw = np.array(cloth.matrix_world, dtype=np.float64)
-    flat_local = _to_local(data["positions"])
-    flat_world = flat_local @ mw[:3, :3].T + mw[:3, 3]
+    if base_z is None:
+        base_z = float(mw[2, 3])
 
     cmw = np.array(collider.matrix_world, dtype=np.float64)
     cv = np.empty(len(collider.data.vertices) * 3, dtype=np.float32)
@@ -777,9 +824,9 @@ def arrange_around(curve_obj, collider, margin=None, angles=None):
 
     pieces = sorted(set(int(x) for x in data["piece"]))
     groups = [np.nonzero(data["piece"] == pid)[0] for pid in pieces]
-    arranged, warnings = _arrange(groups, data, flat_world, collider_points, axis_xy, margin, angles)
+    arranged, warnings = _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles)
 
-    world = np.empty_like(flat_world)
+    world = np.empty((len(data["positions"]), 3))
     for idx, pts in zip(groups, arranged):
         world[idx] = pts
     inv = np.linalg.inv(mw)
@@ -792,8 +839,9 @@ def arrange_around(curve_obj, collider, margin=None, angles=None):
     return warnings
 
 
-def _arrange(groups, data, flat_world, collider_points, axis_xy, margin, angles):
-    pieces = [{"xy": data["positions"][idx], "z": flat_world[idx][:, 2]} for idx in groups]
+def _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles):
+    pieces = [{"xy": data["positions"][idx], "z": base_z + data["positions"][idx][:, 1]}
+              for idx in groups]
     try:
         return curve_arrange.arrange_pieces(pieces, collider_points, axis_xy, margin, angles)
     except curve_arrange.ArrangeError as exc:
@@ -853,6 +901,27 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
         description="着せた姿勢を新しい頂点へ引き継ぐ(型紙空間を介して補間する)。"
                     "切ると平らな型紙から作り直す",
     )
+    # --- 布を初めて作るときだけ効く(すでに布があれば位置も向きも変えない) ---
+    orientation: bpy.props.EnumProperty(
+        name="Orientation",
+        items=[
+            ('FLAT', "Flat", "描いた平面のまま出す(体の周りへは Arrange Around Collider で立てて置く)"),
+            ('STANDING', "Standing", "XZ 平面に立てて出す(Add Pattern Piece と同じ向き)"),
+        ],
+        default='FLAT',
+    )
+    side: bpy.props.EnumProperty(
+        name="Place",
+        description="Curve の輪郭のどちら側に出すか",
+        items=[('+X', "+X", ""), ('-X', "-X", ""), ('+Y', "+Y", ""), ('-Y', "-Y", "")],
+        default='+X',
+    )
+    gap: bpy.props.FloatProperty(
+        name="Gap", unit='LENGTH', min=0.0, default=DEFAULT_GAP,
+        description="Curve の輪郭と布の間に空ける距離",
+    )
+    # 布を初めて作る実行か(F9 で調整するときに、置き方の欄を出すかどうかに使う)
+    creating: bpy.props.BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
@@ -871,19 +940,30 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
         return True
 
     def invoke(self, context, event):
-        record = load_record(_target_curve(context))
+        curve = _target_curve(context)
+        record = load_record(curve)
         self.edge_length = record["target_edge_length"]
+        self.creating = cloth_of(curve) is None
         return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, context):
-        self.layout.prop(self, "edge_length")
-        self.layout.prop(self, "keep_pose")
-        self.layout.label(text="ゴム紐は失われます(姿勢とピン留めは引き継げます)", icon='ERROR')
+        layout = self.layout
+        layout.prop(self, "edge_length")
+        if self.creating:
+            # 初めて作るときは、向きと置き場所を選べる(あとから F9 でも変えられる)
+            layout.prop(self, "orientation", expand=True)
+            row = layout.row(align=True)
+            row.prop(self, "side", expand=True)
+            layout.prop(self, "gap")
+        else:
+            layout.prop(self, "keep_pose")
+            layout.label(text="ゴム紐は失われます(姿勢とピン留めは引き継げます)", icon='ERROR')
 
     def execute(self, context):
         curve = _target_curve(context)
         try:
-            cloth, warnings = rebuild(context, curve, self.edge_length, keep_pose=self.keep_pose)
+            cloth, warnings = rebuild(context, curve, self.edge_length, keep_pose=self.keep_pose,
+                                      orientation=self.orientation, side=self.side, gap=self.gap)
         except CurvePatternError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -907,6 +987,10 @@ class MUSLIN_OT_curve_arrange(bpy.types.Operator):
     angles: bpy.props.StringProperty(
         name="Angles", default="",
         description="ピースごとの向き(度。0 = 正面 = -Y)をカンマで区切る。空なら周りに等間隔",
+    )
+    height: bpy.props.FloatProperty(
+        name="Height", unit='LENGTH',
+        description="型紙の下端(y = 0)を置く高さ(ワールド Z)。型紙の y がそのまま高さになる",
     )
 
     @classmethod
@@ -935,9 +1019,12 @@ class MUSLIN_OT_curve_arrange(bpy.types.Operator):
         except ValueError:
             self.report({'ERROR'}, "Angles は数をカンマで区切ってください(例: 0,180)")
             return {'CANCELLED'}
+        # Height はボタンから押したとき invoke で布の原点の高さに合わせる。
+        # スクリプトから指定しなければ arrange_around の既定(布の原点の高さ)
+        base_z = self.height if self.properties.is_property_set("height") else None
         try:
             warnings = arrange_around(curve, cloth.muslin.collider_object,
-                                      margin=self.margin or None, angles=angles)
+                                      margin=self.margin or None, angles=angles, base_z=base_z)
         except CurvePatternError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -945,6 +1032,13 @@ class MUSLIN_OT_curve_arrange(bpy.types.Operator):
             self.report({'WARNING'}, w)
         self.report({'INFO'}, f"'{cloth.name}' のピースを体の周りに置きました")
         return {'FINISHED'}
+
+    def invoke(self, context, event):
+        # 既定の高さ(布の原点)を欄に出しておき、F9 で調整できるようにする
+        cloth = cloth_of(_target_curve(context))
+        if not self.properties.is_property_set("height"):
+            self.height = float(cloth.matrix_world.translation.z)
+        return self.execute(context)
 
 
 class MUSLIN_OT_curve_seam_add(bpy.types.Operator):

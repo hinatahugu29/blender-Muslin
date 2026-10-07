@@ -509,7 +509,8 @@ def sample_curve_pattern():
     curve.location = (1.0, 0.0, 0.0)
     bpy.context.view_layer.objects.active = curve
     curve_pattern.initialize(curve, 0.03)
-    cloth, _warnings = curve_pattern.rebuild(bpy.context, curve)
+    # 胴のまわりに手で曲げて置くので、体の前に立てた向きで作る(z を高さとして巻く)
+    cloth, _warnings = curve_pattern.rebuild(bpy.context, curve, orientation='STANDING')
     cloth.name = "Shirt"
     mark_as_cloth(cloth)
     curve_pattern.add_seam(curve, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="Side")

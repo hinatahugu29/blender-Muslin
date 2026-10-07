@@ -29,8 +29,14 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
 結果(2026-10-01、Blender 5.2.2 LTS、GUI で確認):
 
 - [x] **一連の流れ**: Bezier の円 → `Initialize Curve Pattern` → `Rebuild Cloth from Curve`。布が XZ 平面に立って手前を向く。**OK**
+      (2026-10-08: 既定を「描いた平面のまま、Curve の横に出す」に変えた。下の「Curve から出す向きと置き場所」で再確認)
 - [~] **点を動かす**: 追従はする。ただし最初は**変形が大きいと拒否**(辺長比の許容が 0.6〜1.6 で、丈を 2 倍にしただけで Rebuild Required)。許容を 0.35〜2.5 に広げて直した。**広げた後の再確認待ち**。
       Dress / Adjust の最中は、拒否されても理由がパネルにもヘッダにも出ない(Adjust のモーダル中はパネルが更新されない)。表示を足すかは未決
+- [ ] **Curve から出す向きと置き場所**(2026-10-08): 上面図で Bezier の円を描き、Initialize → Rebuild。
+      ダイアログに Orientation(Flat / Standing)・Place(+X / -X / +Y / -Y)・Gap が出るか。既定のまま OK で、
+      布が**描いた平面のまま、Curve の右(+X)に 10cm 空けて**出るか。F9 で向きや方向を変えるとその場で出し直されるか。
+      布がある状態でもう一度 Rebuild すると、置き方の欄は出ず(Edge Length と Keep Pose だけ)、位置も向きも変わらないか。
+      平らに出した 2 枚(前後の身頃)を Arrange Around Collider すると体の周りに立って置かれ、F9 の Height で上下できるか
 - [ ] **Rebuild Required**: 編集モードで点を細分化・削除・押し出しすると、パネルに赤い
       `Rebuild Required` と理由が出るか。走行中は Rebuild ボタンが灰色になり、
       ホバーで理由が出るか。停止すれば押せて、押すと理由が消えるか

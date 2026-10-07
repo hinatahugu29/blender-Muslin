@@ -108,10 +108,7 @@ def _solve_curve(obj, curve, record):
                                  record["target_edge_length"])
     if result["status"] != curve_update.SHAPE_UPDATE:
         return None, "Rebuild Required: " + " / ".join(result["reasons"][:3])
-    xy = result["positions"]
-    local = np.zeros((len(xy), 3))
-    local[:, 0] = xy[:, 0]
-    local[:, 2] = xy[:, 1]
+    local = curve_pattern.to_local(result["positions"], curve_pattern.orientation_of(record))
     return local.ravel(), None
 
 
