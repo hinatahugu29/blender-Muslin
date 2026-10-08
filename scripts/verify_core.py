@@ -211,6 +211,148 @@ def test_density_affects_wind_response():
           f"軽 x={light:.4f} m vs 重 x={heavy:.4f} m")
 
 
+def build_pillow(n: int, spacing: float = 0.025):
+    """平らな正方形 2 枚を外周で縫い合わせた閉じた袋(枕)。縁の頂点は共有する。
+
+    表の面は +Z、裏の面は -Z を向くように三角形の向きを揃えてあるので、
+    正の圧力で膨らむ。戻り値: (頂点, 辺, 曲げの4頂点, 三角形, 表と裏の対応)
+    """
+    def top(x, y):
+        return y * n + x
+
+    def on_edge(x, y):
+        return x == 0 or y == 0 or x == n - 1 or y == n - 1
+
+    positions = []
+    for y in range(n):
+        for x in range(n):
+            positions += [x * spacing, y * spacing, 0.0]
+    bottom = {}
+    for y in range(n):
+        for x in range(n):
+            if on_edge(x, y):
+                bottom[(x, y)] = top(x, y)
+            else:
+                bottom[(x, y)] = len(positions) // 3
+                positions += [x * spacing, y * spacing, 0.0]
+
+    edges, tris = set(), []
+    for front in (True, False):
+        def v(x, y, front=front):
+            return top(x, y) if front else bottom[(x, y)]
+        for y in range(n):
+            for x in range(n):
+                if x + 1 < n:
+                    edges.add(tuple(sorted((v(x, y), v(x + 1, y)))))
+                if y + 1 < n:
+                    edges.add(tuple(sorted((v(x, y), v(x, y + 1)))))
+                if x + 1 < n and y + 1 < n:
+                    if front:
+                        tris.append((v(x, y), v(x + 1, y), v(x + 1, y + 1)))
+                        tris.append((v(x, y), v(x + 1, y + 1), v(x, y + 1)))
+                    else:
+                        tris.append((v(x, y), v(x + 1, y + 1), v(x + 1, y)))
+                        tris.append((v(x, y), v(x, y + 1), v(x + 1, y + 1)))
+
+    quads = []
+    seen = {}
+    for a, b, c in tris:
+        for (i, j), k in (((a, b), c), ((b, c), a), ((c, a), b)):
+            key = tuple(sorted((i, j)))
+            if key in seen:
+                quads.append((key[0], key[1], seen[key], k))
+            else:
+                seen[key] = k
+    pairs = [(top(x, y), bottom[(x, y)])
+             for y in range(n) for x in range(n) if not on_edge(x, y)]
+    return positions, sorted(edges), quads, tris, pairs
+
+
+def enclosed_volume(pos, tris):
+    """閉じた三角形メッシュが囲む体積(外向きの向きで正)。"""
+    def p(i):
+        return pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]
+
+    total = 0.0
+    for a, b, c in tris:
+        ax, ay, az = p(a)
+        bx, by, bz = p(b)
+        cx, cy, cz = p(c)
+        cross = (by * cz - bz * cy, bz * cx - bx * cz, bx * cy - by * cx)
+        total += (ax * cross[0] + ay * cross[1] + az * cross[2]) / 6.0
+    return total
+
+
+def test_pressure():
+    """圧力で閉じた袋が膨らむ(M11 の第 1 段階)。
+
+    膨らみ方はメッシュの細かさで決まる(辺を固めた三角形メッシュは幾何的に
+    膨らめず、細かいほどシワで逃げられる)。ここは 17 点角 = 実用的な細かさ。
+    """
+    positions, edges, bending, tris, pairs = build_pillow(17)
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 1e-5, 1e-4)
+    check("set_pressure がある(.pyd の更新漏れの検出)", hasattr(sim, "set_pressure"))
+    sim.set_pressure(100.0)
+    before = enclosed_volume(sim.get_positions(), tris)
+    for _ in range(240):
+        sim.step(1.0 / 60.0, 0.0, 10, 8, 0.3)
+    pos = sim.get_positions()
+    after = enclosed_volume(pos, tris)
+    check("圧力で閉じた袋が膨らむ", after > before + 1e-3,
+          f"体積 {before:.6f} -> {after:.6f} m^3")
+    check("圧力で発散しない", all(abs(v) < 1e3 for v in pos))
+    check("膨らませても伸びすぎない", sim.average_stretch_error() < 0.05,
+          f"平均の伸び誤差 {sim.average_stretch_error():.4f}")
+
+    # 表と裏が離れて厚みになる。重力もピンも無いので袋ごと傾くことがあり、
+    # z の最大値では傾きを測ってしまう。向かい合う頂点の間の距離で見る。
+    # 質量で重みを付けた重心が動かないことは cargo test で見ている
+    # (Python からは頂点の質量が見えないため)
+    def gap(a, b):
+        return sum((pos[a * 3 + k] - pos[b * 3 + k]) ** 2 for k in range(3)) ** 0.5
+
+    thickness = sum(gap(a, b) for a, b in pairs) / len(pairs)
+    check("表と裏が離れて厚みになる", thickness > 0.005,
+          f"向かい合う頂点の間の平均 {thickness * 1000:.1f} mm")
+
+    # 負の圧力では膨らまない
+    positions, edges, bending, tris, _ = build_pillow(17)
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 1e-5, 1e-4)
+    sim.set_pressure(-100.0)
+    for _ in range(240):
+        sim.step(1.0 / 60.0, 0.0, 10, 8, 0.3)
+    check("負の圧力では膨らまない", enclosed_volume(sim.get_positions(), tris) < 1e-3)
+
+    # 圧力 0 は、入れる前と結果が一致する(法線の計算ごと飛ばしている)
+    def drape(set_zero):
+        positions, edges, bending, tris, top = build_grid(9, 9)
+        sim = cloth_core.ClothSim(positions, edges, bending, tris, top, 0.2, 1e-6, 1e-4)
+        if set_zero:
+            sim.set_pressure(0.0)
+        for _ in range(60):
+            sim.step(1.0 / 60.0)
+        return sim.get_positions()
+
+    check("圧力 0 は結果を変えない", drape(False) == drape(True))
+
+    # 布ごとの圧力(重ね着と同じ番号の引き方)
+    positions, edges, bending, tris, _ = build_pillow(9)
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 1e-5, 1e-4)
+    n = len(positions) // 3
+    sim.set_pressures([0] * n, [50.0])
+    check("set_pressures が通る", True)
+    try:
+        sim.set_pressures([0] * n, [])
+        check("圧力の番号が範囲外なら ValueError", False)
+    except ValueError:
+        check("圧力の番号が範囲外なら ValueError", True)
+    try:
+        sim.set_pressures([0] * (n + 1), [50.0])
+        check("圧力の頂点数が合わなければ ValueError", False)
+    except ValueError:
+        check("圧力の頂点数が合わなければ ValueError", True)
+
+
 def test_floor_collision():
     positions, edges, bending, tris, _ = build_grid(9, 9)
     sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 0.0, 1e-4)
@@ -1787,6 +1929,7 @@ def main():
     test_set_reference()
     test_substep_consistency()
     test_density_affects_wind_response()
+    test_pressure()
     test_floor_collision()
     test_object_collision()
     test_animated_collider()

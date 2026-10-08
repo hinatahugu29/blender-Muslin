@@ -142,7 +142,7 @@ def _enabled_seam_count(obj):
 def _material_signature(props):
     """組み立て時に焼き込まれる生地の値。変化の検出に使う。"""
     return (props.density, props.stretch_compliance, props.bending_compliance,
-            props.pin_vertex_group)
+            props.pressure, props.pin_vertex_group)
 
 
 def _group_material_signature(members):

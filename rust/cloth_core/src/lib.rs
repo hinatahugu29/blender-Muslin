@@ -275,6 +275,25 @@ mod bindings {
             self.inner.set_density(density);
         }
 
+        /// 圧力を全頂点に設定する(N/m^2)。正は面の表の側へ、負は裏側へ押す。
+        ///
+        /// 閉じた袋を内側から膨らませるためのもの(M11)。体積は見ないので、
+        /// 膨らむほど弱まることはない。面が無い布では効かない。
+        fn set_pressure(&mut self, pressure: f64) {
+            self.inner.set_pressure(pressure);
+        }
+
+        /// 頂点ごとに圧力を割り当てる(布が複数あるとき。番号は set_materials と同じ)
+        fn set_pressures(
+            &mut self,
+            vertex_material: Vec<usize>,
+            pressures: Vec<f64>,
+        ) -> PyResult<()> {
+            self.inner
+                .set_pressures(&vertex_material, &pressures)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
         /// 伸び・曲げのコンプライアンスを差し替える(走らせたまま反映できる)。
         fn set_compliances(&mut self, stretch: f64, bending: f64) {
             self.inner.set_compliances(stretch, bending);

@@ -2269,6 +2269,81 @@ def main():
     bpy.ops.muslin.stop_sim()
 
     # ------------------------------------------------------------------
+    section("圧力(M11)")
+
+    # 面を法線の側へ押す力。閉じた袋を膨らませるためのものだが、ここでは
+    # 周囲をピン留めした平らな布で、向きと経路(生地と同じ流し込み)を見る。
+    clear_scene()
+    obj = make_grid("PressureGrid", side=11)
+    props = obj.muslin
+    props.collision_enabled = False
+    props.gravity = 0.0
+    group = obj.vertex_groups.new(name="Rim")
+    rim = [i for i, v in enumerate(obj.data.vertices)
+           if min(v.co.x, v.co.y) < 1e-6 or max(v.co.x, v.co.y) > 1.0 - 1e-6]
+    group.add(rim, 1.0, 'REPLACE')
+    props.pin_vertex_group = "Rim"
+
+    check("圧力の既定は 0(入れない限り何も起きない)", props.pressure == 0.0)
+
+    bpy.ops.muslin.start_sim()
+    advance(20, start=1)
+    flat = positions_of(obj)
+    middle = 5 * 11 + 5
+    check("圧力 0 では膨らまない", abs(flat[middle][2]) < 1e-4,
+          f"中央 z={flat[middle][2]:.5f} m")
+
+    state = sim_state.get_state(obj)
+    stale = set(state["cache"]) - {state["start_frame"]}
+    props.pressure = 50.0
+    advance(1, start=21)
+    check("圧力を変えると古いキャッシュが捨てられる",
+          not (stale & set(state["cache"])))
+
+    advance(40, start=22)
+    bulged = positions_of(obj)
+    rise = bulged[middle][2] - flat[middle][2]
+    check("圧力で法線の側(+Z)へ膨らむ", rise > 0.01, f"中央が {rise * 1000:.1f} mm 上がった")
+    check("ピン留めした縁は動かない",
+          max(abs(bulged[i][2]) for i in rim) < 1e-6)
+    check("圧力を入れても発散しない", state["sim"].is_finite())
+
+    # 負の圧力は逆へ
+    props.pressure = -50.0
+    advance(60, start=62)
+    sucked = positions_of(obj)
+    check("負の圧力は逆(-Z)へ押す", sucked[middle][2] < flat[middle][2] - 0.01,
+          f"中央 z={sucked[middle][2] * 1000:.1f} mm")
+    bpy.ops.muslin.stop_sim()
+
+    # 圧力が Substeps に対して強すぎれば警告する(発散を踏む前に気づけるように)
+    props.quality = 'NORMAL'   # Substeps 8
+    props.pressure = 100.0
+    check("圧力 100 / Substeps 8 は警告しない",
+          not mesh_io.needs_more_substeps_for_pressure(props))
+    props.pressure = 300.0
+    check("圧力 300 / Substeps 8 は警告する",
+          mesh_io.needs_more_substeps_for_pressure(props))
+    warns = mesh_io.check_pressure(props)
+    check("警告文に Substeps の目安が入る", len(warns) == 1 and "Substeps を 13 以上" in warns[0],
+          warns[0] if warns else "警告が出ない")
+    props.quality = 'FINAL'    # Substeps 32
+    check("Quality を上げれば警告が消える",
+          not mesh_io.needs_more_substeps_for_pressure(props))
+    props.quality = 'NORMAL'
+    props.pressure = -300.0
+    check("負の圧力でも強さで警告する(向きではなく大きさで見る)",
+          mesh_io.needs_more_substeps_for_pressure(props))
+
+    # 圧力は生地の性質ではないので、プリセットでは触らない
+    props.pressure = 30.0
+    props.fabric_preset = 'DENIM'
+    check("生地を選び直しても圧力は残る", props.pressure == 30.0, f"{props.pressure}")
+    props.pressure = 10.0
+    check("圧力を変えても生地は Custom に落ちない",
+          props.fabric_preset == 'DENIM', props.fabric_preset)
+
+    # ------------------------------------------------------------------
     section("Fabric プリセット")
 
     from muslin.properties import FABRIC_PRESETS

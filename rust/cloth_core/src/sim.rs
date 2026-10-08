@@ -281,6 +281,14 @@ pub struct ClothSim {
     /// 頂点ごとの面密度(kg/m^2)。0 以下は一様質量 1.0。型紙を差し替えたときに
     /// 質量を面積から出し直すために持つ(生地は服ごとに違いうる)。
     vertex_density: Vec<f64>,
+    /// 頂点ごとの圧力(N/m^2)。正は面の表(法線)の側へ、負は裏側へ押す。
+    /// 閉じた立体を内側から支えるために持つ(M11)。風と同じく「面に働く力」なので、
+    /// 面積重みの法線に掛けて力にし、質量で割って加速度にする。
+    /// 圧力は生地の性質ではなく使い方なので、生地のプリセットでは触らない。
+    vertex_pressure: Vec<f64>,
+    /// 圧力の作業領域(頂点ごとの面積重みの法線)。形が変われば向きも変わるので、
+    /// サブステップごとに現在位置から作り直す。
+    pressure_normals: Vec<Vec3>,
 
     pub stretch_constraints: Vec<DistanceConstraint>,
     /// 二面角による曲げ制約。距離制約では曲げ剛性を制御できないため
@@ -503,6 +511,8 @@ impl ClothSim {
             base_inv_mass,
             vertex_area,
             vertex_density: vec![density; n],
+            vertex_pressure: vec![0.0; n],
+            pressure_normals: Vec::new(),
             constrained_pairs,
             seam_pairs: Default::default(),
             colliders: Vec::new(),
@@ -638,6 +648,56 @@ impl ClothSim {
             // ピン留めされている頂点はそのまま(質量無限)にしておく
             if self.inv_mass[i] != 0.0 {
                 self.inv_mass[i] = inv;
+            }
+        }
+    }
+
+    /// 圧力を全頂点に設定する(N/m^2)。正は面の表の側へ、負は裏側へ押す。
+    ///
+    /// 閉じた袋を内側から膨らませるためのもの(M11 の第 1 段階)。
+    /// ここでは体積を見ないので、膨らむほど弱まることはない。面が無い布では効かない。
+    pub fn set_pressure(&mut self, pressure: f64) {
+        self.vertex_pressure.iter_mut().for_each(|p| *p = pressure);
+    }
+
+    /// 頂点ごとに圧力を割り当てる(布が複数あるとき。番号の引き方は `set_materials` と同じ)。
+    pub fn set_pressures(
+        &mut self,
+        vertex_material: &[usize],
+        pressures: &[f64],
+    ) -> Result<(), String> {
+        let n = self.positions.len();
+        if vertex_material.len() != n {
+            return Err(format!("vertex_material length {} != {}", vertex_material.len(), n));
+        }
+        if vertex_material.iter().any(|&m| m >= pressures.len()) {
+            return Err("生地の番号が範囲外".into());
+        }
+        for i in 0..n {
+            self.vertex_pressure[i] = pressures[vertex_material[i]];
+        }
+        Ok(())
+    }
+
+    /// 圧力が 1 つでも入っているか。入っていなければ法線の計算ごと飛ばす
+    /// (圧力 0 のときに結果が以前とビット一致するように)。
+    fn has_pressure(&self) -> bool {
+        !self.triangles.is_empty() && self.vertex_pressure.iter().any(|&p| p != 0.0)
+    }
+
+    /// 頂点ごとの面積重みの法線を、現在位置から作る。
+    ///
+    /// 三角形の外積の半分が「面積 × 単位法線」なので、それを 3 頂点へ 1/3 ずつ配る。
+    /// 全頂点ぶんを足すと、閉じた形では圧力の合力が打ち消し合う(=袋が勝手に動かない)。
+    fn update_pressure_normals(&mut self) {
+        self.pressure_normals.clear();
+        self.pressure_normals.resize(self.positions.len(), Vec3::zero());
+        for t in self.triangles.iter() {
+            let (a, b, c) = (self.positions[t[0]], self.positions[t[1]], self.positions[t[2]]);
+            // 外積の半分 = 面積 × 単位法線。退化した三角形では零ベクトルになる
+            let weighted = b.sub(a).cross(c.sub(a)).scale(0.5 / 3.0);
+            for &i in t.iter() {
+                self.pressure_normals[i] = self.pressure_normals[i].add(weighted);
             }
         }
     }
@@ -1056,6 +1116,10 @@ impl ClothSim {
     fn substep(&mut self, dt: f64, params: &SimParams) {
         let n = self.positions.len();
         let has_wind = params.wind.length() > 0.0;
+        let has_pressure = self.has_pressure();
+        if has_pressure {
+            self.update_pressure_normals();
+        }
 
         // 減衰: 1秒あたり damping の割合を失う想定で dt 補正
         let damp = if params.damping > 0.0 {
@@ -1081,6 +1145,12 @@ impl ClothSim {
             let mut accel = params.gravity;
             if has_wind {
                 accel = accel.add(params.wind.scale(self.vertex_area[i] * self.inv_mass[i]));
+            }
+            // 圧力も面に働く力。面積重みの法線に掛けると、そのまま力になる
+            if has_pressure {
+                accel = accel.add(
+                    self.pressure_normals[i].scale(self.vertex_pressure[i] * self.inv_mass[i]),
+                );
             }
             self.velocities[i] = self.velocities[i].scale(damp).add(accel.scale(dt));
             self.positions[i] = self.positions[i].add(self.velocities[i].scale(dt));
@@ -1378,7 +1448,13 @@ impl ClothSim {
     /// 速度だけでは、フレーム先頭で止まっていて途中で加速する頂点を
     /// 取りこぼす(実測で 0.0107 の食い込みが出た)。外力による増分も足す。
     fn motion_margin(&self, i: usize, dt: f64, params: &SimParams) -> f64 {
-        let accel = params.gravity.length() + params.wind.length();
+        let mut accel = params.gravity.length() + params.wind.length();
+        // 圧力も途中で加速させるので、見込みに入れる(入れないと膨らむ袋で食い込みが残る)
+        if !self.pressure_normals.is_empty() {
+            accel += self.vertex_pressure[i].abs()
+                * self.pressure_normals[i].length()
+                * self.inv_mass[i];
+        }
         MARGIN_SAFETY * (self.velocities[i].length() * dt + 0.5 * accel * dt * dt)
     }
 
@@ -4797,5 +4873,229 @@ mod tests {
         let bending = crate::bending::quads_from_triangles(&tris);
         let pinned = (0..nx).map(|x| idx(x, ny - 1)).collect();
         (positions, edges, bending, tris, pinned)
+    }
+
+    /// テスト用の「枕」= 平らな正方形 2 枚を外周で縫い合わせた閉じた袋。
+    ///
+    /// 縁の頂点は 2 枚で共有する(縫い合わさった状態そのもの)。表の面は +Z、
+    /// 裏の面は -Z を向くように三角形の向きを揃えてあるので、正の圧力で膨らむ。
+    /// 戻り値: (頂点, 伸び制約, 曲げの4頂点, 三角形)
+    fn build_pillow(
+        n: usize,
+        spacing: f64,
+    ) -> (
+        Vec<Vec3>,
+        Vec<(usize, usize)>,
+        Vec<(usize, usize, usize, usize)>,
+        Vec<(usize, usize, usize)>,
+    ) {
+        let top = |x: usize, y: usize| y * n + x;
+        let on_edge = |x: usize, y: usize| x == 0 || y == 0 || x == n - 1 || y == n - 1;
+
+        let mut positions = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                positions.push(Vec3::new(x as f64 * spacing, y as f64 * spacing, 0.0));
+            }
+        }
+        // 裏側は内側の頂点だけ新しく作り、縁は表と同じ頂点を使う
+        let mut bottom_index = vec![usize::MAX; n * n];
+        for y in 0..n {
+            for x in 0..n {
+                if on_edge(x, y) {
+                    bottom_index[top(x, y)] = top(x, y);
+                } else {
+                    bottom_index[top(x, y)] = positions.len();
+                    positions.push(Vec3::new(x as f64 * spacing, y as f64 * spacing, 0.0));
+                }
+            }
+        }
+        let bot = |x: usize, y: usize| bottom_index[y * n + x];
+
+        let mut tris = Vec::new();
+        let mut edge_set = crate::hashing::FastSet::default();
+        let mut edges = Vec::new();
+        let mut add_edge = |a: usize, b: usize, edges: &mut Vec<(usize, usize)>| {
+            let key = (a.min(b) as u32, a.max(b) as u32);
+            if edge_set.insert(key) {
+                edges.push((a, b));
+            }
+        };
+        for &side in &[true, false] {
+            let v = |x: usize, y: usize| if side { top(x, y) } else { bot(x, y) };
+            for y in 0..n {
+                for x in 0..n {
+                    if x + 1 < n {
+                        add_edge(v(x, y), v(x + 1, y), &mut edges);
+                    }
+                    if y + 1 < n {
+                        add_edge(v(x, y), v(x, y + 1), &mut edges);
+                    }
+                    if x + 1 < n && y + 1 < n {
+                        if side {
+                            // 表: 外積が +Z
+                            tris.push((v(x, y), v(x + 1, y), v(x + 1, y + 1)));
+                            tris.push((v(x, y), v(x + 1, y + 1), v(x, y + 1)));
+                        } else {
+                            // 裏: 向きを逆にして外積を -Z に
+                            tris.push((v(x, y), v(x + 1, y + 1), v(x + 1, y)));
+                            tris.push((v(x, y), v(x, y + 1), v(x + 1, y + 1)));
+                        }
+                    }
+                }
+            }
+        }
+
+        let bending = crate::bending::quads_from_triangles(&tris);
+        (positions, edges, bending, tris)
+    }
+
+    /// 閉じた三角形メッシュが囲む体積(外向きの向きで正)。
+    fn signed_volume(positions: &[Vec3], tris: &[(usize, usize, usize)]) -> f64 {
+        tris.iter()
+            .map(|&(a, b, c)| {
+                let (a, b, c) = (positions[a], positions[b], positions[c]);
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum()
+    }
+
+    /// 質量で重みを付けた重心。圧力の合力が打ち消し合っているかを見るのに使う。
+    fn center_of_mass(sim: &ClothSim) -> Vec3 {
+        let mut sum = Vec3::zero();
+        let mut total = 0.0;
+        for i in 0..sim.positions.len() {
+            let mass = if sim.inv_mass[i] > 0.0 { 1.0 / sim.inv_mass[i] } else { 0.0 };
+            sum = sum.add(sim.positions[i].scale(mass));
+            total += mass;
+        }
+        sum.scale(1.0 / total)
+    }
+
+    fn inflate_pillow(n: usize, pressure: f64, frames: usize) -> (ClothSim, Vec<(usize, usize, usize)>) {
+        let (positions, edges, bending, tris) = build_pillow(n, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 1e-5, 1e-4);
+        sim.set_pressure(pressure);
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.3,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..frames {
+            sim.step(1.0 / 60.0, &params);
+        }
+        (sim, tris)
+    }
+
+    #[test]
+    fn pressure_applies_area_weighted_normal_force() {
+        // 平らな布では、面積重みの法線の大きさがそのまま頂点の受け持ち面積になる。
+        // 圧力 p の 1 ステップで増える速度は p × 面積 × 逆質量 × dt。制約は解かせない。
+        let (positions, edges, bending, tris, _) = build_grid(5, 5, 0.1);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+        let pressure = 30.0;
+        sim.set_pressure(pressure);
+        let dt = 1.0 / 60.0;
+        sim.step(
+            dt,
+            &SimParams {
+                gravity: Vec3::zero(),
+                damping: 0.0,
+                iterations: 0,
+                substeps: 1,
+                collision_enabled: false,
+                post_collision_iterations: 0,
+                ..SimParams::default()
+            },
+        );
+
+        let i = 2 * 5 + 2; // 真ん中の頂点
+        let expect = pressure * sim.vertex_area[i] * sim.inv_mass[i] * dt;
+        let got = sim.velocities[i];
+        assert!(
+            (got.z - expect).abs() < 1e-12,
+            "圧力の力が面積重みと合っていない: z 速度 {} / 期待 {expect}",
+            got.z
+        );
+        assert!(
+            got.x.abs() < 1e-12 && got.y.abs() < 1e-12,
+            "平らな布なのに面内へ押されている: {got:?}"
+        );
+    }
+
+    #[test]
+    fn pressure_inflates_closed_bag() {
+        // 膨らみ方は解像度で決まる(辺を固めた三角形メッシュは幾何的に膨らめず、
+        // 細かいほどシワで逃げられる)。17 点角 = 実用的な細かさ、p=100 で厚み 2cm ほど。
+        let (sim, tris) = inflate_pillow(17, 100.0, 240);
+
+        assert!(
+            sim.positions.iter().all(|p| p.length().is_finite()),
+            "圧力で発散した"
+        );
+        let volume = signed_volume(&sim.positions, &tris);
+        assert!(
+            volume > 1e-3,
+            "閉じた袋が膨らんでいない: 体積 {volume} m^3"
+        );
+        let stretch = sim.average_stretch_error();
+        assert!(
+            stretch < 0.05,
+            "膨らませたら伸びすぎた: 平均の伸び誤差 {stretch}"
+        );
+    }
+
+    #[test]
+    fn negative_pressure_does_not_inflate() {
+        let (sim, tris) = inflate_pillow(17, -100.0, 240);
+        let volume = signed_volume(&sim.positions, &tris);
+        assert!(
+            volume < 1e-3,
+            "負の圧力で膨らんでしまった: 体積 {volume} m^3"
+        );
+    }
+
+    #[test]
+    fn pressure_does_not_push_the_bag_anywhere() {
+        // 閉じた形では圧力の合力が打ち消し合うので、袋は膨らむだけでその場に留まる。
+        // 面積重みの法線の配り方(1/3 ずつ)と面の向きが揃っていないと、ここで動く。
+        let (positions, edges, bending, tris) = build_pillow(13, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 1e-5, 1e-4);
+        sim.set_pressure(100.0);
+        let before = center_of_mass(&sim);
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.0,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..120 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        let moved = center_of_mass(&sim).sub(before).length();
+        assert!(moved < 1e-6, "圧力で袋ごと動いた: 重心が {moved} m 動いた");
+        assert!(
+            signed_volume(&sim.positions, &tris) > 1e-5,
+            "そもそも膨らんでいない"
+        );
+    }
+
+    #[test]
+    fn zero_pressure_changes_nothing() {
+        // 圧力 0 のときは法線の計算ごと飛ばすので、入れる前と結果が一致する。
+        let run = |set_zero: bool| {
+            let (positions, edges, bending, tris, pinned) = build_grid(9, 9, 0.1);
+            let mut sim =
+                ClothSim::new(positions, &edges, &bending, &tris, &pinned, 0.2, 1e-6, 1e-4);
+            if set_zero {
+                sim.set_pressure(0.0);
+            }
+            for _ in 0..60 {
+                sim.step(1.0 / 60.0, &SimParams::default());
+            }
+            sim.positions.clone()
+        };
+        assert_eq!(run(false), run(true), "圧力 0 が結果を変えている");
     }
 }

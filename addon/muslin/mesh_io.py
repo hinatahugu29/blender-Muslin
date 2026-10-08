@@ -518,6 +518,12 @@ UNTANGLE_ITERATIONS = 8
 # 読めてしまい、既定のまま警告が出る。
 STIFF_BENDING_COMPLIANCE = 0.01
 
+# 圧力 1 N/m^2 あたり、これだけの Substeps があれば伸びで膨らまずに済む、という目安。
+# 実測(`scripts/spikes/pressure.py`、0.4m 角の枕):Substeps 8 で圧力 200 は
+# 平均の伸び誤差 0.16(膨らみの大半が生地が伸びた分)、圧力 500 は 4 フレームで発散した。
+# Substeps 32 なら圧力 500 でも伸び誤差 0.013 で収まる。
+PRESSURE_PER_SUBSTEP = 25.0
+
 
 def needs_more_substeps_for_bending(props):
     """硬い生地を選んでいるのに Substeps が足りていないか。
@@ -529,6 +535,15 @@ def needs_more_substeps_for_bending(props):
         props.bending_compliance < STIFF_BENDING_COMPLIANCE
         and props.substeps < SUBSTEPS_FOR_STIFF_FABRIC
     )
+
+
+def needs_more_substeps_for_pressure(props):
+    """圧力が強いのに Substeps が足りていないか。
+
+    圧力は伸び制約と綱引きになるので、Substeps が低いと伸びが収束せず、
+    膨らみの大半が「生地が伸びた分」になる。強すぎると発散する。
+    """
+    return abs(props.pressure) > PRESSURE_PER_SUBSTEP * props.substeps
 
 
 def check_bending_stiffness(props):
@@ -561,6 +576,18 @@ def check_bending_stiffness(props):
     return [hint]
 
 
+def check_pressure(props):
+    """圧力が Substeps に対して強すぎないかを調べ、警告文を返す。"""
+    if not needs_more_substeps_for_pressure(props):
+        return []
+    want = int(abs(props.pressure) / PRESSURE_PER_SUBSTEP) + 1
+    return [
+        f"Pressure ({props.pressure:.4g}) は Substeps {props.substeps} に対して強すぎます。"
+        f"膨らみの大半が生地が伸びた分になり、発散することもあります。"
+        f"Quality を上げるか、Substeps を {want} 以上にしてください"
+    ]
+
+
 def group_members(obj):
     """obj と一緒に解く布の一覧(重ね着のグループ)。先頭が設定を使う布。
 
@@ -581,8 +608,9 @@ def group_members(obj):
 
 
 def material_values(props):
-    """布1着の生地の値(密度, 伸び, 曲げ)。"""
-    return (props.density, props.stretch_compliance, props.bending_compliance)
+    """布1着の生地の値(密度, 伸び, 曲げ, 圧力)。"""
+    return (props.density, props.stretch_compliance, props.bending_compliance,
+            props.pressure)
 
 
 def apply_group_materials(sim, members, offsets):
@@ -597,6 +625,7 @@ def apply_group_materials(sim, members, offsets):
         props = members[0].muslin
         sim.set_density(props.density)
         sim.set_compliances(props.stretch_compliance, props.bending_compliance)
+        sim.set_pressure(props.pressure)
     else:
         vertex_material = []
         for k, (_start, count) in enumerate(offsets):
@@ -604,6 +633,7 @@ def apply_group_materials(sim, members, offsets):
         values = [material_values(m.muslin) for m in members]
         sim.set_materials(vertex_material,
                           [v[0] for v in values], [v[1] for v in values], [v[2] for v in values])
+        sim.set_pressures(vertex_material, [v[3] for v in values])
     sim.set_pinned(pinned)
     return len(pinned)
 
@@ -695,7 +725,7 @@ def build_group_sim(members):
     """
     lead = members[0]
     props = lead.muslin
-    warnings = check_bending_stiffness(props)
+    warnings = check_bending_stiffness(props) + check_pressure(props)
 
     positions, reference = [], []
     edges, bending_quads, triangles = [], [], []

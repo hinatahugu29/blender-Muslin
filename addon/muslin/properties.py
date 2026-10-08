@@ -410,6 +410,20 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         precision=5,
         update=_fabric_to_custom,
     )
+    pressure: bpy.props.FloatProperty(
+        name="Pressure",
+        description=(
+            "面を法線の側へ押す圧力 N/m^2。縁どうしを縫って閉じた袋(クッションなど)を"
+            "内側から膨らませる。負で内側へ吸う。0 で切れる。"
+            "膨らみ方はメッシュの細かさで決まる(粗いと膨らまない)ので、"
+            "膨らまないときは型紙の Edge Length を小さくすること"
+        ),
+        default=0.0,
+        soft_min=-200.0,
+        soft_max=200.0,
+    )
+    # 圧力は生地の性質ではなく使い方なので、プリセット(FABRIC_MAPPING)では触らない。
+    # 生地を選び直しても膨らみ方は変わらないし、圧力を動かしても Custom にはならない。
 
     # --- 衝突(暫定: 床のみ。本格的なコリジョンは M2) ---
     floor_enabled: bpy.props.BoolProperty(

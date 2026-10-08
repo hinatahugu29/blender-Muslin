@@ -172,6 +172,7 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
         col.prop(props, "stretch_compliance")
         col.prop(props, "bending_compliance")
         col.prop(props, "damping")
+        col.prop(props, "pressure")
 
         # 硬い生地を選んでも Substeps が低いと曲げ制約が収束せず、どの生地も
         # 同じように垂れる。Start Simulation でも警告するが、生地を選んだ
@@ -182,6 +183,14 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
             box.alert = True
             box.label(text="この硬さは出ません", icon='ERROR')
             box.label(text="Solver の Quality を High 以上に")
+
+        # 圧力も伸び制約と綱引きになるので、Substeps が低いと膨らみが
+        # 「生地が伸びた分」になり、強すぎると発散する。
+        if mesh_io.needs_more_substeps_for_pressure(props):
+            box = self.buttons(layout).box()
+            box.alert = True
+            box.label(text="この圧力は強すぎます", icon='ERROR')
+            box.label(text="Solver の Quality を上げてください")
 
 
 class MUSLIN_PT_forces(_MuslinSettingsPanel, bpy.types.Panel):
