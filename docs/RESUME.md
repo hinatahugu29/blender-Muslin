@@ -1,6 +1,6 @@
 # 再開の手引き(別の環境で Pull したあと)
 
-2026-10-04 時点。ここから作業を再開する人(や、会話の記録を持たないセッション)向け。
+2026-10-08 時点。ここから作業を再開する人(や、会話の記録を持たないセッション)向け。
 `main` を Pull すれば、コードと文書はすべて揃う。**物理コア(`cloth_core.pyd`)だけは Git に入っていない**ので、
 最初にビルドする。
 
@@ -8,7 +8,7 @@
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -SkipTests   # cloth_core.pyd を作る(約 1 分)
-python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(219 項目)
+python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(229 項目)
 ```
 
 必要なもの: Rust(rustup/cargo)、Python 3.11 以降、maturin(`python -m pip install maturin`)。
@@ -18,12 +18,13 @@ python scripts\verify_core.py                                           # 物理
 Blender を入れた環境なら、アドオン層もヘッドレスで検査できる:
 
 ```bash
-blender --background --factory-startup --python scripts/blender_selftest.py         # 393 項目(Blender 5.1)
-blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 151 項目(Curve Pattern)
-cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 78 件
+blender --background --factory-startup --python scripts/blender_selftest.py         # 407 項目(Blender 5.1)
+blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 184 項目(Curve Pattern)
+cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 83 件
 ```
 
-- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 4.2 で 379 項目、5.1 で 393 項目。版によって走らない項目がある)
+- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 4.2 で 393 項目、5.1 で 407 項目。4.2 は 5.x で
+  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 184 項目)
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)
 - **`samples/*.blend` は `blender_selftest.py` が全部開いて検査する。** 作業用の .blend を `samples/` に置かない
   (調査用のファイルは `scripts/spikes/data/` へ)
@@ -38,24 +39,30 @@ cd rust/cloth_core && cargo test --no-default-features --release                
 | Blender の Curve の点の同一性の実測 | [docs/design/curve_spike_results.md](design/curve_spike_results.md) |
 | 仕様 | [SPEC.md](../SPEC.md) |
 
-直近の到達点(M10 の大半が終わった状態):
+直近の到達点(M10 はほぼ完了、M11 は第 1 段階まで):
 
-- Curve を型紙の一次データにし、そこから布のメッシュを生成する(Shape Update / Rebuild Required / Rebuild)
-- Rebuild で着せた姿勢とピン留めを引き継ぐ(型紙空間を介した補間)
-- ピースを体の周りへ巻き付けて置く(`Arrange Around Collider`)
-- Curve と布の対応の表示(縫い目ごとの色・ピース番号)
-- 縫い目の溶接(`Weld Seams`)、縫い目をまたぐ曲げ制約(硬い生地を高品質で解いたときの蝶番を防ぐ)
+- M10 Curve Pattern: Curve を型紙の一次データにし、そこから布のメッシュを生成する(Shape Update /
+  Rebuild Required / Rebuild)。Rebuild で姿勢とピン留めを引き継ぐ。布は既定で描いた平面のまま Curve の横に
+  出す(向き・方向・隙間は Rebuild の欄と F9)。体の周りへの配置(`Arrange Around Collider`)、対応の表示、
+  縫い目の溶接、縫い目をまたぐ曲げ制約。**GUI での確認も一通り済んだ**(2026-10-08、5.2.2)
+- M11 クッション: 圧力の第 1 段階(一定の圧力)、2 枚を重ねる配置(`Stack Pieces for Bag`)、体なしで
+  袋を閉じる手順(`Close Bag`)。クッションが一通り作れる。**一定の圧力では膨らみきって飽和する**ので、
+  圧力の値でふくらみ具合を決められない(次の課題)
 
 ## 3. 次の候補
 
 どれも ROADMAP に書いてある。優先順は利用者と相談して決める。
 
-1. **GUI での確認**([CHECKPOINTS.md](../CHECKPOINTS.md))— Undo / Redo、ペンツール、保存して開き直したあと、
-   縫い目の曲げ抵抗の見え方。結果しだいで直すところが出る
-2. 選択の連動(Curve で選んだ区間に対応する布の辺を光らせる) — 対応の表示の続き
-3. ゴム紐の Curve 側への移行(縫い目と同じ形)
-4. **M11: クッション・パファー**(圧力の第 1 段階 → 2 枚を重ねる配置 → 体積を考える圧力)。整理は ROADMAP の M11
-5. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
+1. **M11 の GUI 確認**([CHECKPOINTS.md](../CHECKPOINTS.md) の「圧力で増えた確認項目」)— Pressure の欄、
+   強すぎる圧力の警告、平らな布の膨らむ向き、クッションを一通り作る
+2. **M11 圧力の第 2 段階(体積)** — `p = p0 × V0 / V` で、膨らむほど圧力を下げて狙った体積で止める
+3. 選択の連動(Curve で選んだ区間に対応する布の辺を光らせる) — 対応の表示の続き
+4. ゴム紐の Curve 側への移行(縫い目と同じ形)
+5. マチ(帯状のピース)、内部線(キルティング・タフティング)
+6. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
+
+使い勝手の判断待ち(ROADMAP の M8「未決」、CHECKPOINTS): 型紙オブジェクトを伸ばしたときの柄、
+型紙オブジェクトのピースの並べ方、Dress / Adjust の最中に Curve の変更が拒否されたときの表示
 
 ## 4. 気をつけること
 

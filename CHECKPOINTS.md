@@ -9,7 +9,7 @@ Blender を触れないときでも進捗を検証できるように、確認項
 ## 手作業で残っているもの
 
 **まずここを見てください。** Blender をヘッドレス起動する
-`scripts/blender_selftest.py`(393項目)で大半が自動化されたので、
+`scripts/blender_selftest.py`(407項目、2026-10-08)で大半が自動化されたので、
 下の CP-B の一覧は**ほとんどが毎回自動で確認されています**。
 
 ```bash
@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 87 項目)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 184 項目、2026-10-08)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
