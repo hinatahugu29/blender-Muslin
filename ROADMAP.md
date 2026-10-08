@@ -1412,7 +1412,9 @@ Mesh Pattern(M8)は残し、Curve Pattern を**追加の系統**にする。既�
 - [x] Blender 側: 初期化・Rebuild・派生データの頂点属性・縫い目の辺属性への展開 — `curve_pattern.py`
 - [x] `pattern_link` に Curve の入力を足し、走行中・Dress・Adjust の布へ Shape Update を流す
 - [x] パネル(状態・Rebuild・縫い目)と、選択から縫い目を作る操作
-- [~] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)
+- [x] GUI での確認([CHECKPOINTS.md](CHECKPOINTS.md) の「Curve Pattern で増えた確認項目」)— 2026-10-08、
+      Blender 5.2.2 LTS で一通り見て問題なし。出す向きと置き場所・点を動かしたときの追従・Rebuild Required の表示・
+      Undo / Redo・ペンツール・保存して開き直す・姿勢の引き継ぎ・対応の表示・溶接・縫い目をまたぐ曲げ抵抗
 - [x] ピースを体の周りへ巻き付けて置く(Arrange Around Collider。向きは 0° = 正面。自動で等間隔) — `curve_arrange.py`
 - [x] 布は既定で**描いた平面のまま、Curve の横に**出す(2026-10-08)。向き(Flat / Standing)・方向・隙間は
   Rebuild の欄と F9 で選ぶ。立てて体の周りへ置くのは Arrange の役目にし、高さは型紙の y・下端は Height
