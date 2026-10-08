@@ -222,6 +222,13 @@ const CHEBYSHEV_RESTART: u32 = 10;
 /// 達するようにする。
 const VOLUME_GAIN: f64 = 10.0;
 
+/// 目標の体積より大きいときに吸う力の上限(K に対する割合)。
+///
+/// 空気の少ない袋は、強い真空にはならずにたるむ。強く吸わせると、張った布は曲げに
+/// 強くてほとんど縮まないまま、全力の負圧で 2 ステップ周期に震え続けた(30cm 角の
+/// クッションで最大 8m/s)。わずかに吸うだけにして、縮めるのは重力などに任せる。
+const VOLUME_SUCTION: f64 = 0.1;
+
 /// 摩擦を較正する基準のサブステップ数。
 ///
 /// 摩擦はサブステップごとに1回掛かるので、1フレームの接線速度の残存率は
@@ -302,8 +309,8 @@ pub struct ClothSim {
     /// 番号ごとの基準の圧力 K(N/m^2)。目標の体積が無ければ、これがそのまま圧力。
     pressure_base: Vec<f64>,
     /// 番号ごとの目標の体積(m^3。M11 の第 2 段階)。0 なら体積を見ない(一定の圧力)。
-    /// 正なら、閉じた形の今の体積 V から `p = |K| × clamp(G × (目標 / V − 1), −1, 1)` とし、
-    /// 目標より小さければ押し広げ、大きければ縮める。一定の圧力では膨らみきって
+    /// 正なら、閉じた形の今の体積 V から `p = |K| × clamp(G × (目標 / V − 1), −S, 1)` とし、
+    /// 目標より小さければ押し広げ、大きければわずかに吸う(S は `VOLUME_SUCTION`)。一定の圧力では膨らみきって
     /// 飽和し、圧力の値でふくらみ具合を決められなかったため。
     volume_target: Vec<f64>,
 
@@ -772,7 +779,7 @@ impl ClothSim {
                 }
                 // 体積がほぼ 0(平らに重ねた直後)や裏返り(負)のときは、目一杯押し広げる
                 let ratio = if volumes[m] > 1e-12 {
-                    (VOLUME_GAIN * (target / volumes[m] - 1.0)).clamp(-1.0, 1.0)
+                    (VOLUME_GAIN * (target / volumes[m] - 1.0)).clamp(-VOLUME_SUCTION, 1.0)
                 } else {
                     1.0
                 };
@@ -5192,8 +5199,9 @@ mod tests {
     }
 
     #[test]
-    fn volume_target_deflates_an_overfilled_bag() {
-        // 満杯まで膨らんだ袋に、半分の目標を与えると縮む(負の圧力で吸う)
+    fn volume_target_only_sucks_weakly_when_overfilled() {
+        // 満杯の袋に半分の目標を与えても、強くは吸わない(吸う力は K の 1 割まで)。
+        // 膨らみ続けはせず、発散もしない
         let full = full_pillow_volume();
         let (mut sim, _tris) = inflate_pillow(17, 100.0, 240);
         sim.set_volume_targets(&[full * 0.5]).unwrap();
@@ -5203,15 +5211,19 @@ mod tests {
             substeps: 8,
             ..SimParams::default()
         };
+        // 満杯の形のまま圧力を決め直した直後(ステップを回すと、引き伸ばされた布が
+        // 押すのをやめた瞬間に弾性で縮み、目標を下回って押す側に戻る)
+        sim.update_volume_pressure();
+        let max_pressure = sim.vertex_pressure.iter().fold(0.0_f64, |a, &p| a.max(p.abs()));
+        assert!(
+            (max_pressure - 100.0 * VOLUME_SUCTION).abs() < 1e-9,
+            "吸う力が K の 1 割ではない: {max_pressure}"
+        );
         for _ in 0..240 {
             sim.step(1.0 / 60.0, &params);
         }
         let v = sim.material_volumes()[0];
-        assert!(
-            (v / (full * 0.5) - 1.0).abs() < 0.15,
-            "満杯の袋が目標まで縮まない: 体積 {v:.6} / 目標 {:.6}",
-            full * 0.5
-        );
+        assert!(sim.is_finite() && v <= full * 1.01, "満杯より膨らんだ: {v:.6} / {full:.6}");
     }
 
     #[test]
