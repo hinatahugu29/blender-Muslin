@@ -450,6 +450,24 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
             layout.operator("muslin.curve_seam_add", icon='ADD')
             layout.label(text="編集モードで 2 か所の点の連なりを選ぶ", icon='INFO')
 
+        # ゴム紐(Curve の区間で持つので、Rebuild しても保たれる)
+        layout.separator()
+        layout.label(text="ゴム紐")
+        items = {e.uid: e for e in cloth.muslin_elastics} if cloth is not None else {}
+        for uid, name in info.get("elastics", []):
+            row = layout.row(align=True)
+            item = items.get(uid)
+            if item is not None:
+                row.prop(item, "enabled", text="")
+                row.label(text=name, icon='MOD_SCREW')
+                row.prop(item, "scale", text="")
+            else:
+                row.label(text=name, icon='MOD_SCREW')
+            op = row.operator("muslin.curve_elastic_remove", text="", icon='X')
+            op.uid = uid
+        if obj.type == 'CURVE':
+            layout.operator("muslin.curve_elastic_add", icon='ADD')
+
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"
@@ -513,6 +531,10 @@ class MUSLIN_PT_elastic(_MuslinPanelBase, bpy.types.Panel):
         if obj is None or obj.type != 'MESH':
             layout.label(text="メッシュを選択してください", icon='INFO')
             return
+        from . import curve_pattern
+        if curve_pattern.curve_of(obj) is not None:
+            # Curve から作った布は、Curve 側で付けると Rebuild しても保たれる
+            layout.label(text="Curve Pattern の布: ゴム紐は Curve で付けると保たれます", icon='INFO')
         layout.label(text="編集モードでゴムを入れる辺を選択:")
         layout.operator("muslin.add_elastic", icon='ADD')
         row = layout.row()

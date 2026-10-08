@@ -517,13 +517,164 @@ def remove_seam(curve_obj, uid):
     apply_seams(curve_obj)
 
 
+# ---------------------------------------------------------------- ゴム紐(Curve 側)
+
+def add_elastic(curve_obj, ranges, name=None, scale=0.8):
+    """ゴム紐を Curve の区間で定義する。ranges は縫い目の片側と同じ [(始点 uid, t0, 終点 uid, t1), ...]。
+
+    区間は何本でもよい(ウエストの前後など)。戻り値: ゴム紐の uid(この Curve の中で一意)
+    """
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    known = {u for p in record["pieces"] for u in p["uids"]}
+    for rng in ranges:
+        if rng[0] not in known or rng[2] not in known:
+            raise CurvePatternError(f"ゴム紐の区間の点 {rng[0]}/{rng[2]} が Curve にありません")
+    elastics = record.setdefault("elastics", [])
+    # 布で直接付けたゴム紐と番号が重ならないよう、全体で一意にする(縫い目と同じ考え方)
+    from . import mesh_io
+    uid = max([mesh_io.next_elastic_uid()] + [e["uid"] + 1 for e in elastics])
+    elastics.append({
+        "uid": uid, "name": name or f"Elastic {len(elastics) + 1}",
+        "scale": float(scale), "enabled": True,
+        "ranges": [[int(r[0]), float(r[1]), int(r[2]), float(r[3])] for r in ranges],
+    })
+    save_record(curve_obj, record)
+    return uid
+
+
+def elastic_from_selection(curve_obj, name=None, scale=0.8):
+    """選んだ点の連なり(何か所でも)をゴム紐にする。輪郭を全部選べば一周。戻り値: uid"""
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    problems = structure_problems(curve_obj, record)
+    if problems:
+        raise CurvePatternError("点の構成が変わっています(Rebuild してからゴム紐を付けてください): "
+                                + problems[0])
+    splines = read_splines(curve_obj)
+    ranges = []
+    for si, run in selection_runs_of(curve_obj):
+        uids = splines[si]["uids"]
+        if len(run) < 2:
+            continue
+        if splines[si]["cyclic"] and len(run) == len(uids):
+            ranges.append((uids[run[0]], 0.0, uids[run[0]], 0.0))
+        else:
+            ranges.append((uids[run[0]], 0.0, uids[run[-1]], 0.0))
+    if not ranges:
+        raise CurvePatternError("ゴムを入れる点の連なり(2 点以上)を選んでください")
+    uid = add_elastic(curve_obj, ranges, name=name, scale=scale)
+    apply_seams(curve_obj)
+    return uid
+
+
+def remove_elastic(curve_obj, uid):
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    elastics = record.get("elastics", [])
+    record["elastics"] = [e for e in elastics if e["uid"] != uid]
+    if len(record["elastics"]) == len(elastics):
+        raise CurvePatternError(f"ゴム紐 {uid} はありません")
+    save_record(curve_obj, record)
+    # 布の側の項目と辺の印も消す(残すと、書き直しで「布で直接付けたもの」として残ってしまう)
+    cloth = cloth_of(curve_obj)
+    if cloth is not None:
+        from . import mesh_io
+        for i in reversed(range(len(cloth.muslin_elastics))):
+            if cloth.muslin_elastics[i].uid == uid:
+                cloth.muslin_elastics.remove(i)
+        attr = cloth.data.attributes.get(mesh_io.ELASTIC_ATTRIBUTE)
+        if attr is not None:
+            codes = np.zeros(len(attr.data), dtype=np.int32)
+            attr.data.foreach_get("value", codes)
+            codes[codes == uid] = 0
+            attr.data.foreach_set("value", codes)
+    apply_seams(curve_obj)
+
+
+def set_elastic(curve_obj, uid, scale=None, enabled=None):
+    """ゴム紐の倍率・有効を記録に書く(布の Elastic の欄から変えたときに呼ばれる)。"""
+    record = load_record(curve_obj)
+    if record is None:
+        return
+    for e in record.get("elastics", []):
+        if e["uid"] == uid:
+            if scale is not None:
+                e["scale"] = float(scale)
+            if enabled is not None:
+                e["enabled"] = bool(enabled)
+            save_record(curve_obj, record)
+            return
+
+
+def _write_elastics(cloth, record, mesh_data, keep_local=False):
+    """ゴム紐の定義を、布の辺の属性 `muslin_elastic` と `muslin_elastics` に展開する。
+
+    戻り値: 使えなかったゴム紐の名前の一覧(区間が輪郭に無い)。
+    keep_local なら、布のメッシュで直接付けたゴム紐(Curve に無いもの)を残す。メッシュを
+    作り直していない(縫い目を足しただけなどの)書き直しのとき。作り直したときは辺が
+    変わるので残せない(呼び出し側で警告する)。
+    """
+    from . import mesh_io
+    mesh = cloth.data
+    edge_index = {tuple(sorted(e.vertices)): e.index for e in mesh.edges}
+    codes = np.zeros(len(mesh.edges), dtype=np.int32)
+    broken = []
+    curve_uids = {e["uid"] for e in record.get("elastics", [])}
+    local = []
+    if keep_local:
+        old_codes, _edges = mesh_io.read_edge_ints(mesh, mesh_io.ELASTIC_ATTRIBUTE)
+        local = [(e.name, e.uid, e.scale, e.enabled) for e in cloth.muslin_elastics
+                 if e.uid not in curve_uids]
+        if old_codes is not None and len(old_codes) == len(codes):
+            keep = {u for _n, u, _s, _e in local}
+            for i, c in enumerate(old_codes):
+                if c in keep:
+                    codes[i] = c
+    cloth.muslin_elastics.clear()
+    for name, uid, scale, enabled in local:
+        item = cloth.muslin_elastics.add()
+        item["name"], item["uid"], item["scale"], item["enabled"] = name, uid, scale, enabled
+    for e in record.get("elastics", []):
+        ok = True
+        for start, t0, end, t1 in e["ranges"]:
+            ring = _ring_containing(mesh_data, start)
+            if ring is None or end not in ring["uids"]:
+                ok = False
+                continue
+            for a, b in curve_discretize.expand_range(ring, start, t0, end, t1):
+                codes[edge_index[tuple(sorted((a, b)))]] = e["uid"]
+        if not ok:
+            broken.append(e["name"])
+        item = cloth.muslin_elastics.add()
+        # 書き込みの間は記録へ書き戻す更新を走らせない(記録が正なので)
+        item["name"] = e["name"]
+        item["uid"] = e["uid"]
+        item["scale"] = float(e["scale"])
+        item["enabled"] = bool(e["enabled"])
+    attr = mesh.attributes.get(mesh_io.ELASTIC_ATTRIBUTE)
+    if attr is None:
+        if not record.get("elastics") and not local:
+            return broken
+        attr = mesh.attributes.new(mesh_io.ELASTIC_ATTRIBUTE, 'INT', 'EDGE')
+    attr.data.foreach_set("value", codes)
+    return broken
+
+
 def apply_seams(curve_obj):
     """縫い目の定義を、作り直さずに今の布へ書き直す。使えなかった縫い目の名前の一覧を返す。"""
     cloth = cloth_of(curve_obj)
     record = load_record(curve_obj)
     if cloth is None or record is None or generation_record(cloth) is None:
         return []
-    return _write_seams(cloth, record, reconstruct(cloth))
+    mesh_data = reconstruct(cloth)
+    # ゴム紐も Curve の区間で持つので、縫い目と一緒に書き直す(作り直していないので、
+    # 布で直接付けたゴム紐も残す)
+    return (_write_seams(cloth, record, mesh_data)
+            + _write_elastics(cloth, record, mesh_data, keep_local=True))
 
 
 def status(curve_obj):
@@ -540,6 +691,7 @@ def status(curve_obj):
         "problems": structure_problems(curve_obj, record),
         "cloth": cloth_of(curve_obj),
         "seams": [(s["uid"], s["name"]) for s in record["seams"]],
+        "elastics": [(e["uid"], e["name"]) for e in record.get("elastics", [])],
         "gen_id": record["gen_id"],
     }
 
@@ -810,9 +962,11 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True,
         cloth.vertex_groups.clear()
         if had_pins and carry is None:
             warnings.append("頂点グループ(ピン留め)は作り直しで失われました。付け直してください")
-        if len(cloth.muslin_elastics):
-            cloth.muslin_elastics.clear()
-            warnings.append("ゴム紐は作り直しで失われました。付け直してください")
+        # Curve で定義したゴム紐は作り直しても書き直す。布で直接付けたものだけが失われる
+        curve_uids = {e["uid"] for e in record.get("elastics", [])}
+        if any(e.uid not in curve_uids for e in cloth.muslin_elastics):
+            warnings.append("布で直接付けたゴム紐は作り直しで失われました。"
+                            "Curve Pattern パネルで Curve に付けると保たれます")
 
     curve_obj[CLOTH_KEY] = cloth
     cloth[SOURCE_KEY] = curve_obj
@@ -848,7 +1002,7 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True,
     cloth[rest_shape.LOCKED_FLAG] = True
 
     mesh_data = reconstruct(cloth)
-    broken = _write_seams(cloth, record, mesh_data)
+    broken = _write_seams(cloth, record, mesh_data) + _write_elastics(cloth, record, mesh_data)
     if broken:
         warnings.append(f"使えない縫い目があります({', '.join(broken[:3])}"
                         f"{' ほか' if len(broken) > 3 else ''})。区間が輪郭に無いか、片側が 1 本につながりません")
@@ -1110,7 +1264,8 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
             layout.prop(self, "gap")
         else:
             layout.prop(self, "keep_pose")
-            layout.label(text="ゴム紐は失われます(姿勢とピン留めは引き継げます)", icon='ERROR')
+            layout.label(text="布で直接付けたゴム紐は失われます(Curve のゴム紐・姿勢・ピンは保たれる)",
+                         icon='INFO')
 
     def execute(self, context):
         curve = _target_curve(context)
@@ -1291,9 +1446,67 @@ class MUSLIN_OT_curve_seam_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MUSLIN_OT_curve_elastic_add(bpy.types.Operator):
+    """Curve の点の連なり(何か所でも)を選び、そこにゴム紐を入れる(Rebuild しても保たれる)"""
+
+    bl_idname = "muslin.curve_elastic_add"
+    bl_label = "Add Elastic from Selection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    scale: bpy.props.FloatProperty(
+        name="Length", default=0.8, min=0.2, max=1.5, subtype='FACTOR',
+        description="辺の長さの倍率。0.8 なら 2 割縮もうとして、まわりの布を寄せる",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        obj = context.active_object
+        if obj is None or obj.type != 'CURVE':
+            return ui_poll.reject(cls, "Curve を選んでください")
+        if load_record(obj) is None:
+            return ui_poll.reject(cls, "先に Initialize Curve Pattern を実行してください")
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            uid = elastic_from_selection(obj, scale=self.scale)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        name = next(e["name"] for e in load_record(obj)["elastics"] if e["uid"] == uid)
+        self.report({'INFO'}, f"ゴム紐 '{name}' を追加しました(長さ ×{self.scale:.2f})")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_curve_elastic_remove(bpy.types.Operator):
+    """Curve のゴム紐を削除する"""
+
+    bl_idname = "muslin.curve_elastic_remove"
+    bl_label = "Remove Curve Elastic"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uid: bpy.props.IntProperty(default=0)
+
+    @classmethod
+    def poll(cls, context):
+        obj = _target_curve(context)
+        return obj is not None and load_record(obj) is not None
+
+    def execute(self, context):
+        try:
+            remove_elastic(_target_curve(context), self.uid)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 _classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
             MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_stack,
-            MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
+            MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove,
+            MUSLIN_OT_curve_elastic_add, MUSLIN_OT_curve_elastic_remove)
 
 
 def register():

@@ -803,6 +803,62 @@ def main():
     overlay.invalidate_cache()
     check("描画のハンドラが登録されている(線と文字)", overlay._draw_handle is not None and overlay._label_handle is not None)
 
+    section("ゴム紐を Curve で持つ(Rebuild しても保たれる)")
+    ec = make_curve("ElasticPat", 1.0, 0.7)
+    bpy.context.view_layer.objects.active = ec
+    for o in scene.objects:
+        o.select_set(o is ec)
+    cp.initialize(ec, 0.05)
+    e_cloth, _ = cp.rebuild(bpy.context, ec)
+    bpy.context.view_layer.objects.active = ec
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.curve.select_all(action='DESELECT')
+    epts = ec.data.splines[0].bezier_points
+    epts[0].select_control_point = True       # 左下
+    epts[1].select_control_point = True       # 右下 → 下辺
+    res = bpy.ops.muslin.curve_elastic_add(scale=0.7)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    def elastic_edge_count(o):
+        codes_e, _ = mesh_io.read_edge_ints(o.data, mesh_io.ELASTIC_ATTRIBUTE)
+        return sum(1 for c_ in (codes_e or []) if c_)
+
+    check("選んだ区間がゴム紐になる(下辺 1m / 辺 5cm = 20 本、長さ ×0.7)",
+          res == {'FINISHED'} and len(e_cloth.muslin_elastics) == 1
+          and abs(e_cloth.muslin_elastics[0].scale - 0.7) < 1e-6 and elastic_edge_count(e_cloth) == 20,
+          f"{elastic_edge_count(e_cloth)} 本")
+    e_uid = e_cloth.muslin_elastics[0].uid
+    e_cloth.muslin_elastics[0].scale = 0.85
+    check("布の欄で倍率を変えると Curve の記録にも残る",
+          abs(cp.load_record(ec)["elastics"][0]["scale"] - 0.85) < 1e-6)
+    # 布で直接付けたゴム紐(Curve に無いもの)
+    local = e_cloth.muslin_elastics.add()
+    local.name, local.uid = "Local", 9999
+    attr_e = e_cloth.data.attributes[mesh_io.ELASTIC_ATTRIBUTE]
+    free_edge = next(i for i, d_ in enumerate(attr_e.data) if d_.value == 0)
+    attr_e.data[free_edge].value = 9999
+    cp.add_seam(ec, [(2, 0.0, 3, 0.0)], [(4, 0.0, 1, 0.0)], name="S")
+    cp.apply_seams(ec)
+    check("縫い目を足すだけ(作り直さない)なら、布で直接付けたゴム紐は残る",
+          any(e.uid == 9999 for e in e_cloth.muslin_elastics) and elastic_edge_count(e_cloth) == 21)
+    e_cloth2, e_warn = cp.rebuild(bpy.context, ec, target_length=0.025)
+    check("辺の長さを変えて Rebuild しても Curve のゴム紐は保たれる(40 本)",
+          e_cloth2 == e_cloth and [e.uid for e in e_cloth.muslin_elastics] == [e_uid]
+          and abs(e_cloth.muslin_elastics[0].scale - 0.85) < 1e-6 and elastic_edge_count(e_cloth) == 40,
+          f"{elastic_edge_count(e_cloth)} 本")
+    check("布で直接付けたゴム紐は作り直しで消え、そのことを伝える",
+          any("直接付けたゴム紐" in w for w in e_warn), str(e_warn))
+    sim_state.start_simulation(e_cloth, e_cloth.muslin)
+    check("走らせるとゴム紐がコアに渡る(40 辺)",
+          sim_state.get_state(e_cloth)["info"]["elastic_edges"] == 40)
+    sim_state.stop_simulation(e_cloth)
+    for o in scene.objects:
+        o.select_set(o is ec)
+    bpy.context.view_layer.objects.active = ec
+    res = bpy.ops.muslin.curve_elastic_remove(uid=e_uid)
+    check("ゴム紐を削除できる", res == {'FINISHED'} and len(e_cloth.muslin_elastics) == 0
+          and elastic_edge_count(e_cloth) == 0)
+
     section("選択の連動(Curve で選んだ区間に対応する布の辺)")
     from muslin import curve_ids
     check("オブジェクトモードでは何も出さない",

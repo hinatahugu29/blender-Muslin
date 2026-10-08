@@ -203,6 +203,15 @@ class MUSLIN_PG_seam(bpy.types.PropertyGroup):
     )
 
 
+def _elastic_update(self, context):
+    """Curve Pattern の布なら、ゴム紐の倍率・有効を Curve の記録にも書く(Rebuild で保たれるように)。"""
+    from . import curve_pattern
+    cloth = self.id_data
+    curve = curve_pattern.curve_of(cloth) if cloth is not None else None
+    if curve is not None and self.uid:
+        curve_pattern.set_elastic(curve, self.uid, scale=self.scale, enabled=self.enabled)
+
+
 class MUSLIN_PG_elastic(bpy.types.PropertyGroup):
     """ゴム紐(弾性グループ)。辺の属性 `muslin_elastic` に uid を書いた辺を縮める。"""
 
@@ -218,8 +227,9 @@ class MUSLIN_PG_elastic(bpy.types.PropertyGroup):
         min=0.2,
         max=1.5,
         subtype='FACTOR',
+        update=_elastic_update,
     )
-    enabled: bpy.props.BoolProperty(name="Enabled", default=True)
+    enabled: bpy.props.BoolProperty(name="Enabled", default=True, update=_elastic_update)
 
 
 class MUSLIN_PG_tools(bpy.types.PropertyGroup):
