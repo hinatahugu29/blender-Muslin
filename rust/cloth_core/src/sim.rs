@@ -214,6 +214,14 @@ const CHEBYSHEV_DELAY: u32 = 5;
 /// 周期的に ω を 1 に戻して基準位置を取り直せば、積み上がりが切れる。
 const CHEBYSHEV_RESTART: u32 = 10;
 
+/// 目標の体積からのずれに対する圧力の効き方(M11 の第 2 段階)。
+///
+/// 圧力は `|K| × clamp(G × (目標 / V − 1), −1, 1)`。G = 1 だと、目標に近づくほど圧力が
+/// 弱まり、布の曲げやシワの戻ろうとする力と目標の手前で釣り合った(枕で目標の 77%)。
+/// 実際の空気は少し体積が足りないだけで強く押し返すので、ずれが 1/G で最大の K に
+/// 達するようにする。
+const VOLUME_GAIN: f64 = 10.0;
+
 /// 摩擦を較正する基準のサブステップ数。
 ///
 /// 摩擦はサブステップごとに1回掛かるので、1フレームの接線速度の残存率は
@@ -289,6 +297,15 @@ pub struct ClothSim {
     /// 圧力の作業領域(頂点ごとの面積重みの法線)。形が変われば向きも変わるので、
     /// サブステップごとに現在位置から作り直す。
     pressure_normals: Vec<Vec3>,
+    /// 頂点ごとの圧力の番号(布ごと。`set_pressures` の番号の引き方と同じ)。
+    pressure_material: Vec<usize>,
+    /// 番号ごとの基準の圧力 K(N/m^2)。目標の体積が無ければ、これがそのまま圧力。
+    pressure_base: Vec<f64>,
+    /// 番号ごとの目標の体積(m^3。M11 の第 2 段階)。0 なら体積を見ない(一定の圧力)。
+    /// 正なら、閉じた形の今の体積 V から `p = |K| × clamp(G × (目標 / V − 1), −1, 1)` とし、
+    /// 目標より小さければ押し広げ、大きければ縮める。一定の圧力では膨らみきって
+    /// 飽和し、圧力の値でふくらみ具合を決められなかったため。
+    volume_target: Vec<f64>,
 
     pub stretch_constraints: Vec<DistanceConstraint>,
     /// 二面角による曲げ制約。距離制約では曲げ剛性を制御できないため
@@ -513,6 +530,9 @@ impl ClothSim {
             vertex_density: vec![density; n],
             vertex_pressure: vec![0.0; n],
             pressure_normals: Vec::new(),
+            pressure_material: vec![0; n],
+            pressure_base: vec![0.0],
+            volume_target: vec![0.0],
             constrained_pairs,
             seam_pairs: Default::default(),
             colliders: Vec::new(),
@@ -657,6 +677,11 @@ impl ClothSim {
     /// 閉じた袋を内側から膨らませるためのもの(M11 の第 1 段階)。
     /// ここでは体積を見ないので、膨らむほど弱まることはない。面が無い布では効かない。
     pub fn set_pressure(&mut self, pressure: f64) {
+        self.pressure_material.iter_mut().for_each(|m| *m = 0);
+        self.pressure_base = vec![pressure];
+        if self.volume_target.len() != 1 {
+            self.volume_target = vec![0.0];
+        }
         self.vertex_pressure.iter_mut().for_each(|p| *p = pressure);
     }
 
@@ -673,16 +698,96 @@ impl ClothSim {
         if vertex_material.iter().any(|&m| m >= pressures.len()) {
             return Err("生地の番号が範囲外".into());
         }
+        self.pressure_material.copy_from_slice(vertex_material);
+        self.pressure_base = pressures.to_vec();
+        if self.volume_target.len() != pressures.len() {
+            self.volume_target = vec![0.0; pressures.len()];
+        }
         for i in 0..n {
             self.vertex_pressure[i] = pressures[vertex_material[i]];
         }
         Ok(())
     }
 
+    /// 番号ごとの目標の体積(m^3)を設定する(M11 の第 2 段階)。0 の番号は一定の圧力のまま。
+    ///
+    /// 番号の引き方は `set_pressure` / `set_pressures` で決めたもの(1 着なら全部 0 番)。
+    /// 目標は番号の数だけ渡す。
+    pub fn set_volume_targets(&mut self, targets: &[f64]) -> Result<(), String> {
+        if targets.len() != self.pressure_base.len() {
+            return Err(format!(
+                "目標の体積の数 {} が圧力の番号の数 {} と違う",
+                targets.len(),
+                self.pressure_base.len()
+            ));
+        }
+        self.volume_target = targets.iter().map(|&t| t.max(0.0)).collect();
+        Ok(())
+    }
+
+    /// 番号ごとの、閉じた形の今の体積(m^3)。面の表(法線)の側を外として正になる。
+    ///
+    /// 番号の三角形(最初の頂点の番号で決める)ごとに、その番号の頂点の重心を原点にした
+    /// 符号付きの四面体の体積を足す。閉じていれば原点に依らないが、縫い目の隙間が
+    /// 残っているあいだは少し揺れるので、原点を形の中に置いて揺れを小さくする。
+    pub fn material_volumes(&self) -> Vec<f64> {
+        let kinds = self.pressure_base.len();
+        let mut centre = vec![Vec3::zero(); kinds];
+        let mut count = vec![0usize; kinds];
+        for (i, &m) in self.pressure_material.iter().enumerate() {
+            centre[m] = centre[m].add(self.positions[i]);
+            count[m] += 1;
+        }
+        for m in 0..kinds {
+            if count[m] > 0 {
+                centre[m] = centre[m].scale(1.0 / count[m] as f64);
+            }
+        }
+        let mut volume = vec![0.0; kinds];
+        for t in self.triangles.iter() {
+            let m = self.pressure_material[t[0]];
+            let o = centre[m];
+            let (a, b, c) = (
+                self.positions[t[0]].sub(o),
+                self.positions[t[1]].sub(o),
+                self.positions[t[2]].sub(o),
+            );
+            volume[m] += a.dot(b.cross(c)) / 6.0;
+        }
+        volume
+    }
+
+    /// 目標の体積がある番号の圧力を、今の体積から決め直す。
+    fn update_volume_pressure(&mut self) {
+        if self.volume_target.iter().all(|&t| t <= 0.0) {
+            return;
+        }
+        let volumes = self.material_volumes();
+        let pressure: Vec<f64> = (0..self.pressure_base.len())
+            .map(|m| {
+                let target = self.volume_target[m];
+                let base = self.pressure_base[m];
+                if target <= 0.0 {
+                    return base;
+                }
+                // 体積がほぼ 0(平らに重ねた直後)や裏返り(負)のときは、目一杯押し広げる
+                let ratio = if volumes[m] > 1e-12 {
+                    (VOLUME_GAIN * (target / volumes[m] - 1.0)).clamp(-1.0, 1.0)
+                } else {
+                    1.0
+                };
+                base.abs() * ratio
+            })
+            .collect();
+        for (i, &m) in self.pressure_material.iter().enumerate() {
+            self.vertex_pressure[i] = pressure[m];
+        }
+    }
+
     /// 圧力が 1 つでも入っているか。入っていなければ法線の計算ごと飛ばす
     /// (圧力 0 のときに結果が以前とビット一致するように)。
     fn has_pressure(&self) -> bool {
-        !self.triangles.is_empty() && self.vertex_pressure.iter().any(|&p| p != 0.0)
+        !self.triangles.is_empty() && self.pressure_base.iter().any(|&p| p != 0.0)
     }
 
     /// 頂点ごとの面積重みの法線を、現在位置から作る。
@@ -1118,6 +1223,7 @@ impl ClothSim {
         let has_wind = params.wind.length() > 0.0;
         let has_pressure = self.has_pressure();
         if has_pressure {
+            self.update_volume_pressure();
             self.update_pressure_normals();
         }
 
@@ -5044,6 +5150,104 @@ mod tests {
             stretch < 0.05,
             "膨らませたら伸びすぎた: 平均の伸び誤差 {stretch}"
         );
+    }
+
+    /// 一定の圧力で膨らみきった体積(目標の体積のテストの基準)
+    fn full_pillow_volume() -> f64 {
+        let (sim, tris) = inflate_pillow(17, 100.0, 240);
+        signed_volume(&sim.positions, &tris)
+    }
+
+    fn inflate_pillow_to(target: f64, frames: usize) -> ClothSim {
+        let (positions, edges, bending, tris) = build_pillow(17, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 1e-5, 1e-4);
+        sim.set_pressure(100.0);
+        sim.set_volume_targets(&[target]).unwrap();
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.3,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..frames {
+            sim.step(1.0 / 60.0, &params);
+        }
+        sim
+    }
+
+    #[test]
+    fn volume_target_stops_inflation_near_the_target() {
+        // 一定の圧力では膨らみきる。目標の体積を満杯の半分にすると、そこで止まる
+        let full = full_pillow_volume();
+        for fill in [0.4, 0.7] {
+            let sim = inflate_pillow_to(full * fill, 240);
+            let v = sim.material_volumes()[0];
+            assert!(sim.is_finite());
+            assert!(
+                (v / (full * fill) - 1.0).abs() < 0.1,
+                "目標の体積で止まらない: Fill {fill} → 体積 {v:.6} / 目標 {:.6}(満杯 {full:.6})",
+                full * fill
+            );
+        }
+    }
+
+    #[test]
+    fn volume_target_deflates_an_overfilled_bag() {
+        // 満杯まで膨らんだ袋に、半分の目標を与えると縮む(負の圧力で吸う)
+        let full = full_pillow_volume();
+        let (mut sim, _tris) = inflate_pillow(17, 100.0, 240);
+        sim.set_volume_targets(&[full * 0.5]).unwrap();
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.3,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..240 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        let v = sim.material_volumes()[0];
+        assert!(
+            (v / (full * 0.5) - 1.0).abs() < 0.15,
+            "満杯の袋が目標まで縮まない: 体積 {v:.6} / 目標 {:.6}",
+            full * 0.5
+        );
+    }
+
+    #[test]
+    fn material_volume_matches_signed_volume() {
+        let (sim, tris) = inflate_pillow(17, 100.0, 120);
+        let a = sim.material_volumes()[0];
+        let b = signed_volume(&sim.positions, &tris);
+        assert!((a - b).abs() < 1e-9 * b.abs().max(1.0), "{a} vs {b}");
+    }
+
+    #[test]
+    fn zero_volume_target_keeps_constant_pressure_bitwise() {
+        let (constant, _) = inflate_pillow(9, 60.0, 60);
+        let (positions, edges, bending, tris) = build_pillow(9, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 1e-5, 1e-4);
+        sim.set_pressure(60.0);
+        sim.set_volume_targets(&[0.0]).unwrap();
+        let params = SimParams {
+            gravity: Vec3::zero(),
+            damping: 0.3,
+            substeps: 8,
+            ..SimParams::default()
+        };
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &params);
+        }
+        assert!(sim.positions == constant.positions, "目標 0 なのに一定の圧力と結果が違う");
+    }
+
+    #[test]
+    fn volume_targets_must_match_the_number_of_pressures() {
+        let (positions, edges, bending, tris) = build_pillow(5, 0.05);
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 1e-5, 1e-4);
+        sim.set_pressure(10.0);
+        assert!(sim.set_volume_targets(&[0.1, 0.2]).is_err());
+        assert!(sim.set_volume_targets(&[0.1]).is_ok());
     }
 
     #[test]

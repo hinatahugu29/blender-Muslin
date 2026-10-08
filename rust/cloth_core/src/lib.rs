@@ -294,6 +294,18 @@ mod bindings {
                 .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
+        /// 番号ごとの目標の体積(m^3)。0 なら一定の圧力。番号は set_pressure(s) で決めたもの
+        fn set_volume_targets(&mut self, targets: Vec<f64>) -> PyResult<()> {
+            self.inner
+                .set_volume_targets(&targets)
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// 番号ごとの、閉じた形の今の体積(m^3)
+        fn material_volumes(&self) -> Vec<f64> {
+            self.inner.material_volumes()
+        }
+
         /// 伸び・曲げのコンプライアンスを差し替える(走らせたまま反映できる)。
         fn set_compliances(&mut self, stretch: f64, bending: f64) {
             self.inner.set_compliances(stretch, bending);
