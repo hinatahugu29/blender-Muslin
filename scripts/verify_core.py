@@ -1516,6 +1516,18 @@ def test_curve_discretize():
     check("境界頂点は区間の uid と弧長比を持ち、内部は -1",
           (m["seg_start"][m["boundary"]] > 0).all() and (m["seg_start"][~m["boundary"]] == -1).all()
           and m["u"][m["boundary"]].min() == 0.0 and m["u"][m["boundary"]].max() < 1.0)
+    # 選択の連動: 区間 2→3(右辺、35 本)と、輪郭の始点をまたぐ区間 4→1(左辺、35 本)、点 1 と 3
+    edges, verts = cd.boundary_selection(m, {(2, 3)}, set())
+    check("選んだ区間の辺だけを返す(右辺 35 本、輪郭の向き順)",
+          len(edges) == 35 and edges[0][0] == int(v[50]) and edges[-1][1] == int(v[85])
+          and all(m["seg_start"][a] == 2 for a, _b in edges), f"{len(edges)} 本")
+    edges, _ = cd.boundary_selection(m, {(4, 1)}, set())
+    check("最後の区間は始点の頂点まで回り込む", len(edges) == 35 and edges[-1][1] == int(v[0]))
+    _, verts = cd.boundary_selection(m, set(), {1, 3})
+    check("選んだ点は、その制御点の頂点", sorted(verts) == sorted([int(v[0]), int(v[85])]), str(verts))
+    edges, verts = cd.boundary_selection(m, {(9, 10)}, {99})
+    check("記録に無い区間・点は何も返さない", edges == [] and verts == [])
+
     again = cd.discretize([_curve_rect(1.0, 0.7)], 0.02)
     check("同じ輪郭なら同じメッシュ(決定的)",
           np.array_equal(m["positions"], again["positions"]) and np.array_equal(m["triangles"], again["triangles"]))

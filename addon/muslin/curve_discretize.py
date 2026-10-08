@@ -198,6 +198,40 @@ def boundary_edges(triangles):
 
 
 # ---------------------------------------------------------------------------
+# Curve の選択 → 境界の辺・頂点(選択の連動)
+# ---------------------------------------------------------------------------
+
+def boundary_selection(data, segments, points):
+    """Curve で選んだ区間と点に対応する、布の境界の辺と頂点を返す。
+
+    segments: 選んだ区間の集合 {(始点 uid, 終点 uid)}(輪郭の向きに隣り合う 2 点が両方選ばれたもの)
+    points: 選んだ点の uid の集合
+    data: `discretize`(または布から組み直したもの)。境界の頂点は輪郭に沿って並び、
+          頂点 k から k+1 への辺は、頂点 k の区間 (seg_start, seg_end) に属する。
+          制御点の頂点は、その点から始まる区間の弧長比 0 にある。
+    戻り値: (辺 [(頂点 a, 頂点 b), ...], 頂点 [index, ...])。記録に無い uid は単に何も返さない
+    """
+    seg_start, seg_end, u = data["seg_start"], data["seg_end"], data["u"]
+    edges = []
+    if segments:
+        for ring in data["rings"]:
+            v = ring["vertices"]
+            n = len(v)
+            for k in range(n):
+                a = int(v[k])
+                if (int(seg_start[a]), int(seg_end[a])) in segments:
+                    edges.append((a, int(v[(k + 1) % n])))
+    vertices = []
+    if points:
+        for ring in data["rings"]:
+            for a in ring["vertices"]:
+                a = int(a)
+                if u[a] == 0.0 and int(seg_start[a]) in points:
+                    vertices.append(a)
+    return edges, vertices
+
+
+# ---------------------------------------------------------------------------
 # seam の区間 → 境界の辺
 # ---------------------------------------------------------------------------
 

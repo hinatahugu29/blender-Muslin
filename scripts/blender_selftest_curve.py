@@ -801,6 +801,43 @@ def main():
     overlay.invalidate_cache()
     check("描画のハンドラが登録されている(線と文字)", overlay._draw_handle is not None and overlay._label_handle is not None)
 
+    section("選択の連動(Curve で選んだ区間に対応する布の辺)")
+    from muslin import curve_ids
+    check("オブジェクトモードでは何も出さない",
+          overlay.curve_selection_geometry(pair, pair_cloth) == {"edges": [], "points": []})
+    for o in scene.objects:
+        o.select_set(o is pair)
+    bpy.context.view_layer.objects.active = pair
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.curve.select_all(action='DESELECT')
+    sp0 = pair.data.splines[0]
+    pts0 = sp0.bezier_points
+    uids0 = curve_ids.decode_all([p.radius for p in pts0], [p.weight_softbody for p in pts0])
+    pts0[1].select_control_point = True       # 前身頃の右下
+    pts0[2].select_control_point = True       # 前身頃の右上
+    check("選んだ区間と点を読める(編集中の Curve から直接)",
+          overlay.curve_selection(pair) == ({(uids0[1], uids0[2])}, {uids0[1], uids0[2]}))
+    sel = overlay.curve_selection_geometry(pair, pair_cloth)
+    pdata = cp.reconstruct(pair_cloth)
+    expected_n = sum(1 for ring in pdata["rings"] for a in ring["vertices"]
+                     if (int(pdata["seg_start"][a]), int(pdata["seg_end"][a])) == (uids0[1], uids0[2]))
+    check("選んだ区間(前身頃の右辺)に対応する布の辺を返す",
+          len(sel["edges"]) == 2 * expected_n and expected_n > 0, f"{expected_n} 辺")
+    mwc = pair_cloth.matrix_world
+    corner = [v.index for v in pair_cloth.data.vertices
+              if pdata["u"][v.index] == 0.0 and int(pdata["seg_start"][v.index]) == uids0[1]]
+    check("選んだ点に対応する布の頂点(制御点の頂点)を、布の今の位置で返す",
+          len(sel["points"]) == 2 and len(corner) == 1
+          and any((p - mwc @ pair_cloth.data.vertices[corner[0]].co).length < 1e-6 for p in sel["points"]))
+    pts0[2].select_control_point = False
+    single = overlay.curve_selection_geometry(pair, pair_cloth)
+    check("点を 1 つだけ選ぶと、辺は出ず頂点 1 つ", single["edges"] == [] and len(single["points"]) == 1)
+    bpy.ops.curve.select_all(action='SELECT')
+    whole = overlay.curve_selection_geometry(pair, pair_cloth)
+    n_boundary = sum(len(ring["vertices"]) for ring in pdata["rings"])
+    check("全部選ぶと、布の外周すべて(2 枚分)", len(whole["edges"]) == 2 * n_boundary, f"{n_boundary} 辺")
+    bpy.ops.object.mode_set(mode='OBJECT')
+
     section("布を消してから Rebuild し直す")
     bpy.ops.wm.read_factory_settings(use_empty=True)
     c = make_curve("D")

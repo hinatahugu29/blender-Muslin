@@ -12,6 +12,7 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 
+from . import curve_discretize
 from . import curve_eval
 from . import curve_pattern
 from . import mesh_io
@@ -101,6 +102,7 @@ def invalidate_cache(obj=None):
         _pair_cache.clear()
         _pattern_cache.clear()
         _curve_cloth_cache.clear()
+        _cloth_data_cache.clear()
     else:
         _pair_cache.pop(sim_state.obj_key(obj), None)
 
@@ -348,6 +350,87 @@ def curve_overlay_geometry(curve, cloth):
     return {"lines": lines, "labels": labels}
 
 
+# 選択の連動の色と太さ。縫い目の色(パレット)と被らない白で、縫い目の線より上に太く描く
+SELECTION_COLOR = (1.0, 1.0, 1.0, 1.0)
+SELECTION_WIDTH = 7.0
+SELECTION_POINT_SIZE = 10.0
+
+# 布のキー -> (生成の記録, 布から組み直した離散化の結果)。生成が変わるまで使い回す
+_cloth_data_cache = {}
+
+
+def _cloth_data(cloth):
+    key = sim_state.obj_key(cloth)
+    gen = cloth.data.get(curve_pattern.GEN_KEY, "")
+    cached = _cloth_data_cache.get(key)
+    if cached is None or cached[0] != gen:
+        cached = (gen, curve_pattern.reconstruct(cloth))
+        _cloth_data_cache[key] = cached
+    return cached[1]
+
+
+def curve_selection(curve):
+    """編集中の Curve で選ばれている区間 {(始点 uid, 終点 uid)} と点 {uid}。
+
+    編集モードの Curve は、spline を読めば編集中の内容(選択も位置も)がそのまま見える
+    (描画のたびに update_from_editmode を呼ばなくてよい)。目印(uid)の読めない点は数えない。
+    """
+    from . import curve_ids
+    segments, points = set(), set()
+    for sp in curve.data.splines:
+        if sp.type != 'BEZIER':
+            continue
+        pts = sp.bezier_points
+        n = len(pts)
+        if n == 0:
+            continue
+        flags = [bool(p.select_control_point) for p in pts]
+        if not any(flags):
+            continue
+        uids = curve_ids.decode_all([p.radius for p in pts], [p.weight_softbody for p in pts])
+        for i in range(n):
+            if not flags[i] or uids[i] is None:
+                continue
+            points.add(uids[i])
+            j = i + 1
+            if j >= n:
+                if not sp.use_cyclic_u:
+                    continue
+                j = 0
+            if flags[j] and uids[j] is not None:
+                segments.add((uids[i], uids[j]))
+    return segments, points
+
+
+def curve_selection_geometry(curve, cloth):
+    """Curve の選択に対応する、布の辺と頂点のワールド座標(ヘッドレスで検査できるよう描画から分けてある)。
+
+    Curve を編集モードにしているときだけ返す。戻り値: {"edges": [座標, ...](2 点ずつが 1 本),
+    "points": [座標, ...]}。対応が取れないとき(布が無い、生成から構造が変わった等)は空。
+    """
+    from mathutils import Vector
+    empty = {"edges": [], "points": []}
+    if cloth is None or curve.mode != 'EDIT':
+        return empty
+    segments, points = curve_selection(curve)
+    if not segments and not points:
+        return empty
+    try:
+        data = _cloth_data(cloth)
+    except curve_pattern.CurvePatternError:
+        return empty
+    edges, verts = curve_discretize.boundary_selection(data, segments, points)
+    vertices = cloth.data.vertices
+    count = len(vertices)
+    mw = cloth.matrix_world
+    out_edges = []
+    for a, b in edges:
+        if a < count and b < count:
+            out_edges += [mw @ vertices[a].co, mw @ vertices[b].co]
+    out_points = [mw @ vertices[a].co for a in verts if a < count]
+    return {"edges": out_edges, "points": out_points}
+
+
 def _curve_pairs(context):
     """表示する (Curve, 布) の組。"""
     out = []
@@ -384,6 +467,41 @@ def _draw_curve_patterns(context, tools):
         gpu.state.blend_set('NONE')
 
 
+def _draw_curve_selection(context):
+    """Curve を編集しているとき、選んだ区間・点に対応する布の辺・頂点を白で重ねて描く(選択の連動)。"""
+    curve = context.active_object
+    if curve is None or curve.type != 'CURVE' or curve.mode != 'EDIT':
+        return
+    if curve_pattern.load_record(curve) is None:
+        return
+    cloth = curve_pattern.cloth_of(curve)
+    if cloth is None or not cloth.visible_get():
+        return
+    try:
+        geometry = curve_selection_geometry(curve, cloth)
+    except (AttributeError, ReferenceError, IndexError):
+        return
+    if not geometry["edges"] and not geometry["points"]:
+        return
+    gpu.state.blend_set('ALPHA')
+    try:
+        if geometry["edges"]:
+            region = context.region
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            shader.uniform_float("viewportSize", (region.width, region.height))
+            shader.uniform_float("lineWidth", SELECTION_WIDTH)
+            shader.uniform_float("color", SELECTION_COLOR)
+            batch_for_shader(shader, 'LINES', {"pos": geometry["edges"]}).draw(shader)
+        if geometry["points"]:
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            gpu.state.point_size_set(SELECTION_POINT_SIZE)
+            shader.uniform_float("color", SELECTION_COLOR)
+            batch_for_shader(shader, 'POINTS', {"pos": geometry["points"]}).draw(shader)
+    finally:
+        gpu.state.point_size_set(1.0)
+        gpu.state.blend_set('NONE')
+
+
 def _draw_labels():
     """ピースの番号と縫い目の名前(画面に重ねる文字)。"""
     import blf
@@ -417,6 +535,7 @@ def _draw():
     _draw_patterns(context, tools)
     if tools.show_seams:
         _draw_curve_patterns(context, tools)
+    _draw_curve_selection(context)
     if not tools.show_seams:
         return
 
@@ -494,3 +613,4 @@ def unregister():
     _pair_cache.clear()
     _pattern_cache.clear()
     _curve_cloth_cache.clear()
+    _cloth_data_cache.clear()
