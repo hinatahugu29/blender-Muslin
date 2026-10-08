@@ -451,7 +451,13 @@ def seam_from_selection(curve_obj, name=None):
         uids = splines[si]["uids"]
         if len(run) < 2:
             continue
-        ranges.append((uids[run[0]], 0.0, uids[run[-1]], 0.0))
+        # 閉じた輪郭を全部選んだときは、一周する縫い目にする(クッションの外周)。
+        # 終点を最後の点にすると最後の 1 辺が縫われず、袋が開いたままになる
+        whole_ring = splines[si]["cyclic"] and len(run) == len(uids)
+        if whole_ring:
+            ranges.append((uids[run[0]], 0.0, uids[run[0]], 0.0))
+        else:
+            ranges.append((uids[run[0]], 0.0, uids[run[-1]], 0.0))
     if len(runs) != 2 or len(ranges) != 2:
         raise CurvePatternError(
             f"縫い合わせる 2 か所の点の連なりを選んでください(今は {len(runs)} か所。"

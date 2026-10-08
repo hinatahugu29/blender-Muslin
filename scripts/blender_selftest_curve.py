@@ -890,13 +890,43 @@ def main():
     check("裏返したピースは記録に残る",
           cp.flipped_pieces(cp.load_record(bag)) == {ids[1]}, str(cp.load_record(bag)["flipped"]))
 
-    # 外周を一周する縫い目(始点 = 終点)で 2 枚を縫う
+    # 外周を一周する縫い目で 2 枚を縫う。画面と同じ操作(編集モードで輪郭を全部選ぶ)で作る。
+    # 終点を最後の点にすると最後の 1 辺が縫われず、袋が開いたままになる
     uids_a = [p["uids"] for p in cp.load_record(bag)["pieces"]][0]
     uids_b = [p["uids"] for p in cp.load_record(bag)["pieces"]][1]
-    cp.add_seam(bag, [(uids_a[0], 0.0, uids_a[0], 0.0)],
-                [(uids_b[0], 0.0, uids_b[0], 0.0)], name="Rim")
+    for o in scene.objects:
+        o.select_set(o is bag)
+    bpy.context.view_layer.objects.active = bag
+    bpy.ops.object.mode_set(mode='EDIT')
+    for sp in bag.data.splines:
+        for pt in sp.bezier_points:
+            pt.select_control_point = True
+    res = bpy.ops.muslin.curve_seam_add()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    check("輪郭を全部選んで縫い目を作れる", res == {'FINISHED'}, str(res))
+    seam = cp.load_record(bag)["seams"][0]
+    check("輪郭を全部選ぶと一周する縫い目になる(始点 = 終点)",
+          seam["a"][0][0] == seam["a"][0][2] == uids_a[0]
+          and seam["b"][0][0] == seam["b"][0][2] == uids_b[0],
+          f"{seam['a']} / {seam['b']}")
     broken = cp.apply_seams(bag)
     check("外周を一周する縫い目が張れる", broken == [], str(broken))
+
+    # 一部だけ選んだときは、これまでどおり区間のまま(一周にはしない)
+    cp.remove_seam(bag, seam["uid"])
+    bpy.ops.object.mode_set(mode='EDIT')
+    for si, sp in enumerate(bag.data.splines):
+        for k, pt in enumerate(sp.bezier_points):
+            pt.select_control_point = k < 2
+    bpy.ops.muslin.curve_seam_add()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    part = cp.load_record(bag)["seams"][0]
+    check("一部だけ選んだときは区間のまま", part["a"][0][0] != part["a"][0][2],
+          str(part["a"]))
+    cp.remove_seam(bag, part["uid"])
+    cp.add_seam(bag, [(uids_a[0], 0.0, uids_a[0], 0.0)],
+                [(uids_b[0], 0.0, uids_b[0], 0.0)], name="Rim")
+    cp.apply_seams(bag)
 
     # Rebuild しても裏返しと縫い目が保たれる(記録に残してあるため)
     bag_cloth2, _ = cp.rebuild(bpy.context, bag)
