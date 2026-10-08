@@ -272,6 +272,8 @@ class BagDresser(Dresser):
                        if m.muslin.pressure != 0.0)
         self.restarted = False
         self._ramp = None
+        # 開始時の配置(確定するとき、袋の向きをここへ合わせ直す)
+        self._origin = np.asarray(self.state["sim"].get_positions(), dtype=np.float64).reshape(-1, 3)
         if wants_volume and not measured:
             self.phase = "measure"     # 目標 0 = 一定の圧力のまま(full_volume が 0 なので)
         elif wants_volume:
@@ -310,6 +312,7 @@ class BagDresser(Dresser):
         flat = np.concatenate(world).ravel()
         self.state["sim"].set_positions(flat.tolist())
         self._last = flat
+        self._origin = flat.reshape(-1, 3).copy()
         # 縫い目は閉じたまま(閉じ具合は経過ステップで決まり、もう 1)。重ねた隙間ぶんを引き寄せる
         self.restarted = True
         return True
@@ -359,6 +362,31 @@ class BagDresser(Dresser):
         if self.phase == "constant":
             self._record_full_volume()
         return done
+
+    def align_to_origin(self):
+        """袋全体の向きと位置を、開始時の配置に剛体として合わせ直す(形は変えない)。
+
+        重力 0 の袋には外から力が掛からないので本来は回らないが、計算の誤差で回転が溜まり、
+        30cm 角のクッションが膨らむあいだに 90° 起き上がった。確定するときに、開始時
+        (重ねて置いた向き)へ最もよく重なる回転と平行移動(Kabsch 法)で戻す。
+        """
+        now = np.asarray(self.state["sim"].get_positions(), dtype=np.float64).reshape(-1, 3)
+        ref = self._origin
+        if now.shape != ref.shape or len(now) < 3:
+            return
+        pc, qc = now.mean(axis=0), ref.mean(axis=0)
+        h = (now - pc).T @ (ref - qc)
+        u, _s, vt = np.linalg.svd(h)
+        d = 1.0 if np.linalg.det(vt.T @ u.T) >= 0.0 else -1.0
+        rot = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+        aligned = (now - pc) @ rot.T + qc
+        if np.isfinite(aligned).all():
+            self.state["sim"].set_positions(aligned.ravel().tolist())
+
+    def finish(self):
+        if self.state["sim"].is_finite():
+            self.align_to_origin()
+        return super().finish()
 
     def summary(self):
         text = super().summary()

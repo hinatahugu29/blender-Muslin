@@ -1033,6 +1033,9 @@ def main():
         a, b, c = co[tri[:, 0]] - o_, co[tri[:, 1]] - o_, co[tri[:, 2]] - o_
         return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
 
+    dims = np.ptp(np.array([tuple(bag_cloth2.matrix_world @ v.co) for v in bag_cloth2.data.vertices]), axis=0)
+    check("膨らませても袋は重ねた向きのまま(起き上がらない。一番薄いのは Z)",
+          dims[2] < dims[0] and dims[2] < dims[1], f"{(dims * 1000).round(0)} mm")
     full = props3.full_volume
     check("一定の圧力で閉じると、満杯の体積が記録される",
           full > 0.0 and abs(mesh_volume(bag_cloth2) / full - 1.0) < 0.05,
