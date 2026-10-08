@@ -367,6 +367,37 @@ def add_seam(curve_obj, ranges_a, ranges_b, name=None):
     return uid
 
 
+def _faces_each_other(record, mesh_data, seam):
+    """縫い目の両側が、裏返したピースとそうでないピースか(= 向かい合わせに縫う袋の縁)。"""
+    flipped = flipped_pieces(record)
+    if not flipped:
+        return False
+    sides = []
+    for key in ("a", "b"):
+        if not seam[key]:
+            return False
+        ring = _ring_containing(mesh_data, seam[key][0][0])
+        if ring is None:
+            return False
+        sides.append(int(ring["piece_uid"]) in flipped)
+    return sides[0] != sides[1]
+
+
+def set_seam_folded(curve_obj, uid, folded):
+    """縫い目の折り返しの指定を記録に書く(None で自動に戻す)。"""
+    record = load_record(curve_obj)
+    if record is None:
+        return
+    for seam in record["seams"]:
+        if seam["uid"] == uid:
+            if folded is None:
+                seam.pop("folded", None)
+            else:
+                seam["folded"] = bool(folded)
+            save_record(curve_obj, record)
+            return
+
+
 def _ring_containing(mesh_data, uid):
     for ring in mesh_data["rings"]:
         if uid in ring["uids"]:
@@ -407,6 +438,13 @@ def _write_seams(cloth, record, mesh_data):
         item.uid = seam["uid"]
         item.invert = bool(seam["invert"])
         item.enabled = bool(seam["enabled"])
+        # 折り返し(袋の縁)。記録に指定が無ければ、裏返したピースとそうでないピースを
+        # つなぐ縫い目(Stack Pieces で向かい合わせにした縁)を折り返しとみなす。
+        # 書き込みの間は記録へ書き戻す更新を走らせない(記録が正なので)
+        folded = seam.get("folded")
+        if folded is None:
+            folded = _faces_each_other(record, mesh_data, seam)
+        item["folded"] = bool(folded)
 
     attr = mesh.attributes.get(seams.SEAM_ATTRIBUTE)
     if attr is None:
@@ -916,10 +954,32 @@ def stack_pieces(context, curve_obj, gap=DEFAULT_BAG_GAP):
     save_record(curve_obj, record)
 
     cloth, warnings = rebuild(context, curve_obj, keep_pose=False)
+    local = stacked_layout(cloth, record, gap)
+    pose32 = local.astype(np.float32).ravel()
+    cloth.data.vertices.foreach_set("co", pose32)
+    cloth.data.update()
+    rest_shape.store(cloth, pose32)
+    rest_shape.clear_dressed(cloth)
+    return cloth, warnings
+
+
+def stacked_layout(cloth, record=None, gap=DEFAULT_BAG_GAP):
+    """袋のピースを向かい合わせに重ねた配置(布のローカル座標 (n, 3))。
+
+    面の裏返しは記録(と生成したメッシュ)に入っているので、作り直さずに計算できる。
+    Close Bag が、満杯に膨らんだ袋を詰め具合(Fill)まで戻すときにも使う
+    (満杯から吸っても、張った布は曲げに強く縮まないので、平らに重ねた所から膨らませ直す)。
+    """
+    if record is None:
+        source = curve_of(cloth)
+        record = load_record(source) if source is not None else None
+    if record is None:
+        raise CurvePatternError("Curve Pattern の布ではありません")
     data = reconstruct(cloth)
     orientation = orientation_of(record)
     # 面に垂直な方向(FLAT なら Z、STANDING なら Y)
     normal_axis = 2 if orientation == 'FLAT' else 1
+    panels = [p["piece_uid"] for p in record["pieces"] if p.get("hole_of") is None]
 
     local = to_local(data["positions"], orientation)
     groups = [np.nonzero(data["piece"] == pid)[0] for pid in panels]
@@ -929,13 +989,7 @@ def stack_pieces(context, curve_obj, gap=DEFAULT_BAG_GAP):
     for idx, center, shift in zip(groups, centers, stack_offsets(len(groups), gap)):
         local[idx] += base - center
         local[idx, normal_axis] += shift
-
-    pose32 = local.astype(np.float32).ravel()
-    cloth.data.vertices.foreach_set("co", pose32)
-    cloth.data.update()
-    rest_shape.store(cloth, pose32)
-    rest_shape.clear_dressed(cloth)
-    return cloth, warnings
+    return local
 
 
 def _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles):

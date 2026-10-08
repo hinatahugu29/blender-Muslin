@@ -638,6 +638,8 @@ def main():
     cp.add_seam(pair, [(2, 0.0, 3, 0.0)], [(5 + 3, 0.0, 5, 0.0)], name="Right")
     cp.add_seam(pair, [(4, 0.0, 1, 0.0)], [(6, 0.0, 7, 0.0)], name="Left")
     cp.apply_seams(pair)
+    check("服の縫い目(裏返さない 2 枚)は折り返しにならない",
+          not any(s_.folded for s_ in pair_cloth.muslin_seams))
     pair_cloth.location = (0.0, 0.0, 0.0)     # 型紙の高さ 0〜0.5m が、体(高さ -0.6〜0.6m)の中に収まる
     pair_cloth.rotation_euler = (0.0, 0.0, 0.0)
     bpy.context.view_layer.update()
@@ -976,6 +978,18 @@ def main():
     check("Rebuild しても Rebuild Required にならない",
           cp.status(bag)["problems"] == [], str(cp.status(bag)["problems"]))
 
+    # 袋の縁(裏返したピースとの縫い目)は自動で折り返し(縫い目をまたぐ曲げ抵抗を掛けない)
+    check("袋の縁の縫い目は自動で折り返し(Folded)", all(s.folded for s in bag_cloth2.muslin_seams))
+    rim_uid = bag_cloth2.muslin_seams[0].uid
+    bag_cloth2.muslin_seams[0].folded = False          # 手で切ると記録にも残る
+    cp.apply_seams(bag)
+    check("手で切った折り返しは記録に残り、書き直しても保たれる",
+          bag_cloth2.muslin_seams[0].folded is False
+          and next(s for s in cp.load_record(bag)["seams"] if s["uid"] == rim_uid)["folded"] is False)
+    cp.set_seam_folded(bag, rim_uid, None)              # 自動に戻す
+    cp.apply_seams(bag)
+    check("自動に戻すと、また折り返しになる", bag_cloth2.muslin_seams[0].folded is True)
+
     # 袋を閉じて膨らませる(Close Bag。重力 0 で回す)
     props3 = bag_cloth2.muslin
     props3.collision_enabled = False
@@ -1008,6 +1022,37 @@ def main():
     check("重力の設定そのものは変わらない(回している間だけ 0 にする)",
           abs(props3.gravity - 9.81) < 1e-5, str(props3.gravity))
     check("閉じた形が開始姿勢として保存される", rest_shape.is_dressed(bag_cloth2))
+
+    # 体積を保つ圧力(M11 の第 2 段階)。袋の体積は布のメッシュから測る
+    def mesh_volume(o):
+        me = o.data
+        me.calc_loop_triangles()
+        co = np.array([tuple(v.co) for v in me.vertices])
+        o_ = co.mean(axis=0)
+        tri = np.array([tuple(t.vertices) for t in me.loop_triangles])
+        a, b, c = co[tri[:, 0]] - o_, co[tri[:, 1]] - o_, co[tri[:, 2]] - o_
+        return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
+
+    full = props3.full_volume
+    check("一定の圧力で閉じると、満杯の体積が記録される",
+          full > 0.0 and abs(mesh_volume(bag_cloth2) / full - 1.0) < 0.05,
+          f"{full * 1000:.2f} L / メッシュ {mesh_volume(bag_cloth2) * 1000:.2f} L")
+    props3.pressure_mode = 'VOLUME'
+    props3.fill = 0.5
+    res = bpy.ops.muslin.close_bag(max_steps=300)
+    half = mesh_volume(bag_cloth2)
+    check("Volume・Fill 0.5 で閉じると、満杯の半分前後で落ち着く",
+          res == {'FINISHED'} and abs(half / (0.5 * full) - 1.0) < 0.15 and props3.full_volume == full,
+          f"{half * 1000:.2f} L / 目標 {0.5 * full * 1000:.2f} L")
+    props3.full_volume = 0.0
+    props3.fill = 0.6
+    res = bpy.ops.muslin.close_bag(max_steps=400)
+    measured = props3.full_volume
+    now = mesh_volume(bag_cloth2)
+    check("満杯の体積が未測定なら、測ってから Fill の体積まで落ち着かせる",
+          res == {'FINISHED'} and measured > 0.0 and abs(measured / full - 1.0) < 0.15
+          and abs(now / (0.6 * measured) - 1.0) < 0.15,
+          f"満杯 {measured * 1000:.2f} L(前回 {full * 1000:.2f})/ 今 {now * 1000:.2f} L")
 
     # 1 枚しかない型紙では袋にできない
     bpy.ops.wm.read_factory_settings(use_empty=True)

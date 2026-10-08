@@ -613,6 +613,13 @@ def material_values(props):
             props.pressure)
 
 
+def volume_target(props):
+    """布の目標の体積(m^3)。Volume で満杯の体積を測ってあれば Fill × 満杯、それ以外は 0(一定の圧力)。"""
+    if props.pressure_mode == 'VOLUME' and props.full_volume > 0.0 and props.pressure != 0.0:
+        return props.fill * props.full_volume
+    return 0.0
+
+
 def apply_group_materials(sim, members, offsets):
     """グループの各布の生地と、ピン留めをコアに渡す。
 
@@ -634,6 +641,8 @@ def apply_group_materials(sim, members, offsets):
         sim.set_materials(vertex_material,
                           [v[0] for v in values], [v[1] for v in values], [v[2] for v in values])
         sim.set_pressures(vertex_material, [v[3] for v in values])
+    # 目標の体積は圧力の番号ごと(1 着なら 0 番だけ)。圧力のあとに渡す
+    sim.set_volume_targets([volume_target(m.muslin) for m in members])
     sim.set_pinned(pinned)
     return len(pinned)
 
@@ -663,7 +672,9 @@ def build_seam_bending(obj, reference, triangles, pose=None):
     codes, edges = read_seam_codes(obj.data)
     items, rest = [], []
     for seam in obj.muslin_seams:
-        if not seam.enabled:
+        # 向かい合わせに縫う縫い目(袋の縁)は、両側を平らにつなげようとすると縁を
+        # 押し開いてしまう(圧力と関係なく袋が膨らんだ)。曲げ抵抗は掛けない
+        if not seam.enabled or getattr(seam, "folded", False):
             continue
         resolved = resolve_seam(obj, seam, pose, codes, edges)
         if resolved is None:

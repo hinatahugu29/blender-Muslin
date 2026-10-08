@@ -247,6 +247,127 @@ class Dresser:
         )
 
 
+# 詰め具合(Fill)を目指すとき、目標の体積を今の体積からこのステップ数かけて上げる
+# (24fps で 2 秒)。いきなり最終の目標を与えると、重力 0 の軽い布は全力の圧力で
+# 一気に膨らみ、勢いで目標を大きく越えた(目標 2.5L に対し 15 ステップで 4.3L)。
+# 越えた分は吸っても戻らないので、圧力が目標に追いつく速さで上げる
+FILL_RAMP_STEPS = 48
+
+
+class BagDresser(Dresser):
+    """袋を閉じる(Close Bag)ための Dresser。満杯の体積を測り、Volume なら詰め具合まで落ち着かせる。
+
+    - 一定の圧力で膨らみきって落ち着いたら、その体積を「満杯の体積」として布に記録する
+      (Constant で閉じたときも記録するので、あとから Volume に切り替えられる)
+    - Volume で、満杯の体積がまだ無ければ: まず一定の圧力で膨らみきらせて測り(measure)、
+      続けて Fill × 満杯 を目標にしてもう一度落ち着かせる(fill)
+    - Volume で満杯の体積を測ってあれば、最初から目標の体積で落ち着かせる
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        wants_volume = any(m.muslin.pressure_mode == 'VOLUME' and m.muslin.pressure != 0.0
+                           for m in self.members)
+        measured = all(m.muslin.full_volume > 0.0 for m in self.members
+                       if m.muslin.pressure != 0.0)
+        self.restarted = False
+        self._ramp = None
+        if wants_volume and not measured:
+            self.phase = "measure"     # 目標 0 = 一定の圧力のまま(full_volume が 0 なので)
+        elif wants_volume:
+            self.phase = "fill"
+            self._restart_below_target()
+            self._begin_ramp()
+        else:
+            self.phase = "constant"
+
+    def volumes(self):
+        """布ごとの今の体積(m^3)。圧力の番号は、1 着なら 0 番、グループなら布の順。"""
+        vols = self.state["sim"].material_volumes()
+        members = self.members
+        return [vols[k if len(members) > 1 else 0] for k in range(len(members))]
+
+    def _restart_below_target(self):
+        """今の体積が目標より大きければ、平らに重ねた配置に戻して、そこから膨らませ直す。
+
+        満杯に膨らんだ袋を吸って縮めようとしても、張った布は曲げに強く、重力も無いので
+        ほとんど縮まない(30cm 角で目標 2.5L に対し 4.3〜4.6L で止まった)。詰め具合の少ない
+        クッションは「少ない空気で膨らませた」形なので、下から目標へ近づける。
+        Curve Pattern の袋だけ戻せる(重ねた配置を計算できる)。戻せなければ今の形のまま。
+        """
+        from . import curve_pattern
+        members = self.members
+        targets = [mesh_io.volume_target(m.muslin) for m in members]
+        if not any(t > 0.0 and v > t * 1.02 for t, v in zip(targets, self.volumes())):
+            return False
+        world = []
+        for m in members:
+            if curve_pattern.curve_of(m) is None:
+                return False
+            local = curve_pattern.stacked_layout(m)
+            mw = np.array(m.matrix_world, dtype=np.float64)
+            world.append(local @ mw[:3, :3].T + mw[:3, 3])
+        flat = np.concatenate(world).ravel()
+        self.state["sim"].set_positions(flat.tolist())
+        self._last = flat
+        # 縫い目は閉じたまま(閉じ具合は経過ステップで決まり、もう 1)。重ねた隙間ぶんを引き寄せる
+        self.restarted = True
+        return True
+
+    def _begin_ramp(self):
+        """目標の体積を、今の体積から最終の目標へ少しずつ上げ始める。"""
+        finals = [mesh_io.volume_target(m.muslin) for m in self.members]
+        if not any(t > 0.0 for t in finals):
+            return
+        starts = [min(v, t) if t > 0.0 else 0.0 for v, t in zip(self.volumes(), finals)]
+        self._ramp = {"start": starts, "final": finals, "step0": self.steps}
+
+    def _apply_ramp(self):
+        if self._ramp is None:
+            return
+        r = self._ramp
+        frac = min(1.0, (self.steps - r["step0"]) / FILL_RAMP_STEPS)
+        targets = [s + (f - s) * frac if f > 0.0 else 0.0 for s, f in zip(r["start"], r["final"])]
+        # 圧力の番号は 1 着なら 0 番だけ、グループなら布の順(apply_group_materials と同じ)
+        self.state["sim"].set_volume_targets(targets)
+        if frac >= 1.0:
+            self._ramp = None
+
+    def _record_full_volume(self):
+        for m, v in zip(self.members, self.volumes()):
+            if m.muslin.pressure != 0.0 and v > 0.0:
+                m.muslin.full_volume = v
+
+    def step(self):
+        self._apply_ramp()
+        done = super().step()
+        # 落ち着いたときに加えて、上限で打ち切ったときも記録する(そのときの体積が最善の見積もり)
+        if not done or not self.state["sim"].is_finite():
+            return done
+        if self.phase == "measure":
+            # 膨らみきった。満杯の体積を記録し、詰め具合を目標にして続ける
+            self._record_full_volume()
+            members = self.members
+            offsets = [(s, c) for _k, s, c in self.state["members"]]
+            mesh_io.apply_group_materials(self.state["sim"], members, offsets)
+            self.phase = "fill"
+            self._restart_below_target()
+            self._begin_ramp()
+            self.calm = 0
+            self._budget_start = self.steps
+            return False
+        if self.phase == "constant":
+            self._record_full_volume()
+        return done
+
+    def summary(self):
+        text = super().summary()
+        vols = [v for m, v in zip(self.members, self.volumes()) if m.muslin.pressure != 0.0]
+        if vols:
+            text += f"。体積 {sum(vols) * 1000:.2f} L"
+        return text
+
+
 class _ClothModal:
     """着せ付け(Dress)と整える(Adjust)に共通のモーダル。
 
@@ -526,6 +647,21 @@ class MUSLIN_OT_close_bag(_ClothModal, bpy.types.Operator):
         if context.active_object.muslin.pressure == 0.0:
             self.report({'WARNING'},
                         "Pressure が 0 です。膨らませるには Fabric パネルの Pressure を入れてください")
+
+    def _make_dresser(self, context):
+        obj = context.active_object
+        return BagDresser(obj, obj.muslin, sim_state.effective_dt(context.scene),
+                          self.max_steps, auto_finish=self.AUTO_FINISH,
+                          overrides=self.OVERRIDES)
+
+    def _header(self):
+        text = super()._header()
+        phase = getattr(self._dresser, "phase", "")
+        if phase == "measure":
+            return text.replace(self.HEADER, self.HEADER + "(満杯の体積を測っています)", 1)
+        if phase == "fill":
+            return text.replace(self.HEADER, self.HEADER + "(詰め具合まで落ち着かせています)", 1)
+        return text
 
     def execute(self, context):
         # スクリプトやテストから呼ばれたときは、最後まで同期で回す

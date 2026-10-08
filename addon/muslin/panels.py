@@ -177,6 +177,17 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
         col.prop(props, "bending_compliance")
         col.prop(props, "damping")
         col.prop(props, "pressure")
+        if props.pressure != 0.0:
+            # 圧力の決め方(M11 の第 2 段階)。Volume なら詰め具合で膨らみ方を決める
+            row = layout.row(align=True)
+            row.prop(props, "pressure_mode", expand=True)
+            if props.pressure_mode == 'VOLUME':
+                layout.prop(props, "fill", slider=True)
+                if props.full_volume > 0.0:
+                    layout.label(text=f"満杯の体積 {props.full_volume * 1000:.2f} L"
+                                      f" → 目標 {props.fill * props.full_volume * 1000:.2f} L")
+                else:
+                    layout.label(text="満杯の体積は Close Bag で測ります", icon='INFO')
 
         # 硬い生地を選んでも Substeps が低いと曲げ制約が収束せず、どの生地も
         # 同じように垂れる。Start Simulation でも警告するが、生地を選んだ
@@ -304,6 +315,8 @@ class MUSLIN_UL_seams(bpy.types.UIList):
                 else:
                     row.label(text="!", icon='ERROR')
             row.prop(item, "invert", text="", icon='ARROW_LEFTRIGHT')
+            # 折り返し(袋の縁)。入っていると縫い目をまたぐ曲げ抵抗を掛けない
+            row.prop(item, "folded", text="", icon='MOD_SOLIDIFY')
         else:
             row.label(text=f"{len(item.chain_a)}↔{len(item.chain_b)}")
             row.prop(item, "flipped", text="", icon='ARROW_LEFTRIGHT')

@@ -159,6 +159,15 @@ class MUSLIN_PG_vertex_index(bpy.types.PropertyGroup):
     index: bpy.props.IntProperty(name="Vertex Index", default=0, min=0)
 
 
+def _seam_folded_update(self, context):
+    """Curve Pattern の布なら、折り返しの指定を Curve の記録にも書く(Rebuild で保たれるように)。"""
+    from . import curve_pattern
+    cloth = self.id_data
+    curve = curve_pattern.curve_of(cloth) if cloth is not None else None
+    if curve is not None and self.uid:
+        curve_pattern.set_seam_folded(curve, self.uid, self.folded)
+
+
 class MUSLIN_PG_seam(bpy.types.PropertyGroup):
     """1本の縫い目。2本の頂点チェーンを弧長で対応付けて縫い合わせる。"""
 
@@ -181,6 +190,16 @@ class MUSLIN_PG_seam(bpy.types.PropertyGroup):
         name="Flip",
         description="縫い合わせる向きを反転する(自動で決めた向きが逆のときに切り替える)",
         default=False,
+    )
+    folded: bpy.props.BoolProperty(
+        name="Folded",
+        description=(
+            "2 枚を向かい合わせに縫う縫い目(クッションの縁など)。縫い目をまたぐ曲げ抵抗を掛けない。"
+            "切ると服の縫い目のように、両側が平らにつながろうとする。"
+            "Curve Pattern で重ねた袋の縁(裏返したピースとの縫い目)は自動で入る"
+        ),
+        default=False,
+        update=_seam_folded_update,
     )
 
 
@@ -415,12 +434,45 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         description=(
             "面を法線の側へ押す圧力 N/m^2。縁どうしを縫って閉じた袋(クッションなど)を"
             "内側から膨らませる。負で内側へ吸う。0 で切れる。"
-            "体積を見ないので、袋は膨らみきるところまで行く(圧力の値でふくらみ具合は決まらない)。"
+            "Pressure Mode が Volume なら、目標の体積(Fill × 満杯の体積)を保とうとする強さになる。"
             "縫わずに縁を溶接した袋は、幾何的に膨らめないので膨らまない"
         ),
         default=0.0,
         soft_min=-200.0,
         soft_max=200.0,
+    )
+    pressure_mode: bpy.props.EnumProperty(
+        name="Pressure Mode",
+        description="圧力の決め方",
+        items=[
+            ('CONSTANT', "Constant", "いつも同じ圧力で押す。袋は膨らみきるところまで行く"),
+            ('VOLUME', "Volume",
+             "目標の体積(Fill × 満杯の体積)を保つ。足りなければ押し広げ、多すぎれば縮める。"
+             "Pressure は保とうとする強さになる。満杯の体積は Close Bag が測る"),
+        ],
+        default='CONSTANT',
+    )
+    fill: bpy.props.FloatProperty(
+        name="Fill",
+        description=(
+            "詰め具合。満杯の体積(膨らみきったときの体積)に対する目標の体積の割合。"
+            "1 で満杯、小さいほど柔らかくへたる。Pressure Mode が Volume のときだけ効く"
+        ),
+        default=0.8,
+        min=0.05,
+        soft_max=1.0,
+        max=1.5,
+        subtype='FACTOR',
+    )
+    full_volume: bpy.props.FloatProperty(
+        name="Full Volume",
+        description=(
+            "満杯の体積(m^3)。Close Bag で膨らみきらせたときに測って記録する。"
+            "0 なら未測定(Volume でも一定の圧力として働く)"
+        ),
+        default=0.0,
+        min=0.0,
+        precision=6,
     )
     # 圧力は生地の性質ではなく使い方なので、プリセット(FABRIC_MAPPING)では触らない。
     # 生地を選び直しても膨らみ方は変わらないし、圧力を動かしても Custom にはならない。
