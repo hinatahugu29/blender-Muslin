@@ -91,6 +91,10 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
                 layout.label(text="着せた姿勢から開始(寸法は型紙)", icon='CHECKMARK')
             else:
                 row.operator("muslin.set_rest_shape", text="", icon='PINNED')
+            # 圧力を入れている布は、体に着せるものではなく閉じた袋。重力を 0 にして
+            # 閉じる Close Bag を出す(Dress だと落ち続けて落ち着かない)
+            if obj.muslin.pressure != 0.0:
+                layout.operator("muslin.close_bag", icon='SPHERE')
 
         # 走らせたままでは効かない設定を変えたときに知らせる。
         # 黙って効かないままだと「設定が壊れている」としか見えない。
@@ -418,6 +422,9 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
         layout.operator("muslin.curve_pattern_rebuild", icon='FILE_REFRESH')
         if cloth is not None:
             layout.operator("muslin.curve_arrange", icon='MOD_CLOTH')
+        # 輪郭が 2 つ以上あれば、体に巻くのではなく向かい合わせに重ねる置き方も選べる
+        if info.get("panels", 0) >= 2:
+            layout.operator("muslin.curve_stack", icon='MOD_SOLIDIFY')
 
         layout.separator()
         layout.label(text="縫い目")

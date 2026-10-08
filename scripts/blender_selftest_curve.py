@@ -832,6 +832,124 @@ def main():
     cloth_d4, _ = cp.rebuild(bpy.context, c)
     check("データごと消した後も Rebuild で現れる", cloth_d4.name in bpy.context.scene.objects)
 
+    # ------------------------------------------------------------------
+    section("ピースを向かい合わせに重ねる(Stack Pieces for Bag / M11)")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_set(1)
+
+    # 同じ大きさの 2 枚(0.3m 角)を XY 平面に並べる。クッションの表と裏
+    cu3 = bpy.data.curves.new("Bag", 'CURVE')
+    cu3.dimensions = '2D'
+    for x0 in (0.0, 0.5):
+        sp = cu3.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points,
+                              [(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.3), (x0, 0.3)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    bag = bpy.data.objects.new("Bag", cu3)
+    scene.collection.objects.link(bag)
+    bpy.context.view_layer.objects.active = bag
+    cp.initialize(bag, 0.02)
+    check("袋にできる枚数が数えられる", cp.status(bag)["panels"] == 2,
+          str(cp.status(bag).get("panels")))
+
+    bag_cloth, warns = cp.stack_pieces(bpy.context, bag)
+    check("Stack が通る", bag_cloth is not None)
+    check("重ねるだけでは警告は出ない", warns == [], str(warns))
+
+    xyz = np.array([tuple(v.co) for v in bag_cloth.data.vertices])
+    piece_ids = np.array([bag_cloth.data.attributes[cp.ATTR_PIECE].data[i].value
+                          for i in range(len(bag_cloth.data.vertices))])
+    ids = sorted(set(int(i) for i in piece_ids))
+    top = xyz[piece_ids == ids[0]]
+    bottom = xyz[piece_ids == ids[1]]
+    check("2 枚が面に垂直な方向(Z)で離れている",
+          abs(top[:, 2].mean() - bottom[:, 2].mean() - cp.DEFAULT_BAG_GAP) < 1e-6,
+          f"隙間 {top[:, 2].mean() - bottom[:, 2].mean():.4f} m")
+    check("2 枚が XY で重なる(中心がそろう)",
+          abs(top[:, 0].mean() - bottom[:, 0].mean()) < 1e-6
+          and abs(top[:, 1].mean() - bottom[:, 1].mean()) < 1e-6)
+    check("重ねても型紙の大きさは変わらない",
+          abs(np.ptp(top[:, 0]) - 0.3) < 1e-6 and abs(np.ptp(bottom[:, 0]) - 0.3) < 1e-6,
+          f"幅 {np.ptp(top[:, 0]):.4f} / {np.ptp(bottom[:, 0]):.4f} m")
+
+    # 下側のピースは面が裏返っている(圧力が外へ向き、陰影も正しくなる)
+    bag_cloth.data.calc_loop_triangles()
+    normals = {}
+    for poly in bag_cloth.data.polygons:
+        pid = int(piece_ids[poly.vertices[0]])
+        normals.setdefault(pid, []).append(poly.normal.z)
+    check("上の枚の面は +Z を向く", min(normals[ids[0]]) > 0.99,
+          f"最小 {min(normals[ids[0]]):.3f}")
+    check("下の枚の面は -Z を向く", max(normals[ids[1]]) < -0.99,
+          f"最大 {max(normals[ids[1]]):.3f}")
+    check("裏返したピースは記録に残る",
+          cp.flipped_pieces(cp.load_record(bag)) == {ids[1]}, str(cp.load_record(bag)["flipped"]))
+
+    # 外周を一周する縫い目(始点 = 終点)で 2 枚を縫う
+    uids_a = [p["uids"] for p in cp.load_record(bag)["pieces"]][0]
+    uids_b = [p["uids"] for p in cp.load_record(bag)["pieces"]][1]
+    cp.add_seam(bag, [(uids_a[0], 0.0, uids_a[0], 0.0)],
+                [(uids_b[0], 0.0, uids_b[0], 0.0)], name="Rim")
+    broken = cp.apply_seams(bag)
+    check("外周を一周する縫い目が張れる", broken == [], str(broken))
+
+    # Rebuild しても裏返しと縫い目が保たれる(記録に残してあるため)
+    bag_cloth2, _ = cp.rebuild(bpy.context, bag)
+    ids2 = {}
+    for poly in bag_cloth2.data.polygons:
+        pid = int(bag_cloth2.data.attributes[cp.ATTR_PIECE].data[poly.vertices[0]].value)
+        ids2.setdefault(pid, []).append(poly.normal.z)
+    check("Rebuild しても下の枚は裏返ったまま", max(ids2[ids[1]]) < -0.99,
+          f"最大 {max(ids2[ids[1]]):.3f}")
+    check("Rebuild しても Rebuild Required にならない",
+          cp.status(bag)["problems"] == [], str(cp.status(bag)["problems"]))
+
+    # 袋を閉じて膨らませる(Close Bag。重力 0 で回す)
+    props3 = bag_cloth2.muslin
+    props3.collision_enabled = False
+    props3.self_collision_enabled = False
+    props3.seam_close_frames = 10
+    props3.pressure = 100.0
+    props3.quality = 'HIGH'
+    for o in scene.objects:
+        o.select_set(o is bag_cloth2)
+    bpy.context.view_layer.objects.active = bag_cloth2
+    check("Close Bag が押せる", bpy.ops.muslin.close_bag.poll())
+    before = np.array([tuple(v.co) for v in bag_cloth2.data.vertices])
+    res = bpy.ops.muslin.close_bag(max_steps=200)
+    check("Close Bag が通る", res == {'FINISHED'}, str(res))
+    after = np.array([tuple(v.co) for v in bag_cloth2.data.vertices])
+    check("袋が膨らむ(Z の厚みが隙間より広がる)",
+          np.ptp(after[:, 2]) > np.ptp(before[:, 2]), 
+          f"厚み {np.ptp(before[:, 2]) * 1000:.1f} -> {np.ptp(after[:, 2]) * 1000:.1f} mm")
+    # 縫い合わせた縁が合う(輪郭の環ごとに、相手の環までの距離を見る)
+    rings = cp.reconstruct(bag_cloth2)["rings"]
+    rim_a = after[rings[0]["vertices"]] if "vertices" in rings[0] else None
+    if rim_a is None:
+        rim_a = after[rings[0]["start"]:rings[0]["start"] + rings[0]["count"]]
+        rim_b = after[rings[1]["start"]:rings[1]["start"] + rings[1]["count"]]
+    else:
+        rim_b = after[rings[1]["vertices"]]
+    gaps = np.linalg.norm(rim_a[:, None, :] - rim_b[None, :, :], axis=2).min(axis=1)
+    check("縫い合わせた縁が合う", float(gaps.max()) < 0.01,
+          f"縁の最大の隙間 {gaps.max() * 1000:.1f} mm")
+    check("重力の設定そのものは変わらない(回している間だけ 0 にする)",
+          abs(props3.gravity - 9.81) < 1e-5, str(props3.gravity))
+    check("閉じた形が開始姿勢として保存される", rest_shape.is_dressed(bag_cloth2))
+
+    # 1 枚しかない型紙では袋にできない
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    one = make_curve("One")
+    cp.initialize(one, 0.05)
+    check("1 枚では Stack は押せない(poll)", bpy.ops.muslin.curve_stack.poll() is False)
+    check("1 枚では Stack が理由つきで失敗する",
+          _raises(lambda: cp.stack_pieces(bpy.context, one)))
+
     muslin.unregister()
 
 

@@ -53,12 +53,18 @@ class _DressProps:
     設定そのものは握らず、読むたびに `lookup()` で引き直す。元に戻す
     (Ctrl+Z)などで Blender がデータを読み直すと、握っていた参照は
     無効になり ReferenceError になる(実機の Adjust 中に起きた)。
+
+    `overrides` を渡すと、その設定だけを差し替えて見せる(袋を閉じるときの
+    重力 0 など)。設定そのものは書き換えないので、終わった後に残らない。
     """
 
-    def __init__(self, lookup):
+    def __init__(self, lookup, overrides=None):
         self._lookup = lookup
+        self._overrides = overrides or {}
 
     def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
         value = getattr(self._lookup(), name)
         if name == "damping":
             return max(value, DRESS_DAMPING)
@@ -68,7 +74,8 @@ class _DressProps:
 class Dresser:
     """1ステップずつ着せ付けを進める。モーダルでも同期でも同じものを使う。"""
 
-    def __init__(self, obj, props, dt, max_steps=DEFAULT_MAX_STEPS, auto_finish=True):
+    def __init__(self, obj, props, dt, max_steps=DEFAULT_MAX_STEPS, auto_finish=True,
+                 overrides=None):
         # False なら落ち着いても上限に達しても止まらない(整えるモード)。
         # 止まるのは人が確定か中止をしたときと、発散したときだけ
         self.auto_finish = auto_finish
@@ -80,7 +87,7 @@ class Dresser:
         members = mesh_io.group_members(obj)
         props = members[0].muslin
         # 布と設定は握らずに、使うたびに引き直す(members / _DressProps を参照)
-        self.props = _DressProps(lambda: self.members[0].muslin)
+        self.props = _DressProps(lambda: self.members[0].muslin, overrides)
         self.before = []
         for m in members:
             sim_state.stop_simulation(m)
@@ -248,6 +255,7 @@ class _ClothModal:
     """
 
     AUTO_FINISH = True
+    OVERRIDES = None  # 回している間だけ差し替える設定(袋を閉じるときの重力 0 など)
     HEADER = ""       # 実行中のヘッダの頭
     SAVED = ""        # 確定したときの報告
     CANCELLED = ""    # 中止したときの報告
@@ -255,7 +263,8 @@ class _ClothModal:
     def _make_dresser(self, context):
         obj = context.active_object
         return Dresser(obj, obj.muslin, sim_state.effective_dt(context.scene),
-                       self.max_steps, auto_finish=self.AUTO_FINISH)
+                       self.max_steps, auto_finish=self.AUTO_FINISH,
+                       overrides=self.OVERRIDES)
 
     def _start(self, context):
         self._dresser = self._make_dresser(context)
@@ -472,7 +481,61 @@ class MUSLIN_OT_adjust(_ClothModal, bpy.types.Operator):
         return self._end(context, commit=True)
 
 
-_classes = (MUSLIN_OT_dress, MUSLIN_OT_adjust)
+class MUSLIN_OT_close_bag(_ClothModal, bpy.types.Operator):
+    """縫い目を閉じて、圧力で膨らませる。クッションなど、体に着せない閉じた立体のため
+
+    Dress と同じ回し方だが、**重力を 0 にして回す**。体もコライダーも無い袋は、
+    重力があるといつまでも落ち続けて落ち着かないため。重力の設定そのものは
+    変えないので、この後の再生では元の重力で落ちる。
+    Esc で中止(元の形に戻る)、Enter でその場で確定する。
+    """
+
+    bl_idname = "muslin.close_bag"
+    bl_label = "Close Bag"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    AUTO_FINISH = True
+    # 体の無い袋は、重力があると落ち続けて落ち着かない。回している間だけ 0 にする
+    OVERRIDES = {"gravity": 0.0}
+    HEADER = "袋を閉じています"
+    SAVED = "閉じた形を保存しました"
+    CANCELLED = "袋を閉じるのをやめて元の形に戻しました"
+
+    max_steps: bpy.props.IntProperty(
+        name="Max Steps",
+        description="落ち着かなくてもここで打ち切る",
+        default=DEFAULT_MAX_STEPS,
+        min=1,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        if not ui_poll.mesh_selected(cls, context):
+            return False
+        obj = context.active_object
+        if not any(s.enabled for s in getattr(obj, "muslin_seams", [])):
+            return ui_poll.reject(cls, "閉じる縫い目がありません(先に縫い目を作ってください)")
+        return True
+
+    def _start(self, context):
+        super()._start(context)
+        # 圧力が入っていなければ、閉じるだけで膨らまない。止めはしないが伝える
+        if context.active_object.muslin.pressure == 0.0:
+            self.report({'WARNING'},
+                        "Pressure が 0 です。膨らませるには Fabric パネルの Pressure を入れてください")
+
+    def execute(self, context):
+        # スクリプトやテストから呼ばれたときは、最後まで同期で回す
+        self._start(context)
+        while not self._dresser.step():
+            pass
+        return self._end(context, commit=True)
+
+
+_classes = (MUSLIN_OT_dress, MUSLIN_OT_adjust, MUSLIN_OT_close_bag)
 
 
 def register():

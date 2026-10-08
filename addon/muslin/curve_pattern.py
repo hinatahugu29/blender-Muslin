@@ -107,7 +107,7 @@ def curve_of(cloth_obj):
 
 def _new_record(target_length):
     return {"version": RECORD_VERSION, "gen_id": 0, "target_edge_length": float(target_length),
-            "next_uid": 1, "next_piece_uid": 1, "pieces": [], "seams": [],
+            "next_uid": 1, "next_piece_uid": 1, "pieces": [], "seams": [], "flipped": [],
             "orientation": DEFAULT_ORIENTATION}
 
 
@@ -490,6 +490,8 @@ def status(curve_obj):
     return {
         "initialized": True,
         "pieces": len(record["pieces"]),
+        # 穴ではない輪郭の数(= 袋にできる枚数)
+        "panels": sum(1 for p in record["pieces"] if p.get("hole_of") is None),
         "target": record["target_edge_length"],
         "problems": structure_problems(curve_obj, record),
         "cloth": cloth_of(curve_obj),
@@ -509,10 +511,32 @@ def to_local(xy, orientation):
     return out
 
 
+def flipped_pieces(record):
+    """面を裏返すピースの piece_uid の集合(袋の下側になるピース)。"""
+    return set(int(u) for u in (record or {}).get("flipped", []))
+
+
+def orient_triangles(triangles, piece, flipped):
+    """裏返すピースの三角形だけ、頂点の並びを逆にする(= 法線が逆を向く)。
+
+    袋(クッション)は 2 枚を重ねて縫うので、下側になる枚の面は裏返っていないと、
+    圧力が内側へ向いてしまい、陰影も暗くなる。現実の縫い方(2 枚重ねて裁ち、
+    片方の表が下を向く)と同じ扱い。bpy に依存しない。
+    """
+    tris = np.asarray(triangles, dtype=np.int64).reshape(-1, 3).copy()
+    if not flipped:
+        return tris
+    piece = np.asarray(piece)
+    mask = np.isin(piece[tris[:, 0]], list(flipped))
+    tris[mask] = tris[mask][:, ::-1]
+    return tris
+
+
 def _build_mesh(name, data, record):
     mesh = bpy.data.meshes.new(name)
     verts = to_local(data["positions"], orientation_of(record))
-    mesh.from_pydata(verts.tolist(), [], data["triangles"].tolist())
+    tris = orient_triangles(data["triangles"], data["piece"], flipped_pieces(record))
+    mesh.from_pydata(verts.tolist(), [], tris.tolist())
     mesh.update()
 
     def point_attr(attr_name, dtype, values):
@@ -839,6 +863,75 @@ def arrange_around(curve_obj, collider, margin=None, angles=None, base_z=None):
     return warnings
 
 
+# 袋にするときに 2 枚を離す既定の隙間。縫い目が閉じるときに潰れるので、厚みより少し広く取る
+DEFAULT_BAG_GAP = 0.02
+
+
+def stack_offsets(count, gap):
+    """重ねる枚数ぶんの、面に垂直な方向のずらし量。中央をはさんで等間隔に並べる。
+
+    2 枚なら ±gap/2。3 枚以上(マチのある袋など)でも等間隔に散らす。bpy に依存しない。
+    """
+    if count <= 1:
+        return [0.0]
+    span = gap * (count - 1)
+    return [span / 2.0 - gap * k for k in range(count)]
+
+
+def stack_pieces(context, curve_obj, gap=DEFAULT_BAG_GAP):
+    """ピースを向かい合わせに重ねて置き、下側のピースの面を裏返す(クッションなどの袋)。
+
+    体の周りに巻く `arrange_around` に対応する、体を使わない置き方。ピースを型紙の
+    中心でそろえて重ねるので、外周を縫う縫い目がほとんど動かずに閉じる。
+    2 枚目以降の面は裏返して記録する(圧力が外へ向き、陰影も正しくなる)。面を裏返すには
+    メッシュを作り直すので、姿勢は引き継がない(置き直す操作なので引き継ぐ意味がない)。
+    戻り値: (布オブジェクト, 警告の一覧)
+    """
+    from . import sim_state
+
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    if curve_obj.mode == 'EDIT':
+        raise CurvePatternError("オブジェクトモードで実行してください")
+    cloth = cloth_of(curve_obj)
+    if cloth is not None and sim_state.is_running(cloth):
+        raise CurvePatternError("シミュレーション中は置き直せません。停止してください")
+
+    # 穴ではない輪郭の数 = 袋を作る枚数
+    panels = [p["piece_uid"] for p in record["pieces"] if p.get("hole_of") is None]
+    if len(panels) < 2:
+        raise CurvePatternError(
+            f"袋にするには輪郭が 2 つ以上必要です(今は {len(panels)} つ)。"
+            "同じ大きさのピースを XY 平面にもう 1 枚描いてください")
+
+    # 下側になる枚の面を裏返す(先頭だけ表のまま)。現実の縫い方と同じ扱い
+    record["flipped"] = [int(u) for u in panels[1:]]
+    save_record(curve_obj, record)
+
+    cloth, warnings = rebuild(context, curve_obj, keep_pose=False)
+    data = reconstruct(cloth)
+    orientation = orientation_of(record)
+    # 面に垂直な方向(FLAT なら Z、STANDING なら Y)
+    normal_axis = 2 if orientation == 'FLAT' else 1
+
+    local = to_local(data["positions"], orientation)
+    groups = [np.nonzero(data["piece"] == pid)[0] for pid in panels]
+    # 型紙の中心をそろえて重ねる(ピースごとに中心が違っても向かい合うように)
+    centers = [local[idx].mean(axis=0) for idx in groups]
+    base = centers[0]
+    for idx, center, shift in zip(groups, centers, stack_offsets(len(groups), gap)):
+        local[idx] += base - center
+        local[idx, normal_axis] += shift
+
+    pose32 = local.astype(np.float32).ravel()
+    cloth.data.vertices.foreach_set("co", pose32)
+    cloth.data.update()
+    rest_shape.store(cloth, pose32)
+    rest_shape.clear_dressed(cloth)
+    return cloth, warnings
+
+
 def _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles):
     pieces = [{"xy": data["positions"][idx], "z": base_z + data["positions"][idx][:, 1]}
               for idx in groups]
@@ -1041,6 +1134,51 @@ class MUSLIN_OT_curve_arrange(bpy.types.Operator):
         return self.execute(context)
 
 
+class MUSLIN_OT_curve_stack(bpy.types.Operator):
+    """ピースを向かい合わせに重ねて置く(クッションなど、体に着せない袋のため)"""
+
+    bl_idname = "muslin.curve_stack"
+    bl_label = "Stack Pieces for Bag"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    gap: bpy.props.FloatProperty(
+        name="Gap", unit='LENGTH', min=0.0, default=DEFAULT_BAG_GAP,
+        description="重ねる 2 枚を離す距離。縫い目が閉じるときに潰れるので、少し広めで構わない",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from . import ui_poll
+        from . import sim_state
+        curve = _target_curve(context)
+        if curve is None:
+            return ui_poll.reject(cls, "Curve、または Curve Pattern から作った布を選んでください")
+        if context.mode != 'OBJECT':
+            return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+        record = load_record(curve)
+        panels = [p for p in (record or {}).get("pieces", []) if p.get("hole_of") is None]
+        if len(panels) < 2:
+            return ui_poll.reject(cls, "袋にするには輪郭が 2 つ以上必要です")
+        cloth = cloth_of(curve)
+        if cloth is not None and sim_state.is_running(cloth):
+            return ui_poll.reject(cls, "シミュレーション中は置き直せません。停止してください")
+        return True
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        try:
+            cloth, warnings = stack_pieces(context, curve, gap=self.gap)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'},
+                    f"'{cloth.name}' のピースを向かい合わせに重ねました"
+                    "(外周を縫って Close Bag で閉じてください)")
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_curve_seam_add(bpy.types.Operator):
     """Curve の点を 2 か所の連なりとして選び、その間を縫い合わせる縫い目にする"""
 
@@ -1094,7 +1232,8 @@ class MUSLIN_OT_curve_seam_remove(bpy.types.Operator):
 
 
 _classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
-            MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
+            MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_stack,
+            MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove)
 
 
 def register():

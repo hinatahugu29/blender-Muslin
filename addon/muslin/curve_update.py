@@ -132,9 +132,12 @@ def relax_interior(mesh, boundary_indices, boundary_xy, initial=None):
 def quality(mesh, positions):
     """形の品質。戻り値: dict(inverted, edge_ratio_min, edge_ratio_max, min_angle)"""
     tris = mesh["triangles"]
-    areas = delaunay2d.signed_areas(positions, tris)
-    edges = curve_discretize.mesh_edges(tris)
     gen = mesh["positions"]
+    # 「反転した」は、生成したときの向きから裏返ったことを指す。巻き方そのものは
+    # 見ない(袋の下側になるピースは、作る時点で面を裏返してあるため)
+    areas = delaunay2d.signed_areas(positions, tris)
+    base = delaunay2d.signed_areas(gen, tris)
+    edges = curve_discretize.mesh_edges(tris)
     l0 = np.linalg.norm(gen[edges[:, 0]] - gen[edges[:, 1]], axis=1)
     l1 = np.linalg.norm(positions[edges[:, 0]] - positions[edges[:, 1]], axis=1)
     ratio = l1 / np.maximum(l0, 1e-12)
@@ -148,7 +151,7 @@ def quality(mesh, positions):
             np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1), 1e-30)
         angles.append(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
     return {
-        "inverted": int((areas <= 0).sum()),
+        "inverted": int((areas * base <= 0).sum()),
         "edge_ratio_min": float(ratio.min()),
         "edge_ratio_max": float(ratio.max()),
         "min_angle": float(np.min(angles)),
