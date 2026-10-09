@@ -447,6 +447,8 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
             layout.label(text="Curve の変更は布に追従します", icon='CHECKMARK')
 
         layout.operator("muslin.curve_pattern_rebuild", icon='FILE_REFRESH')
+        # 型紙(左・真上から固定)と布(右)を並べて見る。もう一度押すと元に戻す
+        layout.operator("muslin.pattern_view", icon='SPLITSCREEN')
         if cloth is not None:
             layout.operator("muslin.curve_arrange", icon='MOD_CLOTH')
         # 輪郭が 2 つ以上あれば、体に巻くのではなく向かい合わせに重ねる置き方も選べる

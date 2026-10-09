@@ -1184,6 +1184,14 @@ def main():
           sum(1 for p_ in rec["pieces"] if p_["hole_of"] is not None) == 1)
 
     _test_gusset(cp, mesh_io, rest_shape)
+    # 型紙と布を並べて見る画面(画面の分割は GUI でしか確かめられないので、ここでは登録と poll だけ)
+    pv_curve = next(o for o in bpy.context.scene.objects if o.type == 'CURVE')
+    bpy.context.view_layer.objects.active = None
+    no_target = bpy.ops.muslin.pattern_view.poll()
+    bpy.context.view_layer.objects.active = pv_curve
+    check("Pattern View は Curve Pattern の Curve を選んだときだけ押せる",
+          hasattr(bpy.ops.muslin, "pattern_view") and no_target is False
+          and bpy.ops.muslin.pattern_view.poll() is True)
     _test_quilt(cp, mesh_io)
 
     muslin.unregister()

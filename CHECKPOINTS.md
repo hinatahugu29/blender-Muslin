@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 254 項目、2026-10-09)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 255 項目、2026-10-10)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
@@ -85,6 +85,13 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       **白い点**で光るか。選択を変えると、その場で追従するか。全部選ぶ(A)と布の外周すべてが光るか。
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
+
+### 型紙と布を並べる画面(2026-10-10)で増えた確認項目
+
+- [ ] `samples/07_curve_arrange.blend` で `Pair_Pattern` を選び、Curve Pattern パネルの `Pattern View`。
+      3D ビューが左右に分かれ、左に型紙(真上から・回転しない)、右に布が出るか。縫い目の色と名前が
+      左右で対応して見えるか。左で Tab → 点を動かすと右の布が追従するか(再生か Dress のとき)。
+      もう一度押すと元の 1 画面に戻るか。MD の 2D / 3D の並びとして使えそうか、足りないものは何か
 
 ### 部位ごとの生地(2026-10-09、M5)で増えた確認項目
 
