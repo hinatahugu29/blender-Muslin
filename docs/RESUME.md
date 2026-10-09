@@ -18,12 +18,12 @@ python scripts\verify_core.py                                           # 物理
 Blender を入れた環境なら、アドオン層もヘッドレスで検査できる:
 
 ```bash
-blender --background --factory-startup --python scripts/blender_selftest.py         # 411 項目(Blender 5.1)
+blender --background --factory-startup --python scripts/blender_selftest.py         # 423 項目(Blender 5.1)
 blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 252 項目(Curve Pattern)
-cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 83 件
+cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 90 件
 ```
 
-- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 411 項目。4.2 は 5.x で
+- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 423 項目、4.2 で 405 項目。4.2 は 5.x で
   保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 252 項目)
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)
 - **`samples/*.blend` は `blender_selftest.py` が全部開いて検査する。** 作業用の .blend を `samples/` に置かない
