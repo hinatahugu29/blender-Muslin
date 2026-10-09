@@ -1241,6 +1241,9 @@ def stacked_layout(cloth, record=None, gap=DEFAULT_BAG_GAP):
     orientation = orientation_of(record)
     # 面に垂直な方向(FLAT なら Z、STANDING なら Y)
     normal_axis = 2 if orientation == 'FLAT' else 1
+    # 表(先頭)の面が向く側。FLAT は +Z、STANDING は -Y((x, y) → (x, 0, y) で面の向きが -Y になる)。
+    # 表をその側に置かないと、袋の面がすべて内を向き、圧力で内側へ潰れる
+    outward = 1.0 if orientation == 'FLAT' else -1.0
     panels = bag_panels(record)
 
     groups = [np.nonzero(data["piece"] == pid)[0] for pid in panels]
@@ -1253,7 +1256,7 @@ def stacked_layout(cloth, record=None, gap=DEFAULT_BAG_GAP):
     base = centers[0]
     for idx, center, shift in zip(groups, centers, stack_offsets(len(groups), gap)):
         local[idx] += base - center
-        local[idx, normal_axis] += shift
+        local[idx, normal_axis] += outward * shift
     return local
 
 
@@ -1280,9 +1283,10 @@ def _box_layout(cloth, record, data, groups):
     frame[top_idx, 2] = height / 2.0
     frame[bottom_idx, :2] += xy[top_idx].mean(axis=0) - xy[bottom_idx].mean(axis=0)
     frame[bottom_idx, 2] = -height / 2.0
-    # 型紙の面の座標 (x, y, 面に垂直) -> 布のローカル座標(重ねた配置と同じ軸の取り方)
+    # 型紙の面の座標 (x, y, 面に垂直) -> 布のローカル座標。STANDING は (x, -面に垂直, y)
+    # (回転として写す。表の面は -Y を向くので、表を -Y の側に置く。重ねた配置と同じ)
     if orientation_of(record) == 'STANDING':
-        return frame[:, [0, 2, 1]]
+        return np.column_stack([frame[:, 0], -frame[:, 2], frame[:, 1]])
     return frame
 
 

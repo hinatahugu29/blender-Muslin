@@ -1184,6 +1184,7 @@ def main():
           sum(1 for p_ in rec["pieces"] if p_["hole_of"] is not None) == 1)
 
     _test_gusset(cp, mesh_io, rest_shape)
+    _test_standing_bag(cp)
     # 型紙と布を並べて見る画面(画面の分割は GUI でしか確かめられないので、ここでは登録と poll だけ)
     pv_curve = next(o for o in bpy.context.scene.objects if o.type == 'CURVE')
     bpy.context.view_layer.objects.active = None
@@ -1195,6 +1196,42 @@ def main():
     _test_quilt(cp, mesh_io)
 
     muslin.unregister()
+
+
+def _test_standing_bag(cp):
+    """立てた向き(STANDING)の袋でも、面が外を向く(重ねた袋・マチの箱形)。
+
+    STANDING では表の面が -Y を向くのに、表を +Y の側に置いていたので、面がすべて内を
+    向き、圧力で内側へ潰れる向きに押されていた。
+    """
+    section("立てた向き(STANDING)の袋")
+    for gusset in (False, True):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        cu_s = bpy.data.curves.new("Standing", 'CURVE')
+        cu_s.dimensions = '2D'
+        for x0 in (0.0, 0.5):
+            sp = cu_s.splines.new('BEZIER')
+            sp.bezier_points.add(3)
+            for pt, (x, y) in zip(sp.bezier_points, [(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.3), (x0, 0.3)]):
+                pt.co = (x, y, 0.0)
+                pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+            sp.use_cyclic_u = True
+        standing = bpy.data.objects.new("Standing", cu_s)
+        bpy.context.scene.collection.objects.link(standing)
+        bpy.context.view_layer.objects.active = standing
+        cp.initialize(standing, 0.02)
+        cp.rebuild(bpy.context, standing, orientation='STANDING')
+        if gusset:
+            cloth_s, _w = cp.add_gusset(bpy.context, standing, 0.08)
+        else:
+            cloth_s, _w = cp.stack_pieces(bpy.context, standing)
+        co_s = np.array([tuple(v.co) for v in cloth_s.data.vertices])
+        centre = co_s.mean(axis=0)
+        inward = sum(1 for poly in cloth_s.data.polygons
+                     if np.dot(np.array(poly.normal), np.array(poly.center) - centre) <= 0.0)
+        check(f"STANDING の{'マチの箱形' if gusset else '重ねた袋'}も、面はすべて外を向く(厚みは Y 方向)",
+              inward == 0 and np.ptp(co_s[:, 1]) < np.ptp(co_s[:, 0]),
+              f"内向き {inward} / {(np.ptp(co_s, axis=0) * 1000).round(0)} mm")
 
 
 def _test_quilt(cp, mesh_io):

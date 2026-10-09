@@ -1660,6 +1660,30 @@ def main():
     check("硬い生地(Leather)にした半分は、柔らかい半分(Chiffon)より垂れない",
           stiff_low > soft_low + 0.02, f"最低点 硬い側 {stiff_low:.3f} / 柔らかい側 {soft_low:.3f} m")
 
+    # 重ね着のグループの中の 1 着だけに部位ごとの生地があっても始められる
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_set(1)
+    layered = []
+    for k, z in enumerate((1.0, 1.05)):
+        lo = make_grid(f"Layer{k}", side=9, z=z)
+        lo.muslin.sim_group = "parts"
+        lo.muslin.layer = k
+        lo.muslin.collision_enabled = False
+        layered.append(lo)
+    heavy = bpy.data.materials.new("Heavy")
+    heavy.muslin_fabric.enabled = True
+    heavy.muslin_fabric.fabric_preset = 'LEATHER'
+    layered[1].data.materials.append(heavy)
+    bpy.context.view_layer.objects.active = layered[0]
+    info = sim_state.start_simulation(layered[0], layered[0].muslin)
+    advance(4, start=2)
+    sim_state.stop_simulation(layered[0])
+    scene.frame_set(1)
+    check("重ね着のグループの 1 着だけに部位ごとの生地があっても、まとめて始められる",
+          info["vertices"] == 162, str(info["vertices"]))
+
     section("Force Field の風")
     # Wind の Force Field を風に足す(ROADMAP の検討項目)。向きはフィールドの Z 軸、強さは N/m^2
 
