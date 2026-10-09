@@ -167,6 +167,10 @@ pub const MARGIN_SAFETY: f64 = 1.5;
 /// 自分で区切ることで結合順を固定し、結果を決定的に保つ。
 const SELF_COLLISION_CHUNK: usize = 512;
 
+/// `untangle` で「動かされた」とみなす最小の移動量(m)。押し出したあとの丸め誤差
+/// (1e-12 m 程度)より十分大きく、意味のある食い込み(厚みの数 % = 0.1mm 以上)より十分小さい
+const UNTANGLE_SETTLED: f64 = 1e-7;
+
 /// 掃過判定で経路上を拾う最大の刻み数。
 ///
 /// 刻みは厚み間隔なので、速い頂点ほど増える。上限を置かないと、異常に速い
@@ -2202,9 +2206,24 @@ impl ClothSim {
             ..*params
         };
 
+        // 「まだ食い込んでいる」は、押し出しで実際に動かされた頂点で数える。
+        // 押し出した頂点は厚みちょうどに置かれ、次の判定で丸め誤差により「わずかに
+        // 内側」と判定されて接触に数えられる。接触の数で数えると、体に触れて落ち着いて
+        // いるだけの布でも 0 にならず、着せた布を再生するたびに「解消しきれません
+        // でした(残り 191 箇所)」と出ていた
         let mut remaining = 0;
         for _ in 0..iterations.max(1) {
-            remaining = self.resolve_collisions(&params).len();
+            let before = self.positions.clone();
+            let contacts = self.resolve_collisions(&params);
+            remaining = if contacts.is_empty() {
+                0
+            } else {
+                before
+                    .iter()
+                    .zip(self.positions.iter())
+                    .filter(|(a, b)| b.sub(**a).length() > UNTANGLE_SETTLED)
+                    .count()
+            };
             if remaining == 0 {
                 break;
             }
@@ -4027,6 +4046,37 @@ mod tests {
     /// 速度は「位置の差 ÷ dt」から作るので、深い食い込みをそのまま押し出すと
     /// 分離がそのまま運動エネルギーになる(厚み 0.02 に 0.016 食い込むと
     /// 3.84 m/s、0.5秒で 1.9m 離れた)。`untangle` で開始前に位置だけを直す。
+    #[test]
+    fn untangle_counts_resting_cloth_as_resolved() {
+        // 体に触れているだけの布は、食い込みとして数えない。押し出した頂点は厚みちょうどに
+        // 置かれ、傾いた面では次の判定で丸め誤差により「わずかに内側」と判定される。
+        // 接触の数で数えていた頃は、何度 untangle しても「残り」が 0 にならなかった
+        let thickness = 0.01;
+        let normal = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        // 原点を通り normal に垂直な大きな面(2 枚の三角形)
+        let u = Vec3::new(1.0, 0.0, -0.3).normalized().unwrap();
+        let v = normal.cross(u);
+        let corner = |a: f64, b: f64| u.scale(a).add(v.scale(b));
+        let plane = vec![corner(-5.0, -5.0), corner(5.0, -5.0), corner(5.0, 5.0), corner(-5.0, 5.0)];
+        let (grid, edges, bending, tris, _) = build_grid(11, 11, 0.05);
+        // 布を面の上へ厚みの半分の高さに置く(食い込ませる)
+        let positions: Vec<Vec3> = grid
+            .iter()
+            .map(|p| u.scale(p.x - 0.25).add(v.scale(p.y - 0.25)).add(normal.scale(thickness * 0.5)))
+            .collect();
+        let mut sim = ClothSim::new(positions, &edges, &bending, &tris, &[], 0.2, 0.0, 1e-4);
+        sim.add_collider(plane, vec![[0, 1, 2], [0, 2, 3]]);
+        let params = SimParams {
+            collision_enabled: true,
+            collision_thickness: thickness,
+            ..SimParams::default()
+        };
+        let first = sim.untangle(&params, 8);
+        assert_eq!(first, 0, "厚みの半分の食い込みを解消しきれなかった: 残り {first}");
+        let again = sim.untangle(&params, 8);
+        assert_eq!(again, 0, "面に触れているだけの布を食い込みとして数えている: 残り {again}");
+    }
+
     #[test]
     fn untangle_resolves_initial_overlap_without_launching_cloth() {
         let thickness = 0.02;
