@@ -294,6 +294,12 @@ def start_simulation(obj, props):
     state = create_state(obj, props)
     for key, _start, _count in state["members"]:
         _running[key] = state
+    # 着せた布は、体のポーズが着せたときとずれていないかを見る(ずれたまま始めると食い込む)
+    from . import dress_pose
+    for m in member_objects(state):
+        for w in dress_pose.warnings(m):
+            if w not in state["info"]["warnings"]:
+                state["info"]["warnings"].append(w)
     return state["info"]
 
 

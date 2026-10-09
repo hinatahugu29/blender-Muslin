@@ -1306,6 +1306,30 @@ def main():
     bpy.ops.muslin.stop_sim()
     scene.frame_set(1)
 
+    # 着せたときと体のポーズが違えば、開始時に警告する(ROADMAP M7 の残件)
+    from muslin import dress_pose
+    check("着せると体のポーズを記録する", bool(piece.get(dress_pose.POSE_KEY)))
+    found = dress_pose.mismatch(piece)
+    check("同じポーズならずれは 0", found is not None and found[0] < 1e-6, str(found))
+    info = sim_state.start_simulation(piece, piece.muslin)
+    check("同じポーズで始めれば警告しない",
+          not any("ポーズ" in w for w in info["warnings"]), str(info["warnings"]))
+    check("着せた布を再生しても、食い込みを解消しきれないとは言わない(体に触れているだけ)",
+          info["untangle_remaining"] == 0 and not any("解消しきれ" in w for w in info["warnings"]),
+          f"残り {info['untangle_remaining']}")
+    sim_state.stop_simulation(piece)
+    body = bpy.data.objects["Body"]
+    body.location.x += 0.05
+    bpy.context.view_layer.update()
+    info = sim_state.start_simulation(piece, piece.muslin)
+    pose_warnings = [w for w in info["warnings"] if "ポーズ" in w]
+    check("体を 5cm ずらして始めると、着せたときとポーズが違うと警告する",
+          len(pose_warnings) == 1 and "5.0cm" in pose_warnings[0], str(pose_warnings))
+    sim_state.stop_simulation(piece)
+    body.location.x -= 0.05
+    bpy.context.view_layer.update()
+    scene.frame_set(1)
+
     # ----------------------------------------------------------------
     section("ゴム紐(M7)")
 

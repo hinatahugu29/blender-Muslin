@@ -11,6 +11,7 @@
 import bpy
 import numpy as np
 
+from . import dress_pose
 from . import grab
 from . import mesh_io
 from . import rest_shape
@@ -238,6 +239,8 @@ class Dresser:
             pattern_link.sync_before_start(m)
             rest_shape.store(m)
             rest_shape.mark_dressed(m)
+            # 着せたときの体のポーズを覚えておく(再生を始めるときに比べる)
+            dress_pose.record(m, bpy.context.scene.frame_current)
         return True
 
     def cancel(self):
