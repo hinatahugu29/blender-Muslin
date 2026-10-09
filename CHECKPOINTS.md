@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 233 項目、2026-10-09)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 246 項目、2026-10-09)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
@@ -85,6 +85,20 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       **白い点**で光るか。選択を変えると、その場で追従するか。全部選ぶ(A)と布の外周すべてが光るか。
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
+
+### 内部線とキルティング(2026-10-09、M11)で増えた確認項目
+
+- [ ] **筋とボタン留めの見た目**: `samples/09_quilted.blend` を開く。`Puffer`(3 本の筋で 4 部屋)が
+      ダウンジャケットのような筋の入ったクッションに、`Tufted`(マチ付きの箱を 4 か所の短い線で留めた)が
+      ボタン留めのソファの座面のように見えるか
+- [ ] **自分で作る**: 同じ大きさの輪郭を 2 つ並べた Curve の、**1 つ目(表)の輪郭の内側**に、開いた線を描く
+      (編集モードで点を足して線にする。輪郭から 1cm 程度は離す)。`Rebuild`(辺の長さは線の間隔の
+      1/8 以下が目安)→ `Stack Pieces for Bag` → Curve Pattern パネルの `Quilt Through`。
+      裏の輪郭の同じ位置に線が写され、縫い目のリストに Quilt 1, 2... が並ぶか。外周も縫って
+      (輪郭を両方全部選んで Add Seam)`Close Bag` で、筋に沿って凹んだクッションになるか
+- [ ] **線を動かす**: 表の線の点を動かすと、布の線(筋)が追従するか(Shape Update)。
+      線の点を足すと Rebuild Required になるか。辺が粗いと Quilt Through が警告を出すか
+- [ ] `Remove Quilting` で、写した線と Quilt の縫い目が消え、外周の縫い目は残るか
 
 ### マチ(2026-10-09、M11)で増えた確認項目
 
