@@ -13,12 +13,28 @@ import bpy
 
 from . import curve_pattern
 
-def _tagged(area):
-    """型紙の画面か。Area には任意のプロパティを持たせられないので、3D ビューの設定の
-    組み合わせ(回転固定 + ローカルビュー + 正投影)で見分ける。"""
+# 開いた型紙の画面(3D ビューのデータのアドレス)を、画面(Screen。ID なので値を持てる)に記録する。
+# 位置で覚えると、分けた直後と配置が落ち着いたあとで変わってしまい、見つけられなかった
+SCREEN_KEY = "muslin_pattern_view"
+
+
+def _looks_like_pattern(area):
+    """型紙の画面の設定(回転固定 + ローカルビュー + 正投影)になっているか。"""
     space = area.spaces.active
-    return (space.region_3d.lock_rotation and space.local_view is not None
-            and space.region_3d.view_perspective == 'ORTHO')
+    return (area.type == 'VIEW_3D' and space.region_3d is not None and space.region_3d.lock_rotation
+            and space.local_view is not None and space.region_3d.view_perspective == 'ORTHO')
+
+
+def _pattern_area(screen):
+    """この画面で開いた型紙の画面。設定の組み合わせだけで見分けると、人が自分で同じ設定に
+    した 3D ビューまで閉じてしまうので、開いたときに記録した位置と合うものに限る。"""
+    tag = screen.get(SCREEN_KEY)
+    if tag is None:
+        return None
+    for area in screen.areas:
+        if str(area.spaces.active.as_pointer()) == tag and _looks_like_pattern(area):
+            return area
+    return None
 
 
 def _window_region(area):
@@ -78,6 +94,7 @@ def open_pattern_view(context, curve):
         space.overlay.show_floor = False
         space.overlay.show_axis_x = False
         space.overlay.show_axis_y = False
+        context.screen[SCREEN_KEY] = str(space.as_pointer())
     finally:
         for o in context.view_layer.objects:
             o.select_set(o in selected)
@@ -87,20 +104,22 @@ def open_pattern_view(context, curve):
 
 def close_pattern_view(context):
     """型紙の画面を閉じる(隣の画面とつなげて 1 つに戻す)。閉じたら True。"""
-    for area in list(context.screen.areas):
-        if area.type == 'VIEW_3D' and _tagged(area):
-            space = area.spaces.active
-            with context.temp_override(area=area, region=_window_region(area)):
-                if space.local_view is not None:
-                    bpy.ops.view3d.localview(frame_selected=False)
-                space.region_3d.lock_rotation = False
-                bpy.ops.screen.area_close()
-            return True
-    return False
+    area = _pattern_area(context.screen)
+    if SCREEN_KEY in context.screen:
+        del context.screen[SCREEN_KEY]
+    if area is None:
+        return False
+    space = area.spaces.active
+    with context.temp_override(area=area, region=_window_region(area)):
+        if space.local_view is not None:
+            bpy.ops.view3d.localview(frame_selected=False)
+        space.region_3d.lock_rotation = False
+        bpy.ops.screen.area_close()
+    return True
 
 
 def has_pattern_view(screen):
-    return any(a.type == 'VIEW_3D' and _tagged(a) for a in screen.areas)
+    return _pattern_area(screen) is not None
 
 
 class MUSLIN_OT_pattern_view(bpy.types.Operator):
