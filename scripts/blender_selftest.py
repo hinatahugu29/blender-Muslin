@@ -1611,6 +1611,40 @@ def main():
     bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
+    section("布に重ねたモディファイア(Solidify / Subdivision)")
+    # 厚みを付けた出力は Blender の Solidify で足りる(ROADMAP の検討項目)。シミュレーションは
+    # モディファイアの前のメッシュで解き、重ねたモディファイアはその結果にかかる
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_set(1)
+    mod_cloth = make_grid("ModCloth", side=9, z=1.0)
+    mod_cloth.muslin.collision_enabled = False
+    sol = mod_cloth.modifiers.new("Thick", 'SOLIDIFY')
+    sol.thickness = 0.01
+    mod_cloth.modifiers.new("Smooth", 'SUBSURF').levels = 1
+    bpy.context.view_layer.objects.active = mod_cloth
+
+    def evaluated_low(o):
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = o.evaluated_get(dg)
+        me = ev.to_mesh()
+        out = (len(me.vertices), min((o.matrix_world @ v.co).z for v in me.vertices))
+        ev.to_mesh_clear()
+        return out
+
+    count0, low0 = evaluated_low(mod_cloth)
+    info = sim_state.start_simulation(mod_cloth, mod_cloth.muslin)
+    advance(12, start=2)
+    count1, low1 = evaluated_low(mod_cloth)
+    sim_state.stop_simulation(mod_cloth)
+    scene.frame_set(1)
+    check("モディファイアを重ねても、シミュレーションは元のメッシュ(81 頂点)で解く", info["vertices"] == 81,
+          str(info["vertices"]))
+    check("重ねた Solidify / Subdivision は、シミュレーションの結果に付いてくる",
+          count1 == count0 and count0 > 81 and low1 < low0 - 0.05,
+          f"評価後 {count0} 頂点 / 最低点 {low0:.3f} → {low1:.3f} m")
+
     section("サンプルシーン")
     samples = sorted((REPO_ROOT / "samples").glob("*.blend"))
     if not samples:
