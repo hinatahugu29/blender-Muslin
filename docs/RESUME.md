@@ -19,12 +19,12 @@ Blender を入れた環境なら、アドオン層もヘッドレスで検査で
 
 ```bash
 blender --background --factory-startup --python scripts/blender_selftest.py         # 411 項目(Blender 5.1)
-blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 246 項目(Curve Pattern)
+blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 252 項目(Curve Pattern)
 cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 83 件
 ```
 
 - Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 411 項目。4.2 は 5.x で
-  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 246 項目)
+  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 252 項目)
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)
 - **`samples/*.blend` は `blender_selftest.py` が全部開いて検査する。** 作業用の .blend を `samples/` に置かない
   (調査用のファイルは `scripts/spikes/data/` へ)
@@ -62,7 +62,7 @@ cd rust/cloth_core && cargo test --no-default-features --release                
    ピースの外周、Curve のゴム紐、詰め具合(Fill)、縫い目の折り返し、圧力の第 1 段階。良ければ作業ブランチを main へ
 2. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
 3. 自己衝突の高速化(約 3 万頂点で 146ms。目標の 100ms に届いていない)
-4. キルティングの続き: 表の線を動かしたら裏へ写した線も追従させる、1 点だけの留め
+4. キルティングの続き: 1 点だけの留め(今は短い線で代用)
 
 使い勝手の判断(2026-10-09、ROADMAP の M8): 型紙を伸ばしたら柄は実寸のまま広がるべきだが、**今は着手しない**
 (必要になったら声がかかる)。型紙オブジェクトの並べ方は今のままでよい。線は今のところ問題なし。

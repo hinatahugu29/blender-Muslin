@@ -1222,7 +1222,45 @@ def _test_quilt(cp, mesh_io):
     result = curve_update.update(cp.reconstruct(cloth), cp.current_outlines(bag), 0.01)
     check("内部線を動かすと Shape Update で追従する", result["status"] == curve_update.SHAPE_UPDATE,
           str(result["reasons"]))
+    # 裏へ写した線は表の線に従う(布の裏の筋も一緒に動く)
+    data = cp.reconstruct(cloth)
+    pair = next(q["quilt"] for q in cp.load_record(bag)["seams"] if q.get("quilt")
+                and len(next(ln for ln in cp.load_record(bag)["lines"] if ln["line_uid"] == q["quilt"][0])["uids"]) == 3)
+    copy_ring = next(r for r in data["rings"] if r["outline_uid"] == pair[1])
+    top_ring = next(r for r in data["rings"] if r["outline_uid"] == pair[0])
+    mid_top, mid_copy = top_ring["vertices"][len(top_ring["vertices"]) // 2], copy_ring["vertices"][len(copy_ring["vertices"]) // 2]
+    check("表の線を動かすと、写した線の頂点も同じだけ動く(Shape Update)",
+          abs(result["positions"][mid_top][1] - 0.21) < 1e-6
+          and abs((result["positions"][mid_copy] - data["positions"][mid_copy])[1] - 0.01) < 1e-6,
+          f"{result['positions'][mid_copy]} / 生成時 {data['positions'][mid_copy]}")
+    check("Curve 上の写した線は、縫い目を書き直すときに表の線に合わせ直す",
+          cp.apply_seams(bag) == []
+          and abs(cp.current_outlines(bag, derive=False)[pair[1]]["co"][1][1] - 0.21) < 1e-6)
+    check("合わせ直したあとは書き直さない(何度呼んでも Curve を変えない)", cp.sync_quilt_copies(bag) is False)
     line_sp.bezier_points[1].co.y = 0.2
+    cp.apply_seams(bag)
+
+    # 表の線に点を足すと Rebuild Required。Rebuild で写した線も点の数をそろえて写し直す
+    line_sp.bezier_points.add(1)
+    line_sp.bezier_points[3].co = (0.27, 0.2, 0.0)
+    line_sp.bezier_points[2].co = (0.21, 0.2, 0.0)
+    for bp in line_sp.bezier_points:
+        bp.handle_left_type = bp.handle_right_type = 'VECTOR'
+    check("表の線に点を足すと Rebuild Required", cp.structure_problems(bag) != [])
+    cloth, _w = cp.rebuild(bpy.context, bag, keep_pose=False)
+    cloth, _w = cp.stack_pieces(bpy.context, bag)
+    record = cp.load_record(bag)
+    pairs_now = [q["quilt"] for q in record["seams"] if q.get("quilt")]
+    lines_now = {ln["line_uid"]: ln for ln in record["lines"]}
+    check("Rebuild で写した線を写し直し、縫い目を結び直す(点の数がそろい、縫い目はすべて使える)",
+          all(len(lines_now[a]["uids"]) == len(lines_now[b]["uids"]) for a, b in pairs_now)
+          and len(pairs_now) == 2 and len(record["lines"]) == 4
+          and cp.apply_seams(bag) == [] and cp.status(bag)["problems"] == [],
+          str([(len(lines_now[a]["uids"]), len(lines_now[b]["uids"])) for a, b in pairs_now]))
+    co = np.array([tuple(v.co) for v in cloth.data.vertices])
+    gaps = np.array([np.linalg.norm(co[a] - co[b]) for a, b in mesh_io.build_seam_pairs(cloth)])
+    check("写し直したあとも、表と裏の線どうしはちょうど向かい合う",
+          np.allclose(gaps, cp.DEFAULT_BAG_GAP, atol=1e-6), f"{gaps.min() * 1000:.2f}〜{gaps.max() * 1000:.2f} mm")
 
     # 閉じて膨らませる(外周も縫う)
     top_uids = next(p_["uids"] for p_ in record["pieces"] if p_["piece_uid"] == panels[0])

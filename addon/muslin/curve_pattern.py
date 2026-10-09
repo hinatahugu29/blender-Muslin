@@ -371,8 +371,12 @@ def structure_problems(curve_obj, record=None):
     return reasons
 
 
-def current_outlines(curve_obj, record=None):
-    """今の Curve を `curve_update.update` に渡す形にする。{輪郭(ピース)の uid: 輪郭}"""
+def current_outlines(curve_obj, record=None, derive=True):
+    """今の Curve を `curve_update.update` に渡す形にする。{輪郭(ピース)・内部線の uid: 輪郭}
+
+    derive なら、Quilt Through が裏へ写した線は Curve 上の座標ではなく、表の線から導いた形にする
+    (表の線を動かせば、写した線も一緒に動く。`_quilt_copy_geometry`)。
+    """
     record = record or load_record(curve_obj)
     splines = read_splines(curve_obj)
     recorded = _recorded_shapes(record)
@@ -381,6 +385,9 @@ def current_outlines(curve_obj, record=None):
     for si, pid in taken.items():
         s = splines[si]
         out[pid] = {"uids": [u for u in s["uids"]], "co": s["co"], "hl": s["hl"], "hr": s["hr"]}
+    if derive:
+        for uid, geometry in _quilt_copy_geometry(record, out).items():
+            out[uid] = dict(out[uid], **geometry)
     return out
 
 
@@ -390,12 +397,14 @@ def _outlines_for_generation(curve_obj, record):
     lines = {ln["line_uid"]: ln for ln in record.get("lines", [])}
     taken, _new, _gone = curve_ids.match_pieces(_recorded_shapes(record), [s["uids"] for s in splines])
     gussets = gussets_of(record)
+    derived = _quilt_copy_geometry(record, current_outlines(curve_obj, record, derive=False))
     outlines = []
     for si, pid in sorted(taken.items(), key=lambda kv: kv[1]):
         s = splines[si]
         if pid in lines:
-            outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": s["co"], "hl": s["hl"],
-                             "hr": s["hr"], "hole_of": None, "line_of": lines[pid]["line_of"]})
+            geo = derived.get(pid, s)
+            outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": geo["co"], "hl": geo["hl"],
+                             "hr": geo["hr"], "hole_of": None, "line_of": lines[pid]["line_of"]})
             continue
         outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": s["co"], "hl": s["hl"],
                          "hr": s["hr"], "hole_of": recorded[pid]["hole_of"],
@@ -746,6 +755,7 @@ def apply_seams(curve_obj):
     record = load_record(curve_obj)
     if cloth is None or record is None or generation_record(cloth) is None:
         return []
+    sync_quilt_copies(curve_obj, record)
     mesh_data = reconstruct(cloth)
     # ゴム紐も Curve の区間で持つので、縫い目と一緒に書き直す(作り直していないので、
     # 布で直接付けたゴム紐も残す)
@@ -1003,7 +1013,10 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True,
         if why:
             warnings.append(why)
 
+    recreated = _recreate_quilt_copies(curve_obj, record)
     warnings += _adopt(curve_obj, record)
+    _rebind_quilt_copies(curve_obj, record, recreated)
+    sync_quilt_copies(curve_obj, record)
     if target_length is not None:
         record["target_edge_length"] = float(target_length)
     outlines = _outlines_for_generation(curve_obj, record)
@@ -1405,6 +1418,136 @@ def _whole_line(uids):
     return [[int(uids[0]), 0.0, int(uids[-1]), 0.0]]
 
 
+def _panel_shift(outlines, panels):
+    """表の型紙を裏の型紙へ重ねるずらし量(型紙の中心どうし。Stack Pieces と同じそろえ方)。"""
+    top, bottom = outlines[panels[0]], outlines[panels[1]]
+    t_segs = curve_gusset.outline_arcs(top["co"], top["hl"], top["hr"])[0]
+    b_segs = curve_gusset.outline_arcs(bottom["co"], bottom["hl"], bottom["hr"])[0]
+    return curve_gusset.centroid(b_segs) - curve_gusset.centroid(t_segs)
+
+
+def _quilt_pairs(record):
+    """キルティングの (表の線の uid, 写した線の uid, 縫い目)。"""
+    return [(int(s["quilt"][0]), int(s["quilt"][1]), s) for s in record["seams"] if s.get("quilt")]
+
+
+def _quilt_copy_geometry(record, outlines):
+    """Quilt Through が裏へ写した線の、表の線から導いた形 {写した線の uid: {"co", "hl", "hr"}}。
+
+    写した線は表の線に従う(表の線 + 型紙の中心のずれ)。表の線を動かせば、布の裏の筋も
+    一緒に動く。点の数が表と違う(表の線の点を足した・消した)ものは導けないので含めない
+    (そのときは表の線の構成の変化で Rebuild Required になり、Rebuild で写し直す)。
+    """
+    panels = bag_panels(record)
+    copies = {ln["line_uid"] for ln in record.get("lines", []) if ln.get("quilt_copy")}
+    if len(panels) != 2 or not copies or panels[0] not in outlines or panels[1] not in outlines:
+        return {}
+    shift = None
+    out = {}
+    for top_uid, copy_uid, _seam in _quilt_pairs(record):
+        top, copy = outlines.get(top_uid), outlines.get(copy_uid)
+        if copy_uid not in copies or top is None or copy is None or len(top["co"]) != len(copy["co"]):
+            continue
+        if shift is None:
+            shift = _panel_shift(outlines, panels)
+        out[copy_uid] = {k: np.asarray(top[k], dtype=np.float64) + shift for k in ("co", "hl", "hr")}
+    return out
+
+
+def sync_quilt_copies(curve_obj, record=None):
+    """Curve 上の写した線を、表の線から導いた形に書き直す(見た目を布に合わせる)。
+
+    編集モードの Curve には書けない(抜けるときに編集中のデータで上書きされる)ので何もしない。
+    形が合っていれば書かない(呼ぶたびに Curve を変えて、読み直しを繰り返さないように)。
+    戻り値: 書き直したか。
+    """
+    record = record or load_record(curve_obj)
+    if record is None or curve_obj.mode == 'EDIT' or not _quilt_pairs(record):
+        return False
+    raw = current_outlines(curve_obj, record, derive=False)
+    derived = _quilt_copy_geometry(record, raw)
+    if not derived:
+        return False
+    splines = read_splines(curve_obj)
+    taken, _new, _gone = curve_ids.match_pieces(_recorded_shapes(record), [s["uids"] for s in splines])
+    index_of = {pid: si for si, pid in taken.items()}
+    sx, sy, _sz = curve_obj.matrix_world.to_scale()
+    wrote = False
+    for uid, geo in derived.items():
+        si = index_of.get(uid)
+        if si is None:
+            continue
+        s = splines[si]
+        if max(np.abs(geo[k] - s[k]).max() for k in ("co", "hl", "hr")) < 1e-7:
+            continue
+        try:
+            for bp, c, l_, r_ in zip(curve_obj.data.splines[si].bezier_points, geo["co"], geo["hl"], geo["hr"]):
+                bp.handle_left_type = 'FREE'
+                bp.handle_right_type = 'FREE'
+                bp.co = (c[0] / sx, c[1] / sy, bp.co[2])
+                bp.handle_left = (l_[0] / sx, l_[1] / sy, bp.handle_left[2])
+                bp.handle_right = (r_[0] / sx, r_[1] / sy, bp.handle_right[2])
+        except AttributeError:
+            return wrote                # 書き込めない文脈(描画中など)
+        wrote = True
+    return wrote
+
+
+def _recreate_quilt_copies(curve_obj, record):
+    """点の数が表と食い違った写した線を、表の線から写し直す(Rebuild の前に呼ぶ)。
+
+    戻り値: [(縫い目, 足した spline の index)]。`_adopt` のあとに `_rebind_quilt_copies` へ渡す。
+    """
+    pairs = _quilt_pairs(record)
+    if not pairs:
+        return []
+    panels = bag_panels(record)
+    raw = current_outlines(curve_obj, record, derive=False)
+    if len(panels) != 2 or panels[0] not in raw or panels[1] not in raw:
+        return []
+    copies = {ln["line_uid"] for ln in record.get("lines", []) if ln.get("quilt_copy")}
+    stale = [(top_uid, copy_uid, seam) for top_uid, copy_uid, seam in pairs
+             if copy_uid in copies and top_uid in raw
+             and (copy_uid not in raw or len(raw[copy_uid]["co"]) != len(raw[top_uid]["co"]))]
+    if not stale:
+        return []
+    shift = _panel_shift(raw, panels)
+    splines = read_splines(curve_obj)
+    taken, _new, _gone = curve_ids.match_pieces(_recorded_shapes(record), [s["uids"] for s in splines])
+    doomed = sorted((si for si, pid in taken.items() if pid in {c for _t, c, _s in stale}), reverse=True)
+    for si in doomed:
+        curve_obj.data.splines.remove(curve_obj.data.splines[si])
+    out = []
+    for top_uid, _copy_uid, seam in stale:
+        top = raw[top_uid]
+        _add_bezier(curve_obj, np.asarray(top["co"]) + shift, np.asarray(top["hl"]) + shift,
+                    np.asarray(top["hr"]) + shift, False)
+        out.append((seam, len(curve_obj.data.splines) - 1))
+    return out
+
+
+def _rebind_quilt_copies(curve_obj, record, recreated):
+    """写し直した線を記録の内部線と縫い目に結び直す(`_adopt` のあと)。
+
+    キルティングの縫い目は常に線の端から端までなので、両側の区間を今の線の端で書き直す
+    (線の端に点を足すと、記録の区間は元の終点で止まったままになり、足した分が縫われなかった)。
+    """
+    if recreated:
+        splines = read_splines(curve_obj)
+        by_uids = {tuple(ln["uids"]): ln for ln in record.get("lines", [])}
+        for seam, si in recreated:
+            entry = by_uids.get(tuple(splines[si]["uids"]))
+            if entry is None:
+                continue
+            entry["quilt_copy"] = True
+            seam["quilt"] = [int(seam["quilt"][0]), int(entry["line_uid"])]
+    lines = {ln["line_uid"]: ln for ln in record.get("lines", [])}
+    for top_uid, copy_uid, seam in _quilt_pairs(record):
+        if top_uid in lines and copy_uid in lines:
+            seam["a"] = _whole_line(lines[top_uid]["uids"])
+            seam["b"] = _whole_line(lines[copy_uid]["uids"])
+
+
 def quilt_through(context, curve_obj):
     """表のピースの内部線を、裏のピースの同じ位置へ写し、表と裏の線どうしを縫い止める(キルティング)。
 
@@ -1423,9 +1566,7 @@ def quilt_through(context, curve_obj):
     if structure_problems(curve_obj, record):
         raise CurvePatternError("点の構成が変わっています。先に Rebuild してください")
     outlines = current_outlines(curve_obj, record)
-    top_segs = curve_gusset.outline_arcs(**{k: outlines[panels[0]][k] for k in ("co", "hl", "hr")})[0]
-    bottom_segs = curve_gusset.outline_arcs(**{k: outlines[panels[1]][k] for k in ("co", "hl", "hr")})[0]
-    shift = curve_gusset.centroid(bottom_segs) - curve_gusset.centroid(top_segs)
+    shift = _panel_shift(outlines, panels)
     tol = 0.25 * record["target_edge_length"]
 
     quilted = {tuple(s["quilt"])[0] for s in record["seams"] if s.get("quilt")}

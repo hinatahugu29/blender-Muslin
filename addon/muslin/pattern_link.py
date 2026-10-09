@@ -92,6 +92,9 @@ def _read_curve(obj, curve):
 
 
 def _solve_curve(obj, curve, record):
+    # 裏へ写した線の見た目を、表の線に合わせておく(布は表の線から導いた形で解くので、
+    # ここで書かなくても形は合う。編集モードでは書かない)
+    curve_pattern.sync_quilt_copies(curve, record)
     problems = curve_pattern.structure_problems(curve, record)
     if problems:
         return None, "Rebuild Required: " + " / ".join(problems[:3])
