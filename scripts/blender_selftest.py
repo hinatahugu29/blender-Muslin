@@ -76,6 +76,11 @@ def positions_of(obj):
     return [tuple(v.co) for v in obj.data.vertices]
 
 
+def _maxdiff(a, b):
+    import numpy as np
+    return float(np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)).max())
+
+
 def advance(frames, start=1):
     scene = bpy.context.scene
     for f in range(start, start + frames):
@@ -1266,6 +1271,40 @@ def main():
     res = bpy.ops.muslin.dress(max_steps=5)
     check("上限で打ち切っても保存する", res == {'FINISHED'} and rest_shape.is_dressed(piece),
           str(res))
+
+    # 着せた状態から再生しても、スクラブと決定性が保たれる(ROADMAP M7 の残件)
+    piece = make_dress_scene()
+    bpy.ops.muslin.dress()
+    scene = bpy.context.scene
+    dressed = positions_of(piece)
+    scene.frame_set(1)
+    bpy.ops.muslin.start_sim()
+    check("着せた状態から開始すると、着せた形から始まる", _maxdiff(positions_of(piece), dressed) < 1e-6)
+    first = {}
+    for f in range(2, 13):
+        scene.frame_set(f)
+        first[f] = positions_of(piece)
+    check("着せた状態から再生すると動く(重力で垂れる)", _maxdiff(first[12], dressed) > 1e-4,
+          f"{_maxdiff(first[12], dressed) * 1000:.2f} mm")
+    scene.frame_set(6)
+    check("着せた状態からの再生で、前のフレームへ戻すと同じ形(キャッシュ)",
+          _maxdiff(positions_of(piece), first[6]) < 1e-6, f"{_maxdiff(positions_of(piece), first[6]):.2e}")
+    for f in range(7, 13):
+        scene.frame_set(f)
+    check("戻ってから進め直しても同じ形(決定性)",
+          _maxdiff(positions_of(piece), first[12]) < 1e-6, f"{_maxdiff(positions_of(piece), first[12]):.2e}")
+    scene.frame_set(1)
+    check("先頭へ戻すと着せた形に戻る(型紙ではなく)", _maxdiff(positions_of(piece), dressed) < 1e-6,
+          f"着せた形から {_maxdiff(positions_of(piece), dressed) * 1000:.3f} mm / "
+          f"2 フレーム目から {_maxdiff(positions_of(piece), first[2]) * 1000:.3f} mm")
+    bpy.ops.muslin.stop_sim()
+    bpy.ops.muslin.start_sim()
+    for f in range(2, 13):
+        scene.frame_set(f)
+    check("止めて開始し直しても同じ結果(決定性)", _maxdiff(positions_of(piece), first[12]) < 1e-6,
+          f"{_maxdiff(positions_of(piece), first[12]):.2e}")
+    bpy.ops.muslin.stop_sim()
+    scene.frame_set(1)
 
     # ----------------------------------------------------------------
     section("ゴム紐(M7)")

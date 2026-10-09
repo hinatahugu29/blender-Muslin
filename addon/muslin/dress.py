@@ -223,6 +223,14 @@ class Dresser:
         if not self.state["sim"].is_finite():
             self.cancel()
             return False
+        # 再生を始めるときと同じ食い込みの解消を、保存する前に通す。着せ付けの最後は
+        # 衝突のあとに伸び制約を解き直すので、布がコライダーへ少し(最大 3mm)入ったまま
+        # 終わることがある。そのまま保存すると、再生を始めたときに untangle が押し出し、
+        # 先頭フレームの形が着せた形とずれた(スクラブで先頭へ戻すと 3mm 動いて見えた)
+        p = self.props
+        self.state["sim"].untangle(
+            mesh_io.UNTANGLE_ITERATIONS, p.self_collision_enabled, p.self_collision_thickness,
+            p.collision_enabled, p.collision_thickness, p.floor_enabled, p.floor_z)
         self.show()
         from . import pattern_link
         for m in self.members:
