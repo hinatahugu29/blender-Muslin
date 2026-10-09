@@ -167,6 +167,12 @@ pub const MARGIN_SAFETY: f64 = 1.5;
 /// 自分で区切ることで結合順を固定し、結果を決定的に保つ。
 const SELF_COLLISION_CHUNK: usize = 512;
 
+/// 三角形の空間ハッシュを並列に作り直すか(ほかの並列化と同じく頂点数の閾値で決める)。
+/// 頂点の空間ハッシュも同じ形で並列にしてみたが、もともと軽く(1 頂点 1 セル)差が出なかった
+fn hash_rebuild_in_parallel(vertices: usize, threshold: usize) -> bool {
+    vertices >= threshold
+}
+
 /// `untangle` で「動かされた」とみなす最小の移動量(m)。押し出したあとの丸め誤差
 /// (1e-12 m 程度)より十分大きく、意味のある食い込み(厚みの数 % = 0.1mm 以上)より十分小さい
 const UNTANGLE_SETTLED: f64 = 1e-7;
@@ -1990,7 +1996,11 @@ impl ClothSim {
         let mut pairs = std::mem::take(&mut self.self_tri_pairs);
 
         let t_hash = std::time::Instant::now();
-        hash.rebuild(&self.positions, &self.triangles, thickness);
+        if hash_rebuild_in_parallel(self.positions.len(), self.parallel_threshold) {
+            hash.rebuild_parallel(&self.positions, &self.triangles, thickness);
+        } else {
+            hash.rebuild(&self.positions, &self.triangles, thickness);
+        }
         self.timings.hash_rebuild += ms_since(t_hash);
 
         let n = self.positions.len();

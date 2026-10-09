@@ -605,6 +605,9 @@ pub fn barycentric_on_triangle(q: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f64, f64,
 ///
 /// セルの大きさは「最も大きい三角形が収まる」ように決める。こうすると
 /// 1つの三角形が跨るセルが軸あたり高々2つ(+ 余白で 3つ)に収まる。
+/// 三角形ハッシュを並列に作り直すときの塊の大きさ(三角形の数)
+const TRI_HASH_CHUNK: usize = 2048;
+
 pub struct TriangleHash {
     cell_size: f64,
     mask: usize,
@@ -666,6 +669,87 @@ impl TriangleHash {
             (self.cell_index(lo.x), self.cell_index(lo.y), self.cell_index(lo.z)),
             (self.cell_index(hi.x), self.cell_index(hi.y), self.cell_index(hi.z)),
         )
+    }
+
+    /// 三角形を入れ直す(並列)。表は `rebuild` とビット単位で同じになる。
+    ///
+    /// 三角形を決まった大きさの塊に分け、塊ごとに「どのセルに入るか」を並列に求めてから、
+    /// 塊の順に逐次で数えて並べる。各バケットの中の並びは三角形の番号順のままなので、
+    /// 引いたときに列挙される順番(= 押し出しの順番)も変わらない。
+    /// セルを求める計算(三角形ごとの範囲・ハッシュ)が作り直しの大半を占めていた。
+    pub fn rebuild_parallel(&mut self, positions: &[Vec3], triangles: &[[usize; 3]], margin: f64) {
+        use rayon::prelude::*;
+        let n = triangles.len();
+        if n == 0 {
+            self.rebuild(positions, triangles, margin);
+            return;
+        }
+        let extent = triangles
+            .par_chunks(TRI_HASH_CHUNK)
+            .map(|chunk| {
+                let mut e: f64 = 0.0;
+                for t in chunk {
+                    let (a, b, c) = (positions[t[0]], positions[t[1]], positions[t[2]]);
+                    e = e
+                        .max(a.x.max(b.x).max(c.x) - a.x.min(b.x).min(c.x))
+                        .max(a.y.max(b.y).max(c.y) - a.y.min(b.y).min(c.y))
+                        .max(a.z.max(b.z).max(c.z) - a.z.min(b.z).min(c.z));
+                }
+                e
+            })
+            .reduce(|| 0.0, f64::max);
+        self.cell_size = (extent + 2.0 * margin).max(1e-6);
+        let buckets = (2 * n).next_power_of_two().max(64);
+        self.mask = buckets - 1;
+
+        // 塊ごとに (バケット, セルのハッシュ, 三角形) を、逐次版と同じ順(三角形 → x → y → z)で
+        let this = &*self;
+        let cells: Vec<Vec<(u32, u32, u32)>> = triangles
+            .par_chunks(TRI_HASH_CHUNK)
+            .enumerate()
+            .map(|(k, chunk)| {
+                let mut out = Vec::with_capacity(chunk.len() * 4);
+                for (j, t) in chunk.iter().enumerate() {
+                    let ti = (k * TRI_HASH_CHUNK + j) as u32;
+                    let (lo, hi) = this.cell_range(positions, *t, margin);
+                    for x in lo.0..=hi.0 {
+                        for y in lo.1..=hi.1 {
+                            for z in lo.2..=hi.2 {
+                                let hash = SpatialHash::hash_cell((x, y, z));
+                                out.push((((hash as usize) & this.mask) as u32, hash as u32, ti));
+                            }
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+
+        self.starts.clear();
+        self.starts.resize(buckets + 1, 0);
+        for chunk in &cells {
+            for &(b, _, _) in chunk {
+                self.starts[b as usize + 1] += 1;
+            }
+        }
+        for i in 0..buckets {
+            self.starts[i + 1] += self.starts[i];
+        }
+        let total = self.starts[buckets] as usize;
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&self.starts[..buckets]);
+        self.entries.clear();
+        self.entries.resize(total, 0);
+        self.keys.clear();
+        self.keys.resize(total, 0);
+        for chunk in &cells {
+            for &(b, key, ti) in chunk {
+                let slot = self.cursor[b as usize] as usize;
+                self.entries[slot] = ti;
+                self.keys[slot] = key;
+                self.cursor[b as usize] += 1;
+            }
+        }
     }
 
     /// 三角形を入れ直す。`margin` は自己衝突の厚み。
@@ -778,6 +862,40 @@ impl TriangleHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 並列に作り直した三角形ハッシュは、逐次版と表がビット単位で同じ
+    /// (列挙の順番 = 自己衝突の押し出しの順番が変わらない)
+    #[test]
+    fn triangle_hash_parallel_rebuild_matches_sequential() {
+        // 波打たせた格子(塊の境目をまたぐよう、塊の大きさより多くの三角形)
+        let n = 61;
+        let mut positions = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                let (fx, fy) = (x as f64 * 0.01, y as f64 * 0.01);
+                positions.push(Vec3::new(fx, fy, 0.02 * (fx * 40.0).sin() * (fy * 30.0).cos()));
+            }
+        }
+        let mut triangles = Vec::new();
+        for y in 0..n - 1 {
+            for x in 0..n - 1 {
+                let i = y * n + x;
+                triangles.push([i, i + 1, i + n + 1]);
+                triangles.push([i, i + n + 1, i + n]);
+            }
+        }
+        assert!(triangles.len() > 2 * TRI_HASH_CHUNK);
+        let mut seq = TriangleHash::new();
+        seq.rebuild(&positions, &triangles, 0.004);
+        let mut par = TriangleHash::new();
+        par.rebuild_parallel(&positions, &triangles, 0.004);
+        assert_eq!(seq.cell_size.to_bits(), par.cell_size.to_bits());
+        assert_eq!(seq.mask, par.mask);
+        assert_eq!(seq.starts, par.starts);
+        assert_eq!(seq.entries, par.entries);
+        assert_eq!(seq.keys, par.keys);
+
+    }
 
     fn unit_quad() -> (Vec<Vec3>, Vec<[usize; 3]>) {
         let verts = vec![
