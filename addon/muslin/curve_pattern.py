@@ -185,6 +185,14 @@ _NESTED_MESSAGE = ("輪郭が XY 平面で 3 重以上に重なっています(Z
                    "型紙のピースは XY 平面に重ならないよう並べてください(穴は 1 段だけ作れます)")
 
 
+# 穴の面積が外周のこの割合を超えたら、重ねて描いた 2 枚とみなす(縁が数 % しかない穴は
+# 型紙としてまず無い)
+STACKED_HOLE_RATIO = 0.9
+_STACKED_MESSAGE = ("同じ大きさの輪郭が XY 平面で重なっています(Z 方向に重ねて描いた 2 枚は、"
+                    "穴あきの 1 枚と解釈されてしまいます)。ピースは XY 平面に並べて描き、"
+                    "袋にするなら Stack Pieces for Bag で重ねてください")
+
+
 def _classify_holes(splines):
     """閉じた spline ごとに、外周か穴か(穴なら外側の spline の index)を決める。
 
@@ -205,6 +213,10 @@ def _classify_holes(splines):
     for i, p in parent.items():
         if p is not None and parent.get(p) is not None:
             raise CurvePatternError(_NESTED_MESSAGE)
+        # 外周とほぼ同じ大きさの穴は、Z 方向に重ねて描いた 2 枚とみなす(型紙は XY 平面で
+        # 見るので、そのままでは「縁の細い穴あきの 1 枚」になってしまう)
+        if p is not None and _polygon_area(polys[i]) > STACKED_HOLE_RATIO * _polygon_area(polys[p]):
+            raise CurvePatternError(_STACKED_MESSAGE)
     return parent
 
 

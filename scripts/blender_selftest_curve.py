@@ -1145,6 +1145,44 @@ def main():
           _raises(lambda: cp.stack_pieces(bpy.context, one)))
     check("1 枚ではマチは足せない(poll)", bpy.ops.muslin.curve_gusset_add.poll() is False)
 
+    # 同じ大きさの 2 枚を Z 方向に重ねて描くと、穴あきの 1 枚ではなく、理由つきで止める
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    cu_z = bpy.data.curves.new("ZStack", 'CURVE')
+    cu_z.dimensions = '3D'
+    for z0, inset in ((0.0, 0.0), (0.1, 0.002)):
+        sp = cu_z.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points, [(inset, inset), (0.3 - inset, inset),
+                                                 (0.3 - inset, 0.3 - inset), (inset, 0.3 - inset)]):
+            pt.co = (x, y, z0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    zstack = bpy.data.objects.new("ZStack", cu_z)
+    bpy.context.scene.collection.objects.link(zstack)
+    bpy.context.view_layer.objects.active = zstack
+    try:
+        cp.initialize(zstack, 0.02)
+        z_msg = ""
+    except cp.CurvePatternError as exc:
+        z_msg = str(exc)
+    check("Z 方向に重ねた同じ大きさの 2 枚は、重ねて描いたと伝えて止める", "Z 方向に重ねて" in z_msg, z_msg)
+    cu_h = bpy.data.curves.new("Frame", 'CURVE')
+    cu_h.dimensions = '2D'
+    for inset in (0.0, 0.1):
+        sp = cu_h.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points, [(inset, inset), (0.3 - inset, inset),
+                                                 (0.3 - inset, 0.3 - inset), (inset, 0.3 - inset)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    frame = bpy.data.objects.new("Frame", cu_h)
+    bpy.context.scene.collection.objects.link(frame)
+    bpy.context.view_layer.objects.active = frame
+    rec = cp.initialize(frame, 0.02)
+    check("ふつうの大きさの穴(額縁)は穴のまま",
+          sum(1 for p_ in rec["pieces"] if p_["hole_of"] is not None) == 1)
+
     _test_gusset(cp, mesh_io, rest_shape)
     _test_quilt(cp, mesh_io)
 
