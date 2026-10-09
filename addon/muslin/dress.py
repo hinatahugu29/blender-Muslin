@@ -151,7 +151,7 @@ class Dresser:
             self.state, self.props, self.dt, self.state["start_frame"] + self.steps
         )
         now = np.asarray(self.state["sim"].get_positions())
-        moved = np.linalg.norm((now - self._last).reshape(-1, 3), axis=1)
+        moved = self._moved(now, self._last)
         self._last = now
         self.speed = float(moved.max()) / self.dt if moved.size else 0.0
         # 縫い目が閉じ切るまでは、止まって見えても落ち着いたことにしない
@@ -160,6 +160,10 @@ class Dresser:
         else:
             self.calm = 0
         return self.done
+
+    def _moved(self, now, last):
+        """頂点ごとの、1 ステップの移動量。"""
+        return np.linalg.norm((now - last).reshape(-1, 3), axis=1)
 
     def poll_pattern(self):
         """型紙オブジェクトの編集を流す(M8)。流したら True。
@@ -252,6 +256,16 @@ class Dresser:
 # 一気に膨らみ、勢いで目標を大きく越えた(目標 2.5L に対し 15 ステップで 4.3L)。
 # 越えた分は吸っても戻らないので、圧力が目標に追いつく速さで上げる
 FILL_RAMP_STEPS = 48
+
+
+def rigid_align(points, ref):
+    """points を、ref に最もよく重なるよう剛体として動かした座標(Kabsch 法。形は変えない)。"""
+    pc, qc = points.mean(axis=0), ref.mean(axis=0)
+    h = (points - pc).T @ (ref - qc)
+    u, _s, vt = np.linalg.svd(h)
+    d = 1.0 if np.linalg.det(vt.T @ u.T) >= 0.0 else -1.0
+    rot = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    return (points - pc) @ rot.T + qc
 
 
 class BagDresser(Dresser):
@@ -374,14 +388,22 @@ class BagDresser(Dresser):
         ref = self._origin
         if now.shape != ref.shape or len(now) < 3:
             return
-        pc, qc = now.mean(axis=0), ref.mean(axis=0)
-        h = (now - pc).T @ (ref - qc)
-        u, _s, vt = np.linalg.svd(h)
-        d = 1.0 if np.linalg.det(vt.T @ u.T) >= 0.0 else -1.0
-        rot = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
-        aligned = (now - pc) @ rot.T + qc
+        aligned = rigid_align(now, ref)
         if np.isfinite(aligned).all():
             self.state["sim"].set_positions(aligned.ravel().tolist())
+
+    def _moved(self, now, last):
+        """袋の頂点ごとの移動量から、袋全体の回転と平行移動(剛体の動き)を除いたもの。
+
+        重力 0 の袋は、圧力の計算の誤差で全体がゆっくり回り続ける(マチのある 30cm 角の
+        クッションで 17cm/s)。形はとうに落ち着いていても最大速度が下がらず、上限まで
+        回り続けていた。形の変化だけを見て、落ち着いたかを決める(向きは確定するときに戻す)。
+        """
+        now3 = np.asarray(now, dtype=np.float64).reshape(-1, 3)
+        last3 = np.asarray(last, dtype=np.float64).reshape(-1, 3)
+        if now3.shape != last3.shape or len(now3) < 3 or not np.isfinite(now3).all():
+            return super()._moved(now, last)
+        return np.linalg.norm(rigid_align(now3, last3) - last3, axis=1)
 
     def finish(self):
         if self.state["sim"].is_finite():
