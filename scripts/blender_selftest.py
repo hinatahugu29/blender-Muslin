@@ -1719,6 +1719,34 @@ def main():
     check("隠したフィールドは足さない", abs(moved_hidden) < 1e-6 and wind_hidden == (0.0, 0.0, 0.0),
           str(wind_hidden))
 
+    # 部位ごとの生地と Force Field の風を使った布もベイクできる(ベイクも同じ組み立て・同じ風)
+    from muslin import bake_ops as _bake
+    clear_scene()
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, 12
+    scene.frame_set(1)
+    bo = make_grid("BakeParts", side=9, z=1.0)
+    bo.muslin.collision_enabled = False
+    bo.muslin.use_force_fields = True
+    denim = bpy.data.materials.new("Denim")
+    denim.muslin_fabric.enabled = True
+    denim.muslin_fabric.fabric_preset = 'DENIM'
+    bo.data.materials.append(denim)
+    bpy.ops.object.effector_add(type='WIND', rotation=(0.0, math.radians(90.0), 0.0))
+    bpy.context.active_object.field.strength = 2.0
+    for o_ in scene.objects:
+        o_.select_set(o_ is bo)
+    bpy.context.view_layer.objects.active = bo
+    x_start = sum(v.co.x for v in bo.data.vertices) / len(bo.data.vertices)
+    res = bpy.ops.muslin.bake()
+    scene.frame_set(12)
+    x_end = sum(v.co.x for v in bo.data.vertices) / len(bo.data.vertices)
+    check("部位ごとの生地と Force Field の風を使った布もベイクでき、風で流れる",
+          res == {'FINISHED'} and _bake.is_baked(bo) and x_end > x_start + 0.05,
+          f"{res} / 平均 x {x_start:.3f} → {x_end:.3f}")
+    _bake.free_bake(bo)
+    scene.frame_set(1)
+
     section("布に重ねたモディファイア(Solidify / Subdivision)")
     # 厚みを付けた出力は Blender の Solidify で足りる(ROADMAP の検討項目)。シミュレーションは
     # モディファイアの前のメッシュで解き、重ねたモディファイアはその結果にかかる

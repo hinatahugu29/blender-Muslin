@@ -1375,6 +1375,21 @@ def _test_quilt(cp, mesh_io):
     for o in scene.objects:
         o.select_set(o is bag)
     bpy.context.view_layer.objects.active = bag
+    # マチと組み合わせる: 表を広げても Shape Update で追従し、マチを外してもキルティングは残る
+    for o_ in scene.objects:
+        o_.select_set(o_ is bag)
+    bpy.context.view_layer.objects.active = bag
+    cp.add_gusset(bpy.context, bag, 0.06)
+    combo_cloth = cp.cloth_of(bag)
+    combo = curve_update.update(cp.reconstruct(combo_cloth), cp.current_outlines(bag), 0.01)
+    check("マチとキルティングを両方付けても、Shape Update できる", combo["status"] == curve_update.SHAPE_UPDATE,
+          str(combo["reasons"]))
+    cp.remove_gusset(bpy.context, bag)
+    check("キルティングがあってもマチを外せ、キルティングと外周の縫い目は残る",
+          sorted(s_["name"] for s_ in cp.load_record(bag)["seams"]) == ["Quilt 1", "Quilt 2", "Rim"]
+          and cp.apply_seams(bag) == [] and cp.status(bag)["problems"] == [],
+          str([s_["name"] for s_ in cp.load_record(bag)["seams"]]))
+
     res = bpy.ops.muslin.curve_quilt_remove()
     record = cp.load_record(bag)
     check("Remove Quilting で、キルティングの縫い目と写した線が消える",

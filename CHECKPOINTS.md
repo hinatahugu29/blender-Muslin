@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 257 項目、2026-10-10)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 259 項目、2026-10-10)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
