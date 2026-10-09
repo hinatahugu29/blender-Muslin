@@ -20,7 +20,7 @@ Blender を入れた環境なら、アドオン層もヘッドレスで検査で
 ```bash
 blender --background --factory-startup --python scripts/blender_selftest.py         # 423 項目(Blender 5.1)
 blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 254 項目(Curve Pattern)
-cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 90 件
+cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 91 件
 ```
 
 - Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 423 項目、4.2 で 405 項目。4.2 は 5.x で
@@ -61,7 +61,8 @@ cd rust/cloth_core && cargo test --no-default-features --release                
 1. **GUI 確認**([CHECKPOINTS.md](../CHECKPOINTS.md) の 2026-10-08〜09 の項目)— キルティング、マチ、選択の連動、
    ピースの外周、Curve のゴム紐、詰め具合(Fill)、縫い目の折り返し、圧力の第 1 段階。良ければ作業ブランチを main へ
 2. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
-3. 自己衝突の高速化(約 3 万頂点で 146ms。目標の 100ms に届いていない)
+3. 自己衝突の高速化(約 3 万頂点で 123ms、Catch Fast Motion ありで 141ms。目標の 100ms まで。
+   結果を変えずに削れる分は取った。残りは解く順番を変える判断か GPU)
 4. キルティングの続き: 1 点だけの留め(今は短い線で代用)
 
 使い勝手の判断(2026-10-09、ROADMAP の M8): 型紙を伸ばしたら柄は実寸のまま広がるべきだが、**今は着手しない**
