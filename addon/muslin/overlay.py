@@ -282,13 +282,13 @@ def curve_overlay_geometry(curve, cloth):
     if record is None:
         return {"lines": [], "labels": []}
     splines = curve_pattern.read_splines(curve)
-    recorded = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    recorded = curve_pattern._recorded_shapes(record)
     from . import curve_ids
     taken, _new, _gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
-    ring_of = {}                         # 点 uid → (その輪郭の区間、uid の並び)
+    ring_of = {}                         # 点 uid → (その輪郭・内部線の区間、uid の並び)
     for si, pid in taken.items():
         s = splines[si]
-        segs = curve_eval.segments(s["co"], s["hl"], s["hr"], True)
+        segs = curve_eval.segments(s["co"], s["hl"], s["hr"], s["cyclic"])
         for u in s["uids"]:
             if u is not None:
                 ring_of[u] = (segs, list(s["uids"]), si)
@@ -464,7 +464,9 @@ def curve_outline_geometry(cloth):
     for ring in data["rings"]:
         v = np.asarray(ring["vertices"], dtype=np.int64)
         if len(v) >= 2:
-            pairs.append(np.stack([v, np.roll(v, -1)], axis=1))
+            ends = np.roll(v, -1)
+            pair = np.stack([v, ends], axis=1)
+            pairs.append(pair[:-1] if ring.get("open") else pair)    # 内部線は閉じない
     if not pairs:
         return []
     pairs = np.concatenate(pairs).ravel()

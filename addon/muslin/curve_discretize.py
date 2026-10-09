@@ -11,6 +11,9 @@
   輪郭に近すぎる格子点は落とす
 - 輪郭の辺が三角形の辺として残らなければ(細い凹みなど)失敗として理由を返す。
   黙って壊れた三角形分割を作らない
+- 内部線(ピースの内側の開いた Bezier。キルティングの縫い線)も、輪郭と同じく区間ごとに
+  等分して頂点にし、線の辺が三角形の辺として残るようにする(線の近くの格子点は落とす)。
+  rings に `open` を立てて入れる(輪郭と同じ区間・弧長比の約束なので、Shape Update も同じ)
 """
 
 import numpy as np
@@ -51,6 +54,34 @@ def _ring_points(outline, h):
         xy.append(seg.point_at(frac))
         seg_start += [uids[k]] * m
         seg_end += [uids[(k + 1) % n]] * m
+        us.append(frac)
+        counts.append(m)
+        lengths.append(seg.length)
+    return (np.vstack(xy), np.array(seg_start), np.array(seg_end),
+            np.concatenate(us), counts, lengths)
+
+
+def _line_points(line, h):
+    """1 本の内部線(開いた輪郭)の頂点。始点から終点まで、終点も頂点にする。
+
+    戻り値: `_ring_points` と同じ形。終点の頂点は最後の区間の弧長比 1 として持つ。
+    """
+    uids = line["uids"]
+    n = len(uids)
+    if n < 2:
+        raise DiscretizeError(f"内部線 {line['piece_uid']} の点が 2 つ未満です")
+    segs = curve_eval.segments(line["co"], line["hl"], line["hr"], False)
+    xy, seg_start, seg_end, us, counts, lengths = [], [], [], [], [], []
+    for k, seg in enumerate(segs):
+        if seg.length <= 1e-12:
+            raise DiscretizeError(f"内部線 {line['piece_uid']} に長さ 0 の区間があります")
+        m = max(1, int(round(seg.length / h)))
+        frac = np.arange(m, dtype=np.float64) / m
+        if k == len(segs) - 1:
+            frac = np.append(frac, 1.0)            # 終点
+        xy.append(seg.point_at(frac))
+        seg_start += [uids[k]] * len(frac)
+        seg_end += [uids[k + 1]] * len(frac)
         us.append(frac)
         counts.append(m)
         lengths.append(seg.length)
@@ -122,9 +153,10 @@ def _grid(boundary_xy):
 def discretize(outlines, target_length):
     """輪郭の一覧から派生データを作る。
 
-    outlines: [{"piece_uid", "uids", "co", "hl", "hr", "hole_of", "grid"(任意)}, ...]
+    outlines: [{"piece_uid", "uids", "co", "hl", "hr", "hole_of", "grid"(任意), "line_of"(任意)}, ...]
       hole_of が None なら外周、ピースの piece_uid を入れればその穴。
-      grid が真の外周(マチ)は、長方形なら縦横の格子で分ける(`_grid`)
+      grid が真の外周(マチ)は、長方形なら縦横の格子で分ける(`_grid`)。
+      line_of にピースの piece_uid を入れれば、そのピースの内部線(開いた Bezier。piece_uid は線の uid)
     戻り値: dict(positions, triangles, boundary, seg_start, seg_end, u, piece, rings,
                  segment_counts, segment_lengths, target_length, algorithm_version)
     """
@@ -132,7 +164,7 @@ def discretize(outlines, target_length):
     if h <= 0:
         raise DiscretizeError("目標辺長は正の値にしてください")
 
-    outers = [o for o in outlines if o.get("hole_of") is None]
+    outers = [o for o in outlines if o.get("hole_of") is None and o.get("line_of") is None]
     if not outers:
         raise DiscretizeError("外周の輪郭がありません")
 
@@ -144,7 +176,8 @@ def discretize(outlines, target_length):
 
     for outer in outers:
         pid = outer["piece_uid"]
-        holes = [o for o in outlines if o.get("hole_of") == pid]
+        holes = [o for o in outlines if o.get("hole_of") == pid and o.get("line_of") is None]
+        lines = [o for o in outlines if o.get("line_of") == pid]
         ring_defs = [outer] + holes
         piece_xy, ring_slices = [], []
         start = 0
@@ -153,9 +186,20 @@ def discretize(outlines, target_length):
             piece_xy.append(xy)
             ring_slices.append((o, start, len(xy), ss, se, uu, counts, lengths))
             start += len(xy)
-        boundary_xy = np.vstack(piece_xy)
+        line_xy = []
+        for o in lines:
+            xy, ss, se, uu, counts, lengths = _line_points(o, h)
+            if not delaunay2d.point_in_rings(xy, piece_xy).all():
+                raise DiscretizeError(f"ピース {pid} の内部線が、ピースの外(または穴の中)に出ています")
+            if (delaunay2d.distance_to_rings(xy, piece_xy) < INTERIOR_MARGIN * h).any():
+                raise DiscretizeError(f"ピース {pid} の内部線が輪郭に近すぎます"
+                                      "(目標辺長の 6 割より離してください)")
+            line_xy.append(xy)
+            ring_slices.append((o, start, len(xy), ss, se, uu, counts, lengths))
+            start += len(xy)
+        boundary_xy = np.vstack(piece_xy + line_xy)
 
-        grid = _grid(boundary_xy) if outer.get("grid") and not holes else None
+        grid = _grid(boundary_xy) if outer.get("grid") and not holes and not lines else None
         if grid is not None:
             lattice, tris = grid
             pts = np.vstack([boundary_xy, lattice]) if len(lattice) else boundary_xy
@@ -165,6 +209,9 @@ def discretize(outlines, target_length):
             lattice = lattice[delaunay2d.point_in_rings(lattice, piece_xy)]
             if len(lattice):
                 far = delaunay2d.distance_to_rings(lattice, piece_xy) >= INTERIOR_MARGIN * h
+                lattice = lattice[far]
+            if len(lattice) and line_xy:
+                far = delaunay2d.distance_to_rings(lattice, line_xy, closed=False) >= INTERIOR_MARGIN * h
                 lattice = lattice[far]
 
             pts = np.vstack([boundary_xy, lattice]) if len(lattice) else boundary_xy
@@ -180,10 +227,15 @@ def discretize(outlines, target_length):
         for a, b, c in tris:
             for e in ((a, b), (b, c), (c, a)):
                 edge_set.add((min(e), max(e)))
-        for (_o, s0, cnt, *_rest) in ring_slices:
-            for k in range(cnt):
+        for (o, s0, cnt, *_rest) in ring_slices:
+            is_line = o.get("line_of") is not None
+            for k in range(cnt - 1 if is_line else cnt):
                 a, b = s0 + k, s0 + (k + 1) % cnt
                 if (min(a, b), max(a, b)) not in edge_set:
+                    if is_line:
+                        raise DiscretizeError(
+                            f"ピース {pid} の内部線の辺が三角形分割に残りませんでした"
+                            "(線が交差しているか、線どうしが近すぎます)")
                     raise DiscretizeError(
                         f"ピース {pid} の輪郭の辺が三角形分割に残りませんでした"
                         "(輪郭が細すぎるか、自己交差しています)")
@@ -205,19 +257,26 @@ def discretize(outlines, target_length):
 
         for (o, s0, cnt, _ss, _se, uu, counts, lengths) in ring_slices:
             uids = o["uids"]
-            seg_index = np.repeat(np.arange(len(counts)), counts)
-            rings.append({
+            is_line = o.get("line_of") is not None
+            per_segment = list(counts)
+            if is_line:
+                per_segment[-1] += 1                   # 終点の頂点は最後の区間に数える
+            seg_index = np.repeat(np.arange(len(counts)), per_segment)
+            ring = {
                 "piece_uid": pid,
                 "outline_uid": o["piece_uid"],
-                "hole": o.get("hole_of") is not None,
+                "hole": (o.get("hole_of") is not None) and not is_line,
                 "uids": list(uids),
                 "vertices": np.arange(s0, s0 + cnt) + offset,
                 "s": seg_index + uu,
                 "segment_total": len(counts),
-            })
-            for k, uid in enumerate(uids):
-                segment_counts[int(uid)] = counts[k]
-                segment_lengths[int(uid)] = lengths[k]
+            }
+            if is_line:
+                ring["open"] = True
+            rings.append(ring)
+            for uid, count, length in zip(uids, counts, lengths):   # 内部線の終点には区間が無い
+                segment_counts[int(uid)] = count
+                segment_lengths[int(uid)] = length
         offset += len(pts)
 
     return {
@@ -273,7 +332,7 @@ def boundary_selection(data, segments, points):
         for ring in data["rings"]:
             v = ring["vertices"]
             n = len(v)
-            for k in range(n):
+            for k in range(n - 1 if ring.get("open") else n):
                 a = int(v[k])
                 if (int(seg_start[a]), int(seg_end[a])) in segments:
                     edges.append((a, int(v[(k + 1) % n])))
@@ -291,6 +350,24 @@ def boundary_selection(data, segments, points):
 # seam の区間 → 境界の辺
 # ---------------------------------------------------------------------------
 
+def _expand_open(ring, start_uid, t0, end_uid, t1):
+    """内部線(開いた線)の区間を辺に展開する。回り込まない。終点が始点より手前なら逆向きに読む。"""
+    uids = ring["uids"]
+    s0 = uids.index(start_uid) + t0
+    s1 = uids.index(end_uid) + t1
+    if s1 < s0:
+        s0, s1 = s1, s0
+    if s1 - s0 < 1e-9:
+        s0, s1 = 0.0, float(ring["segment_total"])     # 始点 = 終点なら線全体
+    s, v = ring["s"], ring["vertices"]
+    eps = 1e-9
+    out = []
+    for k in range(len(v) - 1):
+        if s[k] >= s0 - eps and s[k + 1] <= s1 + eps:
+            out.append((int(v[k]), int(v[k + 1])))
+    return out
+
+
 def expand_range(ring, start_uid, t0, end_uid, t1):
     """CurveRange (start_uid, t0, end_uid, t1) を、境界の辺(頂点番号の組)に展開する。
 
@@ -302,6 +379,8 @@ def expand_range(ring, start_uid, t0, end_uid, t1):
     uids = ring["uids"]
     if start_uid not in uids or end_uid not in uids:
         return []
+    if ring.get("open"):
+        return _expand_open(ring, start_uid, t0, end_uid, t1)
     total = ring["segment_total"]
     s0 = uids.index(start_uid) + t0
     s1 = uids.index(end_uid) + t1

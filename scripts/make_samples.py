@@ -698,6 +698,81 @@ def sample_gusset_cushion():
     save("08_gusset_cushion.blend")
 
 
+def sample_quilted():
+    """内部線で縫い止めたキルティングのクッション(ダウンジャケットの筋)と、マチ付きで線を留めたもの(M11)。"""
+    from muslin import curve_pattern
+
+    print("09_quilted: 内部線のキルティング", flush=True)
+    scene = fresh_scene(frame_end=120)
+
+    def poly(cu, pts, cyclic):
+        sp = cu.splines.new('BEZIER')
+        sp.bezier_points.add(len(pts) - 1)
+        for bp, (x, y) in zip(sp.bezier_points, pts):
+            bp.co = (x, y, 0.0)
+            bp.handle_left_type = bp.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = cyclic
+
+    def make(name, lines, location, cloth_location, gusset=None):
+        cu = bpy.data.curves.new(name, 'CURVE')
+        cu.dimensions = '2D'
+        for x0 in (0.0, 0.5):
+            poly(cu, [(x0, 0.0), (x0 + 0.36, 0.0), (x0 + 0.36, 0.36), (x0, 0.36)], True)
+        for pts in lines:
+            poly(cu, pts, False)
+        curve = bpy.data.objects.new(name, cu)
+        scene.collection.objects.link(curve)
+        curve.location = location
+        bpy.context.view_layer.objects.active = curve
+        curve_pattern.initialize(curve, 0.01)
+        record = curve_pattern.load_record(curve)
+        if gusset:
+            cloth, _w = curve_pattern.add_gusset(bpy.context, curve, gusset)
+        else:
+            cloth, _w = curve_pattern.stack_pieces(bpy.context, curve)
+            panels = curve_pattern.bag_panels(record)
+            top = next(p["uids"] for p in record["pieces"] if p["piece_uid"] == panels[0])
+            bottom = next(p["uids"] for p in record["pieces"] if p["piece_uid"] == panels[1])
+            curve_pattern.add_seam(curve, [(top[0], 0.0, top[0], 0.0)], [(bottom[0], 0.0, bottom[0], 0.0)],
+                                   name="Rim")
+        cloth, _w, _n = curve_pattern.quilt_through(bpy.context, curve)
+        cloth.name = name.replace("_Pattern", "")
+        cloth.location = cloth_location
+        return _close_quilted(scene, cloth)
+
+    # 3 本の筋(間隔 9cm)で 4 つの部屋に分けた平たいクッション
+    make("Puffer_Pattern", [[(0.02, y), (0.34, y)] for y in (0.09, 0.18, 0.27)],
+         (0.0, 1.0, 0.0), (0.0, -0.6, 0.0))
+    # マチ付きの箱に、十字の短い線で留めたボタン留め(タフティング)
+    tufts = [[(x - 0.015, y), (x + 0.015, y)] for x in (0.12, 0.24) for y in (0.12, 0.24)]
+    make("Tufted_Pattern", tufts, (1.4, 1.0, 0.0), (1.0, -0.6, 0.0), gusset=0.08)
+
+    add_note("Puffer / Tufted: 内側の開いた線を Quilt Through で縫い止め、Close Bag で膨らませた",
+             location=(0.6, 0.6, 0.6), size=0.05)
+    add_camera_and_light((0.6, -0.4, 0.0), distance=2.0, height=1.4)
+    save("09_quilted.blend")
+
+
+def _close_quilted(scene, cloth):
+    mark_as_cloth(cloth)
+    props = cloth.muslin
+    props.collision_enabled = False
+    props.self_collision_enabled = False
+    props.seam_close_frames = 10
+    props.pressure = 150.0
+    props.quality = 'HIGH'
+    smooth(cloth)
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    closed = bpy.ops.muslin.close_bag()
+    bpy.context.view_layer.update()
+    props.floor_enabled = True
+    props.floor_z = min((cloth.matrix_world @ v.co).z for v in cloth.data.vertices) - 0.002
+    print(f"  {cloth.name}: {len(cloth.data.vertices)} 頂点 / Close Bag {closed}", flush=True)
+    return cloth
+
+
 SAMPLES = {
     "01": sample_drape,
     "02": sample_flag,
@@ -707,6 +782,7 @@ SAMPLES = {
     "06": sample_curve_pattern,
     "07": sample_curve_arrange,
     "08": sample_gusset_cushion,
+    "09": sample_quilted,
 }
 
 

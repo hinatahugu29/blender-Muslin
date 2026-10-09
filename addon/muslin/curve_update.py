@@ -48,9 +48,10 @@ def boundary_positions(mesh, outlines):
             raise ValueError(f"輪郭 {ring['outline_uid']} が今の Curve にありません")
         uids = list(current["uids"])
         n = len(uids)
-        segs = curve_eval.segments(current["co"], current["hl"], current["hr"], True)
+        closed = not ring.get("open")
+        segs = curve_eval.segments(current["co"], current["hl"], current["hr"], closed)
         lookup = {}
-        for k in range(n):
+        for k in range(n if closed else n - 1):
             lookup[(uids[k], uids[(k + 1) % n])] = (k, False)
             lookup[(uids[(k + 1) % n], uids[k])] = (k, True)
 

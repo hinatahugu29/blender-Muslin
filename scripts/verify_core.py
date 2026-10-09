@@ -1682,6 +1682,74 @@ def test_curve_gusset():
     check("帯の上の縁は +幅/2", np.allclose(wall[~lo][:, 2].max(), 0.04))
 
 
+def _curve_line(points, uids, line_uid, line_of):
+    """内部線(開いた折れ線の Bezier)。"""
+    import numpy as np
+    co = np.array(points, dtype=float)
+    return {"piece_uid": line_uid, "uids": list(uids), "co": co, "hl": co.copy(), "hr": co.copy(),
+            "hole_of": None, "line_of": line_of}
+
+
+def test_curve_lines():
+    """内部線(ピースの内側の開いた線)の離散化・区間の展開・Shape Update(bpy 非依存。M11)"""
+    if not has_numpy():
+        skip("内部線", "numpy が無い")
+        return
+    import numpy as np
+    import curve_discretize as cd
+    import curve_update as cu
+
+    piece = _curve_rect(0.3, 0.3)
+    line = _curve_line([(0.03, 0.1), (0.15, 0.1), (0.27, 0.1)], (9, 10, 11), 20, 1)
+    m = cd.discretize([piece, line], 0.02)
+    ring = next(r for r in m["rings"] if r.get("open"))
+    v = ring["vertices"]
+    check("内部線は開いた輪として入り、両端も頂点になる(0.24m / 0.02 = 12 区間 → 13 点)",
+          len(v) == 13 and np.allclose(m["positions"][v[0]], [0.03, 0.1])
+          and np.allclose(m["positions"][v[-1]], [0.27, 0.1]), f"{len(v)} 点")
+    edges = {tuple(e) for e in cd.mesh_edges(m["triangles"]).tolist()}
+    check("内部線の辺はすべて三角形の辺として残る",
+          all((min(int(v[k]), int(v[k + 1])), max(int(v[k]), int(v[k + 1]))) in edges for k in range(len(v) - 1)))
+    check("内部線は外周ではない(外周の辺 = 輪郭の 60 本のまま)",
+          len(cd.boundary_edges(m["triangles"])) == 60, str(len(cd.boundary_edges(m["triangles"]))))
+    check("内部線の頂点は区間の uid と弧長比を持つ(終点は最後の区間の 1)",
+          m["seg_start"][v[0]] == 9 and m["seg_start"][v[-1]] == 10 and m["seg_end"][v[-1]] == 11
+          and m["u"][v[-1]] == 1.0 and m["boundary"][v].all())
+    whole = cd.expand_range(ring, 9, 0.0, 11, 0.0)
+    half = cd.expand_range(ring, 10, 0.0, 11, 0.0)
+    back = cd.expand_range(ring, 11, 0.0, 9, 0.0)
+    check("内部線の区間: 全体 12 辺、後半 6 辺、逆向きに書いても全体(回り込まない)",
+          len(whole) == 12 and len(half) == 6 and len(back) == 12, f"{len(whole)} / {len(half)} / {len(back)}")
+    sel_edges, _verts = cd.boundary_selection(m, {(9, 10)}, set())
+    check("選択の連動: 内部線の区間に当たる辺(閉じる辺は足さない)", len(sel_edges) == 6, str(len(sel_edges)))
+
+    # Shape Update: 線の真ん中の点を動かすと、線の頂点が追従する
+    moved = dict(line, co=np.array([[0.03, 0.1], [0.15, 0.13], [0.27, 0.1]]))
+    moved["hl"], moved["hr"] = moved["co"].copy(), moved["co"].copy()
+    res = cu.update(m, {1: piece, 20: moved}, 0.02)
+    check("内部線を動かすと Shape Update で追従する",
+          res["status"] == cu.SHAPE_UPDATE and np.allclose(res["positions"][v[6]], [0.15, 0.13]),
+          str(res["reasons"]))
+
+    def raises(outlines):
+        try:
+            cd.discretize(outlines, 0.02)
+        except cd.DiscretizeError:
+            return True
+        return False
+
+    check("ピースの外に出た内部線は止める",
+          raises([piece, _curve_line([(0.1, 0.1), (0.4, 0.1)], (9, 10), 20, 1)]))
+    check("輪郭に近すぎる内部線は止める",
+          raises([piece, _curve_line([(0.1, 0.005), (0.2, 0.005)], (9, 10), 20, 1)]))
+    grid_piece = dict(piece, grid=True)
+    g = cd.discretize([grid_piece, line], 0.02)
+    check("内部線のあるピースは格子にしない(線の辺を残すため)",
+          all(any(set(e) <= set(map(int, t)) for t in g["triangles"])
+              for e in [(int(gv), int(gw)) for gv, gw in zip(next(r for r in g["rings"] if r.get("open"))["vertices"][:-1],
+                                                              next(r for r in g["rings"] if r.get("open"))["vertices"][1:])]))
+
+
 def test_curve_update():
     """Shape Update: topology を保ったまま Curve に追従する(bpy 非依存)"""
     if not has_numpy():
@@ -2073,6 +2141,7 @@ def main():
     test_delaunay2d()
     test_curve_discretize()
     test_curve_gusset()
+    test_curve_lines()
     test_curve_update()
     test_curve_selection_runs()
     test_curve_transfer()

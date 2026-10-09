@@ -27,6 +27,7 @@ import numpy as np
 
 from . import curve_arrange
 from . import curve_discretize
+from . import curve_eval
 from . import curve_gusset
 from . import curve_ids
 from . import curve_transfer
@@ -234,8 +235,9 @@ def _adopt(curve_obj, record):
     """
     splines = read_splines(curve_obj)
     warnings = []
-    recorded = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    recorded = _recorded_shapes(record)
     taken, new_splines, _gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
+    line_uids = {ln["line_uid"] for ln in record.get("lines", [])}
 
     used = {u for s in splines for u in s["uids"] if u is not None}
     next_uid = max([record["next_uid"]] + [u + 1 for u in used])
@@ -261,12 +263,16 @@ def _adopt(curve_obj, record):
     pieces = []
     next_piece = record["next_piece_uid"]
     piece_of = {}
+    containers = _line_containers(splines, parent)
     for si, s in enumerate(splines):
         if si not in parent:
-            if s["bezier"]:
-                warnings.append(f"spline {si} は閉じていない(または 3 点未満)ので型紙にしません")
+            if s["bezier"] and si not in containers:
+                if not s["cyclic"] and len(s["co"]) >= 2:
+                    warnings.append(f"spline {si} は開いた線ですが、どのピースの内側にもないので使いません")
+                else:
+                    warnings.append(f"spline {si} は閉じていない(または 3 点未満)ので型紙にしません")
             continue
-        if si in taken:
+        if si in taken and taken[si] not in line_uids:
             piece_of[si] = taken[si]
         else:
             piece_of[si] = next_piece
@@ -275,9 +281,56 @@ def _adopt(curve_obj, record):
         p = parent[si]
         pieces.append({"piece_uid": piece_of[si], "uids": per_spline[si], "cyclic": True,
                        "hole_of": piece_of[p] if p is not None else None})
+    # 内部線: ピースの内側にある開いた Bezier(キルティングの縫い線)
+    old_lines = {ln["line_uid"]: ln for ln in record.get("lines", [])}
+    lines = []
+    for si in sorted(containers):
+        if si in taken and taken[si] in line_uids:
+            line_uid = taken[si]
+        else:
+            line_uid = next_piece
+            next_piece += 1
+        entry = dict(old_lines.get(line_uid, {}))
+        entry.update({"line_uid": line_uid, "uids": per_spline[si], "line_of": piece_of[containers[si]]})
+        lines.append(entry)
     record["pieces"] = pieces
+    record["lines"] = lines
     record["next_piece_uid"] = next_piece
     return warnings
+
+
+def _recorded_shapes(record):
+    """記録した輪郭と内部線の {uid: 点の uid の並び}(spline との対応付けに使う。uid は共通の番号)。"""
+    shapes = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    for ln in record.get("lines", []):
+        shapes[ln["line_uid"]] = ln["uids"]
+    return shapes
+
+
+def _line_containers(splines, parent):
+    """開いた Bezier(2 点以上)のうち、ピースの内側にあるものの {spline の index: ピースの spline の index}。
+
+    全ての点が、ある外周の内側で、その穴の外側にあること。
+    """
+    from . import delaunay2d
+    outers = [i for i, p in parent.items() if p is None]
+    holes = {i: [j for j, p in parent.items() if p == i] for i in outers}
+    out = {}
+    for si, s in enumerate(splines):
+        if not s["bezier"] or s["cyclic"] or len(s["co"]) < 2:
+            continue
+        for i in outers:
+            rings = [splines[i]["co"]] + [splines[j]["co"] for j in holes[i]]
+            if delaunay2d.point_in_rings(s["co"], rings).all():
+                out[si] = i
+                break
+    return out
+
+
+def lines_of(record, piece_uid=None):
+    """内部線の記録の一覧(piece_uid を渡せば、そのピースのものだけ)。"""
+    return [ln for ln in (record or {}).get("lines", [])
+            if piece_uid is None or ln["line_of"] == piece_uid]
 
 
 def structure_problems(curve_obj, record=None):
@@ -286,15 +339,31 @@ def structure_problems(curve_obj, record=None):
     if record is None:
         return ["Curve Pattern として初期化されていません"]
     splines = read_splines(curve_obj)
-    recorded = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    recorded = _recorded_shapes(record)
+    lines = {ln["line_uid"]: ln for ln in record.get("lines", [])}
     taken, new_splines, gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
     reasons = []
     for si in new_splines:
         if splines[si]["bezier"] and splines[si]["cyclic"]:
             reasons.append(f"新しい輪郭(spline {si})があります")
+        elif splines[si]["bezier"] and len(splines[si]["co"]) >= 2:
+            try:
+                inside = si in _line_containers(splines, _classify_holes(splines))
+            except CurvePatternError:
+                inside = False
+            if inside:
+                reasons.append(f"新しい内部線(spline {si})があります")
     for pid in gone:
-        reasons.append(f"ピース {pid} の輪郭が無くなりました")
+        if pid in lines:
+            reasons.append(f"内部線 {pid} が無くなりました")
+        else:
+            reasons.append(f"ピース {pid} の輪郭が無くなりました")
     for si, pid in sorted(taken.items()):
+        if pid in lines:
+            d = curve_ids.diff_outline(lines[pid]["uids"], splines[si]["uids"], False, splines[si]["cyclic"])
+            for why in d["reasons"]:
+                reasons.append(f"内部線 {pid}: {why}")
+            continue
         piece = next(p for p in record["pieces"] if p["piece_uid"] == pid)
         d = curve_ids.diff_outline(piece["uids"], splines[si]["uids"], True, splines[si]["cyclic"])
         for why in d["reasons"]:
@@ -306,7 +375,7 @@ def current_outlines(curve_obj, record=None):
     """今の Curve を `curve_update.update` に渡す形にする。{輪郭(ピース)の uid: 輪郭}"""
     record = record or load_record(curve_obj)
     splines = read_splines(curve_obj)
-    recorded = {p["piece_uid"]: p["uids"] for p in record["pieces"]}
+    recorded = _recorded_shapes(record)
     taken, _new, _gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
     out = {}
     for si, pid in taken.items():
@@ -318,12 +387,16 @@ def current_outlines(curve_obj, record=None):
 def _outlines_for_generation(curve_obj, record):
     splines = read_splines(curve_obj)
     recorded = {p["piece_uid"]: p for p in record["pieces"]}
-    taken, _new, _gone = curve_ids.match_pieces(
-        {pid: p["uids"] for pid, p in recorded.items()}, [s["uids"] for s in splines])
+    lines = {ln["line_uid"]: ln for ln in record.get("lines", [])}
+    taken, _new, _gone = curve_ids.match_pieces(_recorded_shapes(record), [s["uids"] for s in splines])
     gussets = gussets_of(record)
     outlines = []
     for si, pid in sorted(taken.items(), key=lambda kv: kv[1]):
         s = splines[si]
+        if pid in lines:
+            outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": s["co"], "hl": s["hl"],
+                             "hr": s["hr"], "hole_of": None, "line_of": lines[pid]["line_of"]})
+            continue
         outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": s["co"], "hl": s["hl"],
                          "hr": s["hr"], "hole_of": recorded[pid]["hole_of"],
                          "grid": pid in gussets})
@@ -691,6 +764,8 @@ def status(curve_obj):
         # 穴でもマチでもない輪郭の数(= 袋にできる枚数)
         "panels": len(bag_panels(record)),
         "gusset": bool(gussets_of(record)),
+        "lines": len(record.get("lines", [])),
+        "quilted": any(s.get("quilt") for s in record["seams"]),
         "target": record["target_edge_length"],
         "problems": structure_problems(curve_obj, record),
         "cloth": cloth_of(curve_obj),
@@ -764,7 +839,8 @@ def _build_mesh(name, data, record):
         "fingerprint": [len(mesh.vertices), len(mesh.edges), len(mesh.polygons)],
         "quality": q,
         "rings": [{"piece_uid": r["piece_uid"], "outline_uid": r["outline_uid"], "hole": r["hole"],
-                   "uids": r["uids"], "start": int(r["vertices"][0]), "count": len(r["vertices"])}
+                   "uids": r["uids"], "start": int(r["vertices"][0]), "count": len(r["vertices"]),
+                   "open": bool(r.get("open", False))}
                   for r in data["rings"]],
     }
     mesh[GEN_KEY] = json.dumps(gen, separators=(",", ":"))
@@ -821,9 +897,12 @@ def reconstruct(cloth):
         vertices = np.arange(r["start"], r["start"] + r["count"])
         index_of = {uid: k for k, uid in enumerate(r["uids"])}
         seg_index = np.array([index_of[int(s)] for s in seg_start[vertices]])
-        rings.append({"piece_uid": r["piece_uid"], "outline_uid": r["outline_uid"], "hole": r["hole"],
-                      "uids": list(r["uids"]), "vertices": vertices, "s": seg_index + u[vertices],
-                      "segment_total": len(r["uids"])})
+        ring = {"piece_uid": r["piece_uid"], "outline_uid": r["outline_uid"], "hole": r["hole"],
+                "uids": list(r["uids"]), "vertices": vertices, "s": seg_index + u[vertices],
+                "segment_total": len(r["uids"]) - (1 if r.get("open") else 0)}
+        if r.get("open"):
+            ring["open"] = True
+        rings.append(ring)
     return {
         "positions": positions, "triangles": tris.reshape(-1, 3),
         "boundary": seg_start >= 0, "seg_start": seg_start, "seg_end": seg_end, "u": u,
@@ -1305,6 +1384,162 @@ def remove_gusset(context, curve_obj):
     return cloth, warnings + more
 
 
+# ---------------------------------------------------------------- 内部線とキルティング(M11)
+
+def _add_bezier(curve_obj, co, hl, hr, cyclic):
+    """Curve に Bezier の spline を足す(座標は型紙の寸法。オブジェクトのスケールで割って置く)。"""
+    sx, sy, _sz = curve_obj.matrix_world.to_scale()
+    sp = curve_obj.data.splines.new('BEZIER')
+    sp.bezier_points.add(len(co) - 1)
+    for bp, c, l_, r_ in zip(sp.bezier_points, co, hl, hr):
+        bp.handle_left_type = 'FREE'
+        bp.handle_right_type = 'FREE'
+        bp.co = (c[0] / sx, c[1] / sy, 0.0)
+        bp.handle_left = (l_[0] / sx, l_[1] / sy, 0.0)
+        bp.handle_right = (r_[0] / sx, r_[1] / sy, 0.0)
+    sp.use_cyclic_u = cyclic
+    return sp
+
+
+def _whole_line(uids):
+    return [[int(uids[0]), 0.0, int(uids[-1]), 0.0]]
+
+
+def quilt_through(context, curve_obj):
+    """表のピースの内部線を、裏のピースの同じ位置へ写し、表と裏の線どうしを縫い止める(キルティング)。
+
+    表と裏は型紙の中心をそろえて向かい合わせに重ねる(Stack Pieces と同じ)ので、裏の型紙の
+    同じ相対位置に線を置けば、重ねたときにちょうど重なる。裏にすでに同じ形の線があれば写さずに使う。
+    縫い目は折り返し(縫い目をまたぐ曲げ制約を掛けない)。縫ったら布を作り直して重ねて置く。
+    戻り値: (布 または None, 警告, 縫った本数)
+    """
+    record = _check_bag_editable(context, curve_obj)
+    panels = bag_panels(record)
+    if len(panels) != 2:
+        raise CurvePatternError(f"キルティングは表と裏の 2 枚の袋に付けます(今は {len(panels)} 枚)")
+    top_lines = lines_of(record, panels[0])
+    if not top_lines:
+        raise CurvePatternError("表のピースに内部線がありません(表の輪郭の内側に、開いた線を描いてください)")
+    if structure_problems(curve_obj, record):
+        raise CurvePatternError("点の構成が変わっています。先に Rebuild してください")
+    outlines = current_outlines(curve_obj, record)
+    top_segs = curve_gusset.outline_arcs(**{k: outlines[panels[0]][k] for k in ("co", "hl", "hr")})[0]
+    bottom_segs = curve_gusset.outline_arcs(**{k: outlines[panels[1]][k] for k in ("co", "hl", "hr")})[0]
+    shift = curve_gusset.centroid(bottom_segs) - curve_gusset.centroid(top_segs)
+    tol = 0.25 * record["target_edge_length"]
+
+    quilted = {tuple(s["quilt"])[0] for s in record["seams"] if s.get("quilt")}
+    used_bottom = {tuple(s["quilt"])[1] for s in record["seams"] if s.get("quilt")}
+    pending = []                       # (表の線の uid, ("line", 裏の線の uid) または ("spline", 足した spline の番号))
+    for ln in top_lines:
+        if ln["line_uid"] in quilted:
+            continue
+        cur = outlines.get(ln["line_uid"])
+        if cur is None:
+            continue
+        target = np.asarray(cur["co"], dtype=np.float64) + shift
+        match = None
+        for b in lines_of(record, panels[1]):
+            other = outlines.get(b["line_uid"])
+            if (b["line_uid"] in used_bottom or other is None or len(other["co"]) != len(target)):
+                continue
+            co = np.asarray(other["co"], dtype=np.float64)
+            if np.abs(co - target).max() < tol or np.abs(co[::-1] - target).max() < tol:
+                match = b["line_uid"]
+                break
+        if match is not None:
+            used_bottom.add(match)
+            pending.append((ln["line_uid"], ("line", match)))
+            continue
+        _add_bezier(curve_obj, target, np.asarray(cur["hl"]) + shift, np.asarray(cur["hr"]) + shift, False)
+        pending.append((ln["line_uid"], ("spline", len(curve_obj.data.splines) - 1)))
+    if not pending:
+        raise CurvePatternError("縫い止めていない内部線がありません")
+    rough = _quilt_resolution_warning(record, outlines, panels[0], top_lines)
+
+    warnings = _adopt(curve_obj, record)
+    splines = read_splines(curve_obj)
+    by_uids = {tuple(ln["uids"]): ln for ln in record["lines"]}
+    uid = _all_seam_uids()
+    count = 0
+    lines = {ln["line_uid"]: ln for ln in record["lines"]}
+    for top_uid, (kind, target) in pending:
+        if kind == "spline":
+            entry = by_uids.get(tuple(splines[target]["uids"]))
+            if entry is None:
+                raise CurvePatternError("写した内部線を取り込めませんでした(裏のピースの内側に収まりません)")
+            entry["quilt_copy"] = True
+            bottom_uid = entry["line_uid"]
+        else:
+            bottom_uid = target
+        count += 1
+        record["seams"].append({
+            "uid": uid, "name": f"Quilt {sum(1 for s in record['seams'] if s.get('quilt')) + 1}",
+            "invert": False, "enabled": True,
+            "a": _whole_line(lines[top_uid]["uids"]), "b": _whole_line(lines[bottom_uid]["uids"]),
+            "folded": True, "quilt": [int(top_uid), int(bottom_uid)],
+        })
+        uid += 1
+    save_record(curve_obj, record)
+    warnings = warnings + rough
+    if cloth_of(curve_obj) is None:
+        return None, warnings, count
+    cloth, more = stack_pieces(context, curve_obj)
+    return cloth, warnings + more, count
+
+
+# キルティングの部屋の幅に、辺がこの本数より少ないと膨らみにくい(30cm 角・線の間隔 10cm で、
+# 辺 2cm(5 本)は厚み 19mm、辺 1cm(10 本)は 48mm。圧力 100)
+QUILT_EDGES_PER_CHANNEL = 8
+
+
+def _quilt_resolution_warning(record, outlines, top_uid, top_lines):
+    """内部線どうし・内部線と輪郭の間隔(部屋の幅)に対して、目標辺長が粗すぎれば警告を返す。"""
+    from . import delaunay2d
+    h = float(record["target_edge_length"])
+    samples = {}
+    for ln in top_lines:
+        cur = outlines.get(ln["line_uid"])
+        if cur is not None:
+            segs = curve_eval.segments(cur["co"], cur["hl"], cur["hr"], False)
+            samples[ln["line_uid"]] = np.vstack([seg.point_at(np.linspace(0, 1, 9)) for seg in segs])
+    top = outlines[top_uid]
+    t_segs = curve_eval.segments(top["co"], top["hl"], top["hr"], True)
+    ring = np.vstack([seg.point_at(np.linspace(0, 1, 9)[:-1]) for seg in t_segs])
+    width = np.inf
+    for uid, pts in samples.items():
+        # 線の端は輪郭の近くまで届くのが普通なので、輪郭との間隔は線の中ほどで測る
+        middle = pts[len(pts) // 2:len(pts) // 2 + 1]
+        width = min(width, float(delaunay2d.distance_to_rings(middle, [ring]).min()))
+        for other, opts in samples.items():
+            if other != uid:
+                width = min(width, float(delaunay2d.distance_to_rings(pts, [opts], closed=False).min()))
+    if not np.isfinite(width) or width >= QUILT_EDGES_PER_CHANNEL * h:
+        return []
+    return [f"キルティングの部屋の幅 {width * 100:.1f}cm に対して辺が粗く({h * 1000:.0f}mm)、"
+            f"膨らみにくくなります。Rebuild の辺の長さを {width / QUILT_EDGES_PER_CHANNEL * 1000:.0f}mm "
+            "以下にすると筋がはっきりします"]
+
+
+def remove_quilting(context, curve_obj):
+    """キルティングの縫い目と、Quilt Through が裏へ写した内部線を取り除く。戻り値: (布 または None, 警告)"""
+    record = _check_bag_editable(context, curve_obj)
+    if not any(s.get("quilt") for s in record["seams"]):
+        raise CurvePatternError("キルティングの縫い目がありません")
+    copies = {ln["line_uid"] for ln in record.get("lines", []) if ln.get("quilt_copy")}
+    splines = read_splines(curve_obj)
+    taken, _new, _gone = curve_ids.match_pieces(_recorded_shapes(record), [s["uids"] for s in splines])
+    for si in sorted((si for si, pid in taken.items() if pid in copies), reverse=True):
+        curve_obj.data.splines.remove(curve_obj.data.splines[si])
+    record["seams"] = [s for s in record["seams"] if not s.get("quilt")]
+    warnings = _adopt(curve_obj, record)
+    save_record(curve_obj, record)
+    if cloth_of(curve_obj) is None:
+        return None, warnings
+    cloth, more = stack_pieces(context, curve_obj)
+    return cloth, warnings + more
+
+
 def _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles):
     pieces = [{"xy": data["positions"][idx], "z": base_z + data["positions"][idx][:, 1]}
               for idx in groups]
@@ -1632,6 +1867,78 @@ class MUSLIN_OT_curve_gusset_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _quilt_poll(cls, context, want):
+    from . import ui_poll
+    from . import sim_state
+    curve = _target_curve(context)
+    if curve is None:
+        return ui_poll.reject(cls, "Curve、または Curve Pattern から作った布を選んでください")
+    if context.mode != 'OBJECT':
+        return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+    record = load_record(curve)
+    if record is None:
+        return ui_poll.reject(cls, "Curve Pattern として初期化されていません")
+    panels = bag_panels(record)
+    if len(panels) != 2:
+        return ui_poll.reject(cls, "キルティングは表と裏の 2 枚の袋に付けます")
+    if want and not lines_of(record, panels[0]):
+        return ui_poll.reject(cls, "表のピースに内部線がありません")
+    if not want and not any(s.get("quilt") for s in record["seams"]):
+        return ui_poll.reject(cls, "キルティングの縫い目がありません")
+    cloth = cloth_of(curve)
+    if cloth is not None and sim_state.is_running(cloth):
+        return ui_poll.reject(cls, "シミュレーション中は変えられません。停止してください")
+    return True
+
+
+class MUSLIN_OT_curve_quilt(bpy.types.Operator):
+    """表のピースの内部線を裏の同じ位置へ写し、表と裏を線に沿って縫い止める(キルティング)"""
+
+    bl_idname = "muslin.curve_quilt"
+    bl_label = "Quilt Through"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _quilt_poll(cls, context, True)
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        try:
+            _cloth, warnings, count = quilt_through(context, curve)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'}, f"内部線 {count} 本で表と裏を縫い止めました(Close Bag で膨らませてください)")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_curve_quilt_remove(bpy.types.Operator):
+    """キルティングの縫い目と、裏へ写した内部線を取り除く"""
+
+    bl_idname = "muslin.curve_quilt_remove"
+    bl_label = "Remove Quilting"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _quilt_poll(cls, context, False)
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        try:
+            _cloth, warnings = remove_quilting(context, curve)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'}, "キルティングを外しました")
+        return {'FINISHED'}
+
+
 class MUSLIN_OT_curve_seam_add(bpy.types.Operator):
     """Curve の点を 2 か所の連なりとして選び、その間を縫い合わせる縫い目にする"""
 
@@ -1744,6 +2051,7 @@ class MUSLIN_OT_curve_elastic_remove(bpy.types.Operator):
 _classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
             MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_stack,
             MUSLIN_OT_curve_gusset_add, MUSLIN_OT_curve_gusset_remove,
+            MUSLIN_OT_curve_quilt, MUSLIN_OT_curve_quilt_remove,
             MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove,
             MUSLIN_OT_curve_elastic_add, MUSLIN_OT_curve_elastic_remove)
 

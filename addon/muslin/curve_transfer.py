@@ -26,12 +26,17 @@ OUTSIDE_TOLERANCE = 1e-6
 _CHUNK = 64
 
 
-def _walk(current_uids, ia, ib, step):
-    """点 ia から step 方向に、既知の点にぶつかるまで進む。ib にぶつかれば通った区間の index を返す。"""
+def _walk(current_uids, ia, ib, step, closed=True):
+    """点 ia から step 方向に、既知の点にぶつかるまで進む。ib にぶつかれば通った区間の index を返す。
+
+    closed=False(内部線)なら端で回り込まない。
+    """
     n = len(current_uids)
     segs = []
     i = ia
     for _ in range(n):
+        if not closed and not 0 <= i + step < n:
+            return None
         nxt = (i + step) % n
         segs.append(i if step > 0 else nxt)
         i = nxt
@@ -72,7 +77,8 @@ def old_pattern_now(mesh, outlines):
         if current is None:
             return None
         uids = list(current["uids"])
-        segs = curve_eval.segments(current["co"], current["hl"], current["hr"], True)
+        closed = not ring.get("open")
+        segs = curve_eval.segments(current["co"], current["hl"], current["hr"], closed)
         known = {u: i for i, u in enumerate(uids) if u is not None}
         v = ring["vertices"]
         a = mesh["seg_start"][v]
@@ -82,10 +88,10 @@ def old_pattern_now(mesh, outlines):
             if key[0] not in known or key[1] not in known:
                 return None
             ia, ib = known[key[0]], known[key[1]]
-            path = _walk(uids, ia, ib, +1)
+            path = _walk(uids, ia, ib, +1, closed)
             step = +1
             if path is None:
-                path = _walk(uids, ia, ib, -1)
+                path = _walk(uids, ia, ib, -1, closed)
                 step = -1
             if path is None:
                 return None

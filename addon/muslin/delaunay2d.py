@@ -103,8 +103,8 @@ def point_in_rings(points, rings):
     return inside
 
 
-def distance_to_rings(points, rings):
-    """点から輪郭の折れ線までの最短距離(m,)。"""
+def distance_to_rings(points, rings, closed=True):
+    """点から輪郭の折れ線までの最短距離(m,)。closed=False なら開いた折れ線(内部線)。"""
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     best = np.full(len(pts), np.inf)
     for ring in rings:
@@ -114,7 +114,7 @@ def distance_to_rings(points, rings):
         ab = b - a
         denom = (ab ** 2).sum(axis=1)
         denom[denom == 0] = 1.0
-        for k in range(len(r)):
+        for k in range(len(r) if closed else len(r) - 1):
             t = np.clip(((pts - a[k]) @ ab[k]) / denom[k], 0.0, 1.0)
             proj = a[k] + t[:, None] * ab[k]
             best = np.minimum(best, np.linalg.norm(pts - proj, axis=1))

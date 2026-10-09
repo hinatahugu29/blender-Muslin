@@ -1146,8 +1146,119 @@ def main():
     check("1 枚ではマチは足せない(poll)", bpy.ops.muslin.curve_gusset_add.poll() is False)
 
     _test_gusset(cp, mesh_io, rest_shape)
+    _test_quilt(cp, mesh_io)
 
     muslin.unregister()
+
+
+def _test_quilt(cp, mesh_io):
+    """内部線とキルティング: 取り込み・裏へ写して縫い止める・Shape Update・閉じる・外す(M11)。"""
+    from muslin import curve_update
+    section("内部線とキルティング")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    cu = bpy.data.curves.new("Puffer", 'CURVE')
+    cu.dimensions = '2D'
+
+    def poly(pts, cyclic):
+        sp = cu.splines.new('BEZIER')
+        sp.bezier_points.add(len(pts) - 1)
+        for bp, (x, y) in zip(sp.bezier_points, pts):
+            bp.co = (x, y, 0.0)
+            bp.handle_left_type = bp.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = cyclic
+
+    for x0 in (0.0, 0.5):
+        poly([(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.3), (x0, 0.3)], True)
+    poly([(0.03, 0.1), (0.27, 0.1)], False)
+    poly([(0.03, 0.2), (0.15, 0.2), (0.27, 0.2)], False)
+    poly([(0.0, 0.5), (0.3, 0.5)], False)          # どのピースの外: 使わない
+    bag = bpy.data.objects.new("Puffer", cu)
+    scene.collection.objects.link(bag)
+    for o in scene.objects:
+        o.select_set(o is bag)
+    bpy.context.view_layer.objects.active = bag
+    cp.initialize(bag, 0.01)
+    record = cp.load_record(bag)
+    panels = cp.bag_panels(record)
+    check("ピースの内側の開いた線は内部線として取り込む(外の線は使わない)",
+          len(record["lines"]) == 2 and all(ln["line_of"] == panels[0] for ln in record["lines"])
+          and len(record["pieces"]) == 2, str(record["lines"]))
+    check("内部線があっても袋の枚数は 2 枚、Rebuild Required にならない",
+          cp.status(bag)["panels"] == 2 and cp.status(bag)["lines"] == 2 and cp.status(bag)["problems"] == [])
+    cloth, _w = cp.stack_pieces(bpy.context, bag)
+    data = cp.reconstruct(cloth)
+    open_rings = [r for r in data["rings"] if r.get("open")]
+    check("布のメッシュに内部線が開いた輪として入る(2 本、25 点ずつ)",
+          sorted(len(r["vertices"]) for r in open_rings) == [25, 25],
+          str([len(r["vertices"]) for r in open_rings]))
+
+    check("Quilt Through が押せる(poll)", bpy.ops.muslin.curve_quilt.poll())
+    res = bpy.ops.muslin.curve_quilt()
+    record = cp.load_record(bag)
+    quilts = [s_ for s_ in record["seams"] if s_.get("quilt")]
+    check("Quilt Through: 表の線を裏へ写し、線どうしを縫い止める(縫い目 2 本、折り返し)",
+          res == {'FINISHED'} and len(quilts) == 2 and all(q["folded"] for q in quilts)
+          and len(record["lines"]) == 4
+          and sum(1 for ln in record["lines"] if ln.get("quilt_copy") and ln["line_of"] == panels[1]) == 2,
+          str([(ln["line_uid"], ln["line_of"]) for ln in record["lines"]]))
+    check("縫い目はすべて使え、Rebuild Required にならない",
+          cp.apply_seams(bag) == [] and cp.status(bag)["problems"] == [], str(cp.status(bag)["problems"]))
+    cloth = cp.cloth_of(bag)
+    co = np.array([tuple(v.co) for v in cloth.data.vertices])
+    pairs = mesh_io.build_seam_pairs(cloth)
+    gaps = np.array([np.linalg.norm(co[a] - co[b]) for a, b in pairs])
+    check("重ねた配置で、表と裏の線どうしがちょうど向かい合う(隙間 = 重ねる隙間)",
+          len(pairs) >= 48 and np.allclose(gaps, cp.DEFAULT_BAG_GAP, atol=1e-6),
+          f"{len(pairs)} 組 / {gaps.min() * 1000:.2f}〜{gaps.max() * 1000:.2f} mm")
+    check("もう一度は押せない(縫い止めていない線が無い)", _raises(lambda: cp.quilt_through(bpy.context, bag)))
+
+    # 表の線の点を動かすと、Shape Update で布の線が追従する(構造は同じ)
+    line_sp = next(sp for sp in bag.data.splines if not sp.use_cyclic_u and len(sp.bezier_points) == 3)
+    line_sp.bezier_points[1].co.y = 0.21
+    for bp in line_sp.bezier_points:
+        bp.handle_left_type = bp.handle_right_type = 'VECTOR'
+    check("内部線の点を動かしても構造は同じ", cp.structure_problems(bag) == [], str(cp.structure_problems(bag)))
+    result = curve_update.update(cp.reconstruct(cloth), cp.current_outlines(bag), 0.01)
+    check("内部線を動かすと Shape Update で追従する", result["status"] == curve_update.SHAPE_UPDATE,
+          str(result["reasons"]))
+    line_sp.bezier_points[1].co.y = 0.2
+
+    # 閉じて膨らませる(外周も縫う)
+    top_uids = next(p_["uids"] for p_ in record["pieces"] if p_["piece_uid"] == panels[0])
+    bottom_uids = next(p_["uids"] for p_ in record["pieces"] if p_["piece_uid"] == panels[1])
+    cp.add_seam(bag, [(top_uids[0], 0.0, top_uids[0], 0.0)], [(bottom_uids[0], 0.0, bottom_uids[0], 0.0)],
+                name="Rim")
+    cp.apply_seams(bag)
+    props = cloth.muslin
+    props.collision_enabled = False
+    props.self_collision_enabled = False
+    props.seam_close_frames = 10
+    props.pressure = 100.0
+    props.quality = 'HIGH'
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    res = bpy.ops.muslin.close_bag(max_steps=300)
+    after = np.array([tuple(v.co) for v in cloth.data.vertices])
+    pairs = mesh_io.build_seam_pairs(cloth)
+    gaps = np.array([np.linalg.norm(after[a] - after[b]) for a, b in pairs])
+    dims = np.ptp(after, axis=0)
+    check("閉じると筋で縫い止めたまま膨らむ(縫い目が離れず、厚みが出る)",
+          res == {'FINISHED'} and gaps.max() < 0.002 and dims[2] > 0.03,
+          f"厚み {dims[2] * 1000:.0f} mm / 縫い目 最大 {gaps.max() * 1000:.2f} mm")
+    check("筋に直角な向き(Y)に布が縮む(ダウンジャケットの縮み)", dims[1] < dims[0] - 0.003,
+          f"{(dims * 1000).round(0)} mm")
+
+    # 外すと、縫い目と裏へ写した線が消える(外周の縫い目は残る)
+    for o in scene.objects:
+        o.select_set(o is bag)
+    bpy.context.view_layer.objects.active = bag
+    res = bpy.ops.muslin.curve_quilt_remove()
+    record = cp.load_record(bag)
+    check("Remove Quilting で、キルティングの縫い目と写した線が消える",
+          res == {'FINISHED'} and len(record["lines"]) == 2 and [s_["name"] for s_ in record["seams"]] == ["Rim"]
+          and len(bag.data.splines) == 5 and cp.status(bag)["problems"] == [])
 
 
 def _test_gusset(cp, mesh_io, rest_shape):
