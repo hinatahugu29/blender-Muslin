@@ -256,6 +256,12 @@ class MUSLIN_PG_tools(bpy.types.PropertyGroup):
         description="ビューポートに縫い目を線で表示する",
         default=True,
     )
+    show_curve_outline: bpy.props.BoolProperty(
+        name="Show Piece Outlines",
+        description="Curve Pattern の Curve を選んでいる間、布の側に各ピースの外周を薄く描く"
+                    "(Curve のどこが布のどこに当たるかを、選ぶ前から追えるようにする)",
+        default=True,
+    )
 
     # --- 表示 ---
 

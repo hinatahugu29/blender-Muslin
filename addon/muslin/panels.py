@@ -468,6 +468,9 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
         if obj.type == 'CURVE':
             layout.operator("muslin.curve_elastic_add", icon='ADD')
 
+        layout.separator()
+        layout.prop(context.scene.muslin_tools, "show_curve_outline")
+
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"

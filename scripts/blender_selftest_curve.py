@@ -859,6 +859,29 @@ def main():
     check("ゴム紐を削除できる", res == {'FINISHED'} and len(e_cloth.muslin_elastics) == 0
           and elastic_edge_count(e_cloth) == 0)
 
+    section("ピースの外周の常時表示(Curve を選んでいる間)")
+    check("Curve 以外がアクティブなら描かない", overlay.outline_target(pair_cloth) is None
+          and overlay.outline_target(None) is None)
+    check("Curve Pattern の Curve がアクティブなら、その布に描く",
+          overlay.outline_target(pair) == (pair, pair_cloth))
+    odata = cp.reconstruct(pair_cloth)
+    o_boundary = sum(len(ring["vertices"]) for ring in odata["rings"])
+    outline = overlay.curve_outline_geometry(pair_cloth)
+    check("外周の辺は布の境界の辺すべて(2 枚分)",
+          len(outline) == 2 * o_boundary and o_boundary > 0, f"{o_boundary} 辺")
+    pair_cloth.data.calc_loop_triangles()
+    o_tris = np.array([t.vertices[:] for t in pair_cloth.data.loop_triangles])
+    bound = {tuple(e) for e in curve_discretize.boundary_edges(o_tris).tolist()}
+    check("外周の辺の数は、メッシュの境界の辺の数と一致する", len(bound) == o_boundary,
+          f"{len(bound)} / {o_boundary}")
+    mwo = pair_cloth.matrix_world
+    first = odata["rings"][0]["vertices"][0]
+    from mathutils import Vector
+    check("座標は布の今の位置(ワールド)", (Vector(outline[0]) - mwo @ pair_cloth.data.vertices[int(first)].co).length < 1e-5)
+    pair_cloth.hide_set(True)
+    check("布を隠すと描かない", overlay.outline_target(pair) is None)
+    pair_cloth.hide_set(False)
+
     section("選択の連動(Curve で選んだ区間に対応する布の辺)")
     from muslin import curve_ids
     check("オブジェクトモードでは何も出さない",

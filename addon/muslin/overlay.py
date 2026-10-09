@@ -355,6 +355,11 @@ SELECTION_COLOR = (1.0, 1.0, 1.0, 1.0)
 SELECTION_WIDTH = 7.0
 SELECTION_POINT_SIZE = 10.0
 
+# Curve を選んでいる間に布へ常に描く、ピースの外周。選択の白(7px)より細く薄くして、
+# 選んだ部分の強調と見分けられるようにする
+OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.35)
+OUTLINE_WIDTH = 2.5
+
 # 布のキー -> (生成の記録, 布から組み直した離散化の結果)。生成が変わるまで使い回す
 _cloth_data_cache = {}
 
@@ -429,6 +434,73 @@ def curve_selection_geometry(curve, cloth):
             out_edges += [mw @ vertices[a].co, mw @ vertices[b].co]
     out_points = [mw @ vertices[a].co for a in verts if a < count]
     return {"edges": out_edges, "points": out_points}
+
+
+def outline_target(active):
+    """外周を常に描く (Curve, 布) の組。Curve Pattern の Curve がアクティブなときだけ(モードは問わない)。"""
+    if active is None or active.type != 'CURVE' or curve_pattern.load_record(active) is None:
+        return None
+    cloth = curve_pattern.cloth_of(active)
+    if cloth is None or not cloth.visible_get():
+        return None
+    return active, cloth
+
+
+def curve_outline_geometry(cloth):
+    """布の各ピースの外周(輪郭と穴)の辺のワールド座標。2 点ずつが 1 本。
+
+    外周は Curve の輪郭に沿って並ぶ境界の頂点(離散化の rings)なので、Curve の線と 1 対 1 に対応する。
+    対応が取れないとき(生成から構造が変わった等)は空。
+    """
+    import numpy as np
+    from mathutils import Matrix
+    try:
+        data = _cloth_data(cloth)
+    except curve_pattern.CurvePatternError:
+        return []
+    vertices = cloth.data.vertices
+    count = len(vertices)
+    pairs = []
+    for ring in data["rings"]:
+        v = np.asarray(ring["vertices"], dtype=np.int64)
+        if len(v) >= 2:
+            pairs.append(np.stack([v, np.roll(v, -1)], axis=1))
+    if not pairs:
+        return []
+    pairs = np.concatenate(pairs).ravel()
+    if pairs.max() >= count:
+        return []
+    coords = np.empty(count * 3, dtype=np.float32)
+    vertices.foreach_get("co", coords)
+    local = coords.reshape(-1, 3)[pairs]
+    m = np.array(Matrix(cloth.matrix_world), dtype=np.float64)
+    world = local @ m[:3, :3].T + m[:3, 3]
+    return [tuple(p) for p in world.tolist()]
+
+
+def _draw_curve_outline(context, tools):
+    """Curve を選んでいる間、布の各ピースの外周を薄く描く(選択の連動の下地)。"""
+    if not getattr(tools, "show_curve_outline", True):
+        return
+    target = outline_target(context.active_object)
+    if target is None:
+        return
+    try:
+        coords = curve_outline_geometry(target[1])
+    except (AttributeError, ReferenceError, IndexError):
+        return
+    if not coords:
+        return
+    region = context.region
+    shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+    shader.uniform_float("viewportSize", (region.width, region.height))
+    shader.uniform_float("lineWidth", OUTLINE_WIDTH)
+    shader.uniform_float("color", OUTLINE_COLOR)
+    gpu.state.blend_set('ALPHA')
+    try:
+        batch_for_shader(shader, 'LINES', {"pos": coords}).draw(shader)
+    finally:
+        gpu.state.blend_set('NONE')
 
 
 def _curve_pairs(context):
@@ -533,6 +605,7 @@ def _draw():
     if tools is None:
         return
     _draw_patterns(context, tools)
+    _draw_curve_outline(context, tools)      # 縫い目の色と選択の白は、この上に重ねる
     if tools.show_seams:
         _draw_curve_patterns(context, tools)
     _draw_curve_selection(context)
