@@ -8,7 +8,7 @@
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -SkipTests   # cloth_core.pyd を作る(約 1 分)
-python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(233 項目)
+python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(250 項目)
 ```
 
 必要なもの: Rust(rustup/cargo)、Python 3.11 以降、maturin(`python -m pip install maturin`)。
@@ -18,13 +18,13 @@ python scripts\verify_core.py                                           # 物理
 Blender を入れた環境なら、アドオン層もヘッドレスで検査できる:
 
 ```bash
-blender --background --factory-startup --python scripts/blender_selftest.py         # 407 項目(Blender 5.1)
-blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 211 項目(Curve Pattern)
+blender --background --factory-startup --python scripts/blender_selftest.py         # 409 項目(Blender 5.1)
+blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 233 項目(Curve Pattern)
 cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 83 件
 ```
 
-- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 4.2 で 393 項目、5.1 で 407 項目。4.2 は 5.x で
-  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 211 項目)
+- Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 409 項目。4.2 は 5.x で
+  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 233 項目)
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)
 - **`samples/*.blend` は `blender_selftest.py` が全部開いて検査する。** 作業用の .blend を `samples/` に置かない
   (調査用のファイルは `scripts/spikes/data/` へ)
@@ -50,18 +50,19 @@ cd rust/cloth_core && cargo test --no-default-features --release                
 - M11 クッション: 圧力の第 1 段階(一定の圧力)、2 枚を重ねる配置(`Stack Pieces for Bag`)、体なしで
   袋を閉じる手順(`Close Bag`)。圧力の第 2 段階として、目標の体積を保つ圧力と詰め具合(`Pressure Mode`
   = Volume、`Fill`)。飽和して見えていたのは、縫い目をまたぐ曲げ制約が袋の縁を押し開いていたためで、
-  袋の縁の縫い目は「折り返し(Folded)」にして曲げ制約を外す(GUI 確認待ち)
+  袋の縁の縫い目は「折り返し(Folded)」にして曲げ制約を外す。マチ(帯)で座布団・丸いクッションも
+  作れる(`Add Gusset`、サンプル 08)(いずれも GUI 確認待ち)
 
 ## 3. 次の候補
 
 どれも ROADMAP に書いてある。優先順は利用者と相談して決める。
 
-1. **GUI 確認**([CHECKPOINTS.md](../CHECKPOINTS.md) の 2026-10-08〜09 の項目)— 選択の連動、ピースの外周、
+1. **GUI 確認**([CHECKPOINTS.md](../CHECKPOINTS.md) の 2026-10-08〜09 の項目)— マチ、選択の連動、ピースの外周、
    Curve のゴム紐、詰め具合(Fill)、縫い目の折り返し、圧力の第 1 段階。良ければ作業ブランチを main へ
-2. マチ(帯状のピース) — 表と裏のあいだに帯を立てて縫う配置。ピース 3 枚以上の縫い合わせ
-3. 内部線(キルティング・タフティング) — Curve の開いた線をピースの内側に通して縫い止める
-4. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
-5. 自己衝突の高速化(約 3 万頂点で 146ms。目標の 100ms に届いていない)
+2. 内部線(キルティング・タフティング) — Curve の開いた線をピースの内側に通して縫い止める。
+   マチの角を格子でそろえたのと同じく、離散化に「線に沿って辺を通す」仕組みが要る
+3. 2D ビューと 3D ビューの並置(MD に近い体験。画面の見え方が中心なので、手触りの確認が要る)
+4. 自己衝突の高速化(約 3 万頂点で 146ms。目標の 100ms に届いていない)
 
 使い勝手の判断(2026-10-09、ROADMAP の M8): 型紙を伸ばしたら柄は実寸のまま広がるべきだが、**今は着手しない**
 (必要になったら声がかかる)。型紙オブジェクトの並べ方は今のままでよい。線は今のところ問題なし。

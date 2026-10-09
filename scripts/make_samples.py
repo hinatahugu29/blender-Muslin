@@ -654,6 +654,10 @@ def _close_cushion(scene, curve, height, cloth_name, location):
         o.select_set(o is cloth)
     bpy.context.view_layer.objects.active = cloth
     closed = bpy.ops.muslin.close_bag()
+    # 再生したときに床に乗るよう、閉じた形の一番下に床を置く(体が無いので床が無いと落ち続ける)
+    bpy.context.view_layer.update()
+    props.floor_enabled = True
+    props.floor_z = min((cloth.matrix_world @ v.co).z for v in cloth.data.vertices) - 0.002
     print(f"  {cloth_name}: {len(cloth.data.vertices)} 頂点 / Close Bag {closed}", flush=True)
     return cloth
 

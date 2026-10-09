@@ -83,7 +83,7 @@ Windows でしかしていません。
 
 ## サンプル
 
-`samples/` に .blend を3つ用意しています。**開いて `Start Simulation` を押し、
+`samples/` に .blend を 8 つ用意しています。**開いて `Start Simulation` を押し、
 再生するだけ**で結果が見られます。
 
 | ファイル | 内容 |
@@ -91,6 +91,11 @@ Windows でしかしていません。
 | `01_drape.blend` | 球に布を被せる。最も基本的な使い方 |
 | `02_flag.blend` | 風になびく旗。Substeps を上げて揺れを持続させた例 |
 | `03_sewing.blend` | 2枚のパターンを左右で縫って筒にする。パターンを縫い合わせるワークフローの核心 |
+| `04_pattern_uv.blend` | 型紙から UV を作り、着せた服に柄を実寸で乗せる |
+| `05_pattern_link.blend` | 型紙オブジェクトを直すと、着せた服が追従する |
+| `06_curve_pattern.blend` | Curve を型紙にして布を作る(Curve の点を動かすと布が追従する) |
+| `07_curve_arrange.blend` | Curve で持った前身頃・後身頃を体の周りに置き、両脇を縫って着せる |
+| `08_gusset_cushion.blend` | マチ(帯)を縫った座布団と丸いクッション。圧力で膨らませる |
 
 手で作った .blend ではなくスクリプトから生成しているので、
 アドオンが変わったら作り直せます。

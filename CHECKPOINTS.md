@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 211 項目、2026-10-09)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 233 項目、2026-10-09)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
@@ -85,6 +85,20 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       **白い点**で光るか。選択を変えると、その場で追従するか。全部選ぶ(A)と布の外周すべてが光るか。
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
+
+### マチ(2026-10-09、M11)で増えた確認項目
+
+- [ ] **座布団と丸いクッションの見た目**: `samples/08_gusset_cushion.blend` を開く。`Zabuton`(40cm 角・帯 8cm)と
+      `Pouf`(半径 18cm・帯 12cm)が、**側面の立ったクッション**に見えるか。角(Zabuton の縦の 4 本)が
+      不自然に潰れていないか(角の上に小さな折り込みが残るのは今の限界)。再生すると床の上で少しへたるか
+- [ ] **詰め具合**: どちらかを選び、Fabric の `Pressure Mode` を Volume、`Fill` を 0.6 にして `Close Bag`。
+      一度箱形に戻ってから、**満杯より柔らかい形**で止まるか。Fill 0.6 / 0.85 / 1.0 で違いが分かるか
+- [ ] **自分で作る**: 新しい Curve に同じ大きさの輪郭を 2 つ並べて `Initialize`。Curve Pattern パネルの
+      `Add Gusset`(高さを聞かれる)で、Curve の下に帯の輪郭が足され、布が箱形に組まれるか。
+      縫い目のリストに Gusset Top 1/2・Bottom 1/2・End が並び、色付きの線が表・裏・帯の縁に出るか。
+      `Remove Gusset` で帯と縫い目が消え、2 枚を平らに重ねた袋に戻るか
+- [ ] **Close Bag の止まり方**: 前より早く(数十ステップで)止まるようになった。止まった形が
+      膨らみきる前に見えないか(形が落ち着いたら止める。全体がゆっくり回るのは無視する)
 
 ### ピースの外周の常時表示(2026-10-09、M10)で増えた確認項目
 
