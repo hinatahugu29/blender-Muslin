@@ -217,6 +217,7 @@ class MUSLIN_PT_forces(_MuslinSettingsPanel, bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(props, "gravity")
         col.prop(props, "wind")
+        col.prop(props, "use_force_fields")
 
 
 class MUSLIN_PT_collision(_MuslinSettingsPanel, bpy.types.Panel):

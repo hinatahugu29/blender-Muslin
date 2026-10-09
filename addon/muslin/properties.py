@@ -396,6 +396,15 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
         size=3,
         subtype='XYZ',
     )
+    use_force_fields: bpy.props.BoolProperty(
+        name="Use Force Fields",
+        description=(
+            "シーンにある Wind の Force Field を風に足す。向きはフィールドの Z 軸、強さ(Strength)を "
+            "N/m^2 の面圧として、毎フレーム読む(Empty を回して風向きを変えたり、強さをキーフレームで"
+            "動かしたりできる)。距離による弱まり(Falloff)や乱れ(Noise)は見ない。一様な風として足す"
+        ),
+        default=False,
+    )
     damping: bpy.props.FloatProperty(
         name="Damping",
         description="速度減衰(0で減衰なし。大きいほど布が早く静止する)",

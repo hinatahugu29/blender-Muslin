@@ -1611,6 +1611,41 @@ def main():
     bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
+    section("Force Field の風")
+    # Wind の Force Field を風に足す(ROADMAP の検討項目)。向きはフィールドの Z 軸、強さは N/m^2
+
+    def drift_x(use_fields, hidden=False):
+        clear_scene()
+        scene = bpy.context.scene
+        scene.frame_start = 1
+        scene.frame_set(1)
+        o = make_grid("WindGrid", side=9, z=1.0)
+        o.muslin.collision_enabled = False
+        o.muslin.gravity = 0.0
+        o.muslin.use_force_fields = use_fields
+        bpy.ops.object.effector_add(type='WIND', rotation=(0.0, math.radians(90.0), 0.0))
+        field_obj = bpy.context.active_object
+        field_obj.field.strength = 5.0
+        field_obj.hide_set(hidden)
+        bpy.context.view_layer.objects.active = o
+        x0 = sum(v.co.x for v in o.data.vertices) / len(o.data.vertices)
+        sim_state.start_simulation(o, o.muslin)
+        advance(10, start=2)
+        sim_state.stop_simulation(o)
+        x1 = sum(v.co.x for v in o.data.vertices) / len(o.data.vertices)
+        wind = sim_state.effective_wind(o.muslin)
+        return x1 - x0, wind
+
+    moved_on, wind_on = drift_x(True)
+    moved_off, _w = drift_x(False)
+    moved_hidden, wind_hidden = drift_x(True, hidden=True)
+    check("Use Force Fields: +X を向けた Wind のフィールドの強さが風になる",
+          abs(wind_on[0] - 5.0) < 1e-6 and abs(wind_on[1]) < 1e-6 and abs(wind_on[2]) < 1e-6, str(wind_on))
+    check("フィールドの風で布が +X へ流される(切っていれば流されない)",
+          moved_on > 0.01 and abs(moved_off) < 1e-6, f"{moved_on * 1000:.1f} mm / {moved_off * 1000:.3f} mm")
+    check("隠したフィールドは足さない", abs(moved_hidden) < 1e-6 and wind_hidden == (0.0, 0.0, 0.0),
+          str(wind_hidden))
+
     section("布に重ねたモディファイア(Solidify / Subdivision)")
     # 厚みを付けた出力は Blender の Solidify で足りる(ROADMAP の検討項目)。シミュレーションは
     # モディファイアの前のメッシュで解き、重ねたモディファイアはその結果にかかる

@@ -378,6 +378,29 @@ def seam_close_span(state, props):
     return span
 
 
+def force_field_wind():
+    """シーンの Wind の Force Field を足し合わせた一様な風(N/m^2)。見えていないフィールドは除く。"""
+    from mathutils import Vector
+    total = Vector((0.0, 0.0, 0.0))
+    for obj in bpy.context.scene.objects:
+        field = getattr(obj, "field", None)
+        if field is None or field.type != 'WIND' or not obj.visible_get():
+            continue
+        direction = obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
+        if direction.length > 1e-12:
+            total += direction.normalized() * field.strength
+    return total
+
+
+def effective_wind(props):
+    """布に掛ける風。Wind の値に、Use Force Fields なら Force Field の風を足す。"""
+    wind = tuple(props.wind)
+    if not getattr(props, "use_force_fields", False):
+        return wind
+    extra = force_field_wind()
+    return (wind[0] + extra.x, wind[1] + extra.y, wind[2] + extra.z)
+
+
 def advance_one_frame(state, props, dt, target_frame):
     """1フレーム分だけシミュレーションを進める。"""
     sim = state["sim"]
@@ -397,7 +420,7 @@ def advance_one_frame(state, props, dt, target_frame):
         props.iterations,
         props.substeps,
         props.damping,
-        tuple(props.wind),
+        effective_wind(props),
         props.floor_enabled,
         props.floor_z,
         props.friction,
