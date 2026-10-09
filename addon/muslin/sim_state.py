@@ -147,7 +147,9 @@ def _material_signature(props):
 
 
 def _group_material_signature(members):
-    return tuple(_material_signature(m.muslin) for m in members)
+    # 部位ごとの生地(マテリアルの Override Fabric)も、変えたら渡し直す
+    return tuple(_material_signature(m.muslin) + (tuple(sorted(mesh_io.part_fabrics(m).items())),)
+                 for m in members)
 
 
 def _sync_material(state, props, obj=None):

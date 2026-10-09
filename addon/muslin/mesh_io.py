@@ -620,27 +620,78 @@ def volume_target(props):
     return 0.0
 
 
+def part_fabrics(obj):
+    """布 obj の部位ごとの生地 {マテリアルスロットの番号: (密度, 伸び, 曲げ)}(上書きするものだけ)。"""
+    out = {}
+    for k, slot in enumerate(getattr(obj, "material_slots", [])):
+        fabric = getattr(slot.material, "muslin_fabric", None) if slot.material is not None else None
+        if fabric is not None and fabric.enabled:
+            out[k] = (fabric.density, fabric.stretch_compliance, fabric.bending_compliance)
+    return out
+
+
+def vertex_part_slots(mesh, slots):
+    """頂点ごとの部位(マテリアルスロットの番号。上書きの無い部位は -1)。
+
+    頂点は 1 つの生地にしか属せない(コアの生地は頂点ごと)ので、その頂点を囲む面の
+    スロットの多数決で決める。同数なら上書きの無い部位、次に小さいスロットを採る。
+    """
+    n = len(mesh.vertices)
+    if n == 0 or not slots or len(mesh.polygons) == 0:
+        return np.full(n, -1, dtype=np.int64)
+    order = sorted(slots)
+    column = {s: k + 1 for k, s in enumerate(order)}        # 0 列目 = 上書きの無い部位
+    poly_mat = np.empty(len(mesh.polygons), dtype=np.int64)
+    mesh.polygons.foreach_get("material_index", poly_mat)
+    totals = np.empty(len(mesh.polygons), dtype=np.int64)
+    mesh.polygons.foreach_get("loop_total", totals)
+    loop_vert = np.empty(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get("vertex_index", loop_vert)
+    loop_col = np.repeat(np.array([column.get(int(m), 0) for m in poly_mat], dtype=np.int64), totals)
+    counts = np.zeros((n, len(order) + 1), dtype=np.int64)
+    np.add.at(counts, (loop_vert, loop_col), 1)
+    best = counts.argmax(axis=1)                              # 同数なら小さい列(上書き無し → 小さいスロット)
+    table = np.array([-1] + order, dtype=np.int64)
+    return table[best]
+
+
 def apply_group_materials(sim, members, offsets):
     """グループの各布の生地と、ピン留めをコアに渡す。
 
-    1着だけのときは従来どおり全体に一括で渡す(結果を変えないため)。
+    1着だけで部位ごとの生地も無いときは、従来どおり全体に一括で渡す(結果を変えないため)。
+    部位ごとの生地(マテリアルの Override Fabric)があれば、その部位の頂点だけ生地を変える。
+    圧力と目標の体積は布ごと(部位では変えない)。
     """
     pinned = []
     for m, (start, _count) in zip(members, offsets):
         pinned += [start + i for i in find_vertex_group_indices(m, m.muslin.pin_vertex_group)]
-    if len(members) == 1:
+    parts = [part_fabrics(m) for m in members]
+    if len(members) == 1 and not parts[0]:
         props = members[0].muslin
         sim.set_density(props.density)
         sim.set_compliances(props.stretch_compliance, props.bending_compliance)
         sim.set_pressure(props.pressure)
     else:
-        vertex_material = []
-        for k, (_start, count) in enumerate(offsets):
-            vertex_material += [k] * count
-        values = [material_values(m.muslin) for m in members]
+        vertex_material, vertex_member, values = [], [], []
+        for k, (m, (_start, count)) in enumerate(zip(members, offsets)):
+            base = len(values)
+            values.append(material_values(m.muslin)[:3])
+            vertex_member += [k] * count
+            if not parts[k]:
+                vertex_material += [base] * count
+                continue
+            index_of = {}
+            for slot in sorted(parts[k]):
+                index_of[slot] = len(values)
+                values.append(parts[k][slot])
+            slots = vertex_part_slots(m.data, parts[k])
+            vertex_material += [index_of.get(int(s), base) for s in slots]
         sim.set_materials(vertex_material,
                           [v[0] for v in values], [v[1] for v in values], [v[2] for v in values])
-        sim.set_pressures(vertex_material, [v[3] for v in values])
+        if len(members) == 1:
+            sim.set_pressure(members[0].muslin.pressure)
+        else:
+            sim.set_pressures(vertex_member, [m.muslin.pressure for m in members])
     # 目標の体積は圧力の番号ごと(1 着なら 0 番だけ)。圧力のあとに渡す
     sim.set_volume_targets([volume_target(m.muslin) for m in members])
     sim.set_pinned(pinned)

@@ -678,12 +678,62 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
 
 
 
+# 部位ごとの生地(マテリアルに持たせる)。密度・伸び・曲げだけを上書きする
+# (減衰と圧力は布全体の性質なので布の設定のまま)
+PART_FABRIC_MAPPING = {
+    "density": "density",
+    "stretch": "stretch_compliance",
+    "bending": "bending_compliance",
+}
+
+
+def _apply_part_fabric_preset(self, context):
+    _apply_preset(self, FABRIC_PRESETS, "fabric_preset", PART_FABRIC_MAPPING)
+
+
+def _part_fabric_to_custom(self, context):
+    _fall_back_to_custom(self, "fabric_preset")
+
+
+class MUSLIN_PG_part_fabric(bpy.types.PropertyGroup):
+    """マテリアルごとの生地の上書き。このマテリアルを割り当てた面の部位だけ生地を変える。
+
+    1 つの布の中で、袖と身頃のように部位ごとに生地を変えるため。描画用に部位ごとの
+    マテリアルを割り当てる作業が、そのまま生地の割り当てになる。
+    """
+
+    enabled: bpy.props.BoolProperty(
+        name="Override Fabric",
+        description="このマテリアルを割り当てた面の部位だけ、Muslin の生地を下の値に変える",
+        default=False,
+    )
+    fabric_preset: bpy.props.EnumProperty(
+        name="Fabric",
+        description="生地のプリセット。選ぶと Density / Stretch / Bending がまとめて設定される",
+        items=_fabric_items,
+        update=_apply_part_fabric_preset,
+    )
+    density: bpy.props.FloatProperty(
+        name="Density", description="面密度 kg/m^2", default=0.2, min=0.001, soft_max=2.0,
+        update=_part_fabric_to_custom,
+    )
+    stretch_compliance: bpy.props.FloatProperty(
+        name="Stretch Compliance", description="伸び制約のコンプライアンス(0に近いほど伸びない)",
+        default=0.0, min=0.0, soft_max=0.01, precision=6, update=_part_fabric_to_custom,
+    )
+    bending_compliance: bpy.props.FloatProperty(
+        name="Bending Compliance", description="曲げにくさ(0 で最も硬い。大きいほど柔らかい)",
+        default=0.02, min=0.0, soft_max=0.5, precision=5, update=_part_fabric_to_custom,
+    )
+
+
 _classes = (
     MUSLIN_PG_vertex_index,
     MUSLIN_PG_seam,
     MUSLIN_PG_elastic,
     MUSLIN_PG_tools,
     MUSLIN_PG_cloth,
+    MUSLIN_PG_part_fabric,
 )
 
 
@@ -699,9 +749,12 @@ def register():
     bpy.types.Object.muslin_seam_active = bpy.props.IntProperty(default=0)
     bpy.types.Object.muslin_elastics = bpy.props.CollectionProperty(type=MUSLIN_PG_elastic)
     bpy.types.Object.muslin_elastic_active = bpy.props.IntProperty(default=0)
+    # 部位ごとの生地はマテリアルに持たせる(描画のマテリアルの割り当てがそのまま部位になる)
+    bpy.types.Material.muslin_fabric = bpy.props.PointerProperty(type=MUSLIN_PG_part_fabric)
 
 
 def unregister():
+    del bpy.types.Material.muslin_fabric
     del bpy.types.Object.muslin_elastic_active
     del bpy.types.Object.muslin_elastics
     del bpy.types.Object.muslin_seam_active

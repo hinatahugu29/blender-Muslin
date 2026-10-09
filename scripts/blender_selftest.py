@@ -1611,6 +1611,55 @@ def main():
     bpy.ops.muslin.stop_sim()
 
     # ----------------------------------------------------------------
+    section("部位ごとの生地(マテリアルの Override Fabric)")
+
+    def cantilever(override, with_materials=True):
+        """x = 0 の辺を留めた水平な布。y < 0.5 の面を 2 つ目のマテリアルにする。"""
+        clear_scene()
+        scene = bpy.context.scene
+        scene.frame_start = 1
+        scene.frame_set(1)
+        o = make_grid("PartGrid", side=17, z=1.0)
+        props = o.muslin
+        props.collision_enabled = False
+        props.fabric_preset = 'CHIFFON'
+        props.quality = 'HIGH'
+        group = o.vertex_groups.new(name="Pin")
+        group.add([v.index for v in o.data.vertices if v.co.x < 1e-6], 1.0, 'REPLACE')
+        props.pin_vertex_group = "Pin"
+        if with_materials:
+            soft = bpy.data.materials.new("Soft")
+            stiff = bpy.data.materials.new("Stiff")
+            o.data.materials.append(soft)
+            o.data.materials.append(stiff)
+            for poly in o.data.polygons:
+                poly.material_index = 1 if poly.center.y < 0.5 else 0
+            stiff.muslin_fabric.enabled = override
+            stiff.muslin_fabric.fabric_preset = 'LEATHER'
+        bpy.context.view_layer.objects.active = o
+        sim_state.start_simulation(o, props)
+        advance(24, start=2)
+        sim_state.stop_simulation(o)
+        co = positions_of(o)
+        scene.frame_set(1)
+        return o, co
+
+    from muslin import mesh_io as _mio
+    o, plain = cantilever(False, with_materials=False)
+    _o, unused = cantilever(False)
+    check("上書きを入れていなければ、マテリアルがあっても結果は同じ", _maxdiff(plain, unused) == 0.0,
+          f"{_maxdiff(plain, unused):.2e}")
+    o, parts = cantilever(True)
+    slots = _mio.vertex_part_slots(o.data, _mio.part_fabrics(o))
+    ys = [v.co.y for v in o.data.vertices]
+    check("頂点の部位は囲む面の多数決(境目より手前は Stiff、先は上書き無し)",
+          all(int(s_) == 1 for s_, y in zip(slots, ys) if y < 0.43)
+          and all(int(s_) == -1 for s_, y in zip(slots, ys) if y > 0.57), str(set(int(x) for x in slots)))
+    stiff_low = min(z for (x, y, z) in parts if y < 0.4)
+    soft_low = min(z for (x, y, z) in parts if y > 0.6)
+    check("硬い生地(Leather)にした半分は、柔らかい半分(Chiffon)より垂れない",
+          stiff_low > soft_low + 0.02, f"最低点 硬い側 {stiff_low:.3f} / 柔らかい側 {soft_low:.3f} m")
+
     section("Force Field の風")
     # Wind の Force Field を風に足す(ROADMAP の検討項目)。向きはフィールドの Z 軸、強さは N/m^2
 

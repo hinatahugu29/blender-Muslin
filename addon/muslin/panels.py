@@ -177,6 +177,19 @@ class MUSLIN_PT_material(_MuslinSettingsPanel, bpy.types.Panel):
         col.prop(props, "bending_compliance")
         col.prop(props, "damping")
         col.prop(props, "pressure")
+
+        # 部位ごとの生地(マテリアルの Override Fabric)。値はマテリアルのプロパティで細かく変えられる
+        obj = context.active_object
+        slots = [s for s in getattr(obj, "material_slots", []) if s.material is not None]
+        if slots:
+            box = layout.box()
+            box.label(text="部位ごとの生地(マテリアル)", icon='MATERIAL')
+            for slot in slots:
+                fabric = slot.material.muslin_fabric
+                row = box.row(align=True)
+                row.prop(fabric, "enabled", text=slot.material.name)
+                if fabric.enabled:
+                    row.prop(fabric, "fabric_preset", text="")
         if props.pressure != 0.0:
             # 圧力の決め方(M11 の第 2 段階)。Volume なら詰め具合で膨らみ方を決める
             row = layout.row(align=True)
@@ -633,6 +646,46 @@ class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
         layout.operator("muslin.print_timings", icon='TIME')
 
 
+class MUSLIN_PT_part_fabric(bpy.types.Panel):
+    """マテリアルのプロパティに出す、部位ごとの生地。"""
+
+    bl_label = "Muslin Fabric"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "material"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @staticmethod
+    def _material(context):
+        mat = getattr(context, "material", None)
+        if mat is None:
+            obj = getattr(context, "active_object", None)
+            mat = getattr(obj, "active_material", None)
+        return mat
+
+    @classmethod
+    def poll(cls, context):
+        return cls._material(context) is not None
+
+    def draw_header(self, context):
+        self.layout.prop(self._material(context).muslin_fabric, "enabled", text="")
+
+    def draw(self, context):
+        mat = self._material(context)
+        if mat is None:
+            return
+        fabric = mat.muslin_fabric
+        layout = self.layout
+        layout.use_property_split = True
+        layout.active = fabric.enabled
+        layout.label(text="このマテリアルの面だけ Muslin の生地を変える", icon='INFO')
+        layout.prop(fabric, "fabric_preset")
+        col = layout.column(align=True)
+        col.prop(fabric, "density")
+        col.prop(fabric, "stretch_compliance")
+        col.prop(fabric, "bending_compliance")
+
+
 _classes = (
     MUSLIN_UL_seams,
     MUSLIN_UL_elastics,
@@ -649,6 +702,7 @@ _classes = (
     MUSLIN_PT_elastic,
     MUSLIN_PT_bake,
     MUSLIN_PT_debug,
+    MUSLIN_PT_part_fabric,
 )
 
 
