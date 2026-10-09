@@ -346,9 +346,14 @@ def _dressed_garment(scene):
     smooth(garment)
     mark_as_cloth(garment)
 
+    # 肩は上端の中ほど(幅の 1/4)だけを留める。端まで留めると、前後を 36cm 離して固定した脇の縫い目の
+    # 一番上が閉じようがなく、縫い目に引かれて肩の角の辺が型紙の 2.5〜6 倍に伸び、
+    # 開始のたびに「型紙が今のメッシュと合わない」と出ていた
     group = garment.vertex_groups.new(name="Shoulder")
     top = max(v.co.z for v in garment.data.vertices)
-    group.add([v.index for v in garment.data.vertices if abs(v.co.z - top) < 1e-5],
+    half = max(abs(v.co.x) for v in garment.data.vertices)
+    group.add([v.index for v in garment.data.vertices
+               if abs(v.co.z - top) < 1e-5 and abs(v.co.x) < 0.25 * half],
               1.0, 'REPLACE')
 
     xs = [v.co.x for v in garment.data.vertices]
