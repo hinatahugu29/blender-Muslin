@@ -1247,7 +1247,14 @@ def test_step_call_matches_signature():
     tree = ast.parse((ADDON_DIR / "sim_state.py").read_text(encoding="utf-8"))
 
     def props_attr(node):
-        """式の中から props.X の X を1つ取り出す(-abs(props.gravity) など)"""
+        """式の中から props.X の X を1つ取り出す(-abs(props.gravity) など)。
+
+        `effective_X(props)` は、props.X に何かを足して渡す関数(Force Field を足す風など)
+        なので X として読む。
+        """
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id.startswith("effective_")):
+            return node.func.id[len("effective_"):]
         for sub in ast.walk(node):
             if (isinstance(sub, ast.Attribute)
                     and isinstance(sub.value, ast.Name)
