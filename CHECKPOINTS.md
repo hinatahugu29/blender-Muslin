@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 184 項目、2026-10-08)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 211 項目、2026-10-09)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
@@ -85,6 +85,14 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       **白い点**で光るか。選択を変えると、その場で追従するか。全部選ぶ(A)と布の外周すべてが光るか。
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
+
+### ピースの外周の常時表示(2026-10-09、M10)で増えた確認項目
+
+- [ ] **Curve を選んでいる間だけ外周が薄く出る**: `samples/07_curve_arrange.blend` で `Pair_Pattern` を
+      クリックするだけ(オブジェクトモードのまま)で、布の各ピースの外周が**白く薄い線**で出るか。
+      布や体をクリックすると消えるか。Tab で編集モードに入っても出たままで、選んだ区間の白い太線と
+      見分けられるか。薄さ(不透明度 0.35)と太さ(2.5px)が、黒い背景・明るい背景のどちらでも
+      うるさすぎず、見えにくすぎないか。Curve Pattern パネルの一番下の `Show Piece Outlines` で切れるか
 
 ### ゴム紐を Curve で持つ(2026-10-08、M10)で増えた確認項目
 
