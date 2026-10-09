@@ -360,14 +360,32 @@ def _update_animated_colliders(state, props):
             print(f"[muslin] コライダー '{name}' を更新できません: {exc}")
 
 
+# 縫い目を閉じる速さの上限(1 フレームあたり m)。縫い目の対はすべて同じ速さで縮むので
+# (コア)、最も離れた対が Seam Close Frames で閉じる速さがこれを超えるなら、そのぶん
+# 時間をかけて閉じる。離して置いたピースを一気に引き寄せて布を乱暴に振り回さないように
+SEAM_CLOSE_MAX_PER_FRAME = 0.02
+
+
+def seam_close_span(state, props):
+    """縫い目を閉じるのにかけるフレーム数(Seam Close Frames か、速さの上限で決まる長いほう)。"""
+    import math
+    span = props.seam_close_frames
+    if span <= 0:
+        return 0            # 0 は「即座に閉じる」という明示の指定
+    longest = float(getattr(state["sim"], "longest_seam_gap", 0.0) or 0.0)
+    if longest > 0.0:
+        span = max(span, int(math.ceil(longest / SEAM_CLOSE_MAX_PER_FRAME)))
+    return span
+
+
 def advance_one_frame(state, props, dt, target_frame):
     """1フレーム分だけシミュレーションを進める。"""
     sim = state["sim"]
 
-    # 縫製の進行度: start_frame から seam_close_frames かけて 0 -> 1
+    # 縫製の進行度: start_frame から seam_close_span かけて 0 -> 1
     if state["info"].get("seams", 0) > 0:
         elapsed = target_frame - state["start_frame"]
-        span = props.seam_close_frames
+        span = seam_close_span(state, props)
         closure = 1.0 if span <= 0 else min(max(elapsed / span, 0.0), 1.0)
         sim.set_seam_closure(closure)
 

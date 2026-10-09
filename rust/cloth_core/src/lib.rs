@@ -420,6 +420,12 @@ mod bindings {
             self.inner.seam_closure()
         }
 
+        /// 縫い目の対の、組み立て時の最も長い距離(m)
+        #[getter]
+        fn longest_seam_gap(&self) -> f64 {
+            self.inner.longest_seam_gap()
+        }
+
         #[getter]
         fn vertex_count(&self) -> usize {
             self.inner.vertex_count()

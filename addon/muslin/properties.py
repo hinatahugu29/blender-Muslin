@@ -625,7 +625,9 @@ class MUSLIN_PG_cloth(bpy.types.PropertyGroup):
     # --- 縫製(M3) ---
     seam_close_frames: bpy.props.IntProperty(
         name="Seam Close Frames",
-        description="縫い目が完全に閉じるまでのフレーム数(0で即座に閉じる)",
+        description="縫い目が完全に閉じるまでのフレーム数(0で即座に閉じる)。"
+                    "縫い目はどこも同じ速さで縮み、1 フレームに 2cm より速くは閉じない"
+                    "(離して置いたピースは、そのぶん長くかけて閉じる)",
         default=30,
         min=0,
         soft_max=240,

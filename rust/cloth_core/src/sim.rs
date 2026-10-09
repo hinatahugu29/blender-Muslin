@@ -1185,11 +1185,30 @@ impl ClothSim {
         self.seam_closure
     }
 
+    /// 縫い目の対の目標の長さを、閉じる進み具合 t(0〜1)に合わせる。
+    ///
+    /// すべての対を同じ速さで縮める(t = 1 で最も離れた対が閉じ、近い対はそれより先に閉じる)。
+    /// 以前は対ごとに自分の長さの割合で縮めていたので、全部が同時に閉じ切り、離して置いた
+    /// 対ほど速く引き寄せられた(30cm 離した対は 3cm の対の 10 倍の速さ)。
     fn apply_seam_closure(&mut self) {
         let t = self.seam_closure;
+        let longest = self
+            .seam_constraints
+            .iter()
+            .map(|c| c.initial_length)
+            .fold(0.0_f64, f64::max);
+        let shrink = longest * t;
         for c in self.seam_constraints.iter_mut() {
-            c.rest_length = c.initial_length * (1.0 - t);
+            c.rest_length = (c.initial_length - shrink).max(0.0);
         }
+    }
+
+    /// 縫い目の対の、組み立て時の最も長い距離(閉じるのにかける時間を決めるのに使う)。
+    pub fn longest_seam_gap(&self) -> f64 {
+        self.seam_constraints
+            .iter()
+            .map(|c| c.initial_length)
+            .fold(0.0_f64, f64::max)
     }
 
     /// dt 秒だけ進める。内部で substeps 回に分割する。
@@ -3020,6 +3039,29 @@ mod tests {
         assert!(sim.is_finite(), "シミュレーションが発散した");
         let err = sim.average_stretch_error();
         assert!(err < 0.05, "平均伸び誤差が大きすぎる: {err}");
+    }
+
+    /// 縫い目の対は、離れ具合によらず同じ速さで縮む(遠い対ほど速く引き寄せない)
+    #[test]
+    fn seam_closure_moves_every_pair_at_the_same_speed() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.3, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.03, 1.0, 0.0),
+        ];
+        let mut sim = ClothSim::new(positions, &[], &[], &[], &[], 0.0, 0.0, 0.0);
+        sim.set_seams(&[(0, 1), (2, 3)], 0.0);
+        assert!((sim.longest_seam_gap() - 0.3).abs() < 1e-12);
+        sim.set_seam_closure(0.05);
+        let rest: Vec<f64> = sim.seam_constraints.iter().map(|c| c.rest_length).collect();
+        assert!((rest[0] - 0.285).abs() < 1e-12, "遠い対: {}", rest[0]);
+        assert!((rest[1] - 0.015).abs() < 1e-12, "近い対も同じ 1.5cm だけ縮む: {}", rest[1]);
+        sim.set_seam_closure(0.2);
+        let rest: Vec<f64> = sim.seam_constraints.iter().map(|c| c.rest_length).collect();
+        assert!((rest[0] - 0.24).abs() < 1e-12 && rest[1] == 0.0, "近い対は先に閉じる: {rest:?}");
+        sim.set_seam_closure(1.0);
+        assert!(sim.seam_constraints.iter().all(|c| c.rest_length == 0.0));
     }
 
     /// 縫製制約: closure を 1 まで上げると 2 頂点が引き寄せられる(M3の基礎)

@@ -1306,6 +1306,14 @@ def main():
     bpy.ops.muslin.stop_sim()
     scene.frame_set(1)
 
+    # 縫い目を閉じる時間: 離して置いたピースは、速さの上限(1 フレーム 2cm)のぶん長くかける
+    import types
+    fake = lambda gap: {"sim": types.SimpleNamespace(longest_seam_gap=gap)}
+    sp = types.SimpleNamespace(seam_close_frames=30)
+    check("縫い目を閉じる時間: 近ければ Seam Close Frames のまま、1m 離せば 50 フレーム、0 は即座",
+          sim_state.seam_close_span(fake(0.1), sp) == 30 and sim_state.seam_close_span(fake(1.0), sp) == 50
+          and sim_state.seam_close_span(fake(1.0), types.SimpleNamespace(seam_close_frames=0)) == 0)
+
     # 着せたときと体のポーズが違えば、開始時に警告する(ROADMAP M7 の残件)
     from muslin import dress_pose
     check("着せると体のポーズを記録する", bool(piece.get(dress_pose.POSE_KEY)))

@@ -101,7 +101,8 @@ class Dresser:
         self.steps = 0
         self.calm = 0
         self.speed = float("inf")
-        self.seam_steps = props.seam_close_frames if self.state["info"]["seams"] else 0
+        self.seam_steps = (sim_state.seam_close_span(self.state, props)
+                           if self.state["info"]["seams"] else 0)
         self._last = np.asarray(self.state["sim"].get_positions())
         # つまんでいる間の状態。離したら上限のステップ数を数え直す
         self.grabbed = None
