@@ -620,6 +620,80 @@ def sample_curve_arrange():
     save("07_curve_arrange.blend")
 
 
+def _cushion_curve(scene, name, outline, location):
+    """表と裏の 2 枚の輪郭を XY 平面に並べた Curve。outline(sp, x0) が 1 枚を描く。"""
+    from muslin import curve_pattern
+
+    cu = bpy.data.curves.new(name, 'CURVE')
+    cu.dimensions = '2D'
+    for x0 in (0.0, 0.5):
+        outline(cu.splines.new('BEZIER'), x0)
+    curve = bpy.data.objects.new(name, cu)
+    scene.collection.objects.link(curve)
+    curve.location = location
+    bpy.context.view_layer.objects.active = curve
+    curve_pattern.initialize(curve, 0.02)
+    return curve
+
+
+def _close_cushion(scene, curve, height, cloth_name, location):
+    from muslin import curve_pattern
+
+    cloth, _warnings = curve_pattern.add_gusset(bpy.context, curve, height)
+    cloth.name = cloth_name
+    mark_as_cloth(cloth)
+    cloth.location = location
+    props = cloth.muslin
+    props.collision_enabled = False
+    props.self_collision_enabled = False
+    props.seam_close_frames = 10
+    props.pressure = 100.0
+    props.quality = 'HIGH'
+    smooth(cloth)
+    for o in scene.objects:
+        o.select_set(o is cloth)
+    bpy.context.view_layer.objects.active = cloth
+    closed = bpy.ops.muslin.close_bag()
+    print(f"  {cloth_name}: {len(cloth.data.vertices)} 頂点 / Close Bag {closed}", flush=True)
+    return cloth
+
+
+def sample_gusset_cushion():
+    """マチ(帯)のある座布団(正方形)と丸いクッション。Add Gusset → Close Bag(M11)。"""
+    print("08_gusset_cushion: マチのある座布団と丸いクッション", flush=True)
+    scene = fresh_scene(frame_end=120)
+
+    def square(sp, x0):
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points,
+                              [(x0, 0.0), (x0 + 0.4, 0.0), (x0 + 0.4, 0.4), (x0, 0.4)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+
+    def circle(sp, x0, r=0.18, k=0.5523):
+        cx = x0 + r
+        sp.bezier_points.add(3)
+        for pt, (x, y, tx, ty) in zip(sp.bezier_points, [(cx + r, 0.0, 0, 1), (cx, r, -1, 0),
+                                                         (cx - r, 0.0, 0, -1), (cx, -r, 1, 0)]):
+            pt.handle_left_type = pt.handle_right_type = 'FREE'
+            pt.co = (x, y, 0.0)
+            pt.handle_right = (x + tx * k * r, y + ty * k * r, 0.0)
+            pt.handle_left = (x - tx * k * r, y - ty * k * r, 0.0)
+        sp.use_cyclic_u = True
+
+    box = _cushion_curve(scene, "Zabuton_Pattern", square, (0.0, 1.0, 0.0))
+    _close_cushion(scene, box, 0.08, "Zabuton", (0.0, -0.6, 0.0))
+    pouf = _cushion_curve(scene, "Pouf_Pattern", circle, (1.4, 1.0, 0.0))
+    _close_cushion(scene, pouf, 0.12, "Pouf", (1.0, -0.6, 0.0))
+
+    # 既定のフォントに無い漢字(「変」など)は抜けるので、説明文は使える字で書く
+    add_note("Zabuton / Pouf を選び、Fabric の Pressure Mode を Volume、Fill を 0.6 にして Close Bag",
+             location=(0.6, 0.6, 0.6), size=0.05)
+    add_camera_and_light((0.6, -0.4, 0.0), distance=2.0, height=1.4)
+    save("08_gusset_cushion.blend")
+
+
 SAMPLES = {
     "01": sample_drape,
     "02": sample_flag,
@@ -628,6 +702,7 @@ SAMPLES = {
     "05": sample_pattern_link,
     "06": sample_curve_pattern,
     "07": sample_curve_arrange,
+    "08": sample_gusset_cushion,
 }
 
 

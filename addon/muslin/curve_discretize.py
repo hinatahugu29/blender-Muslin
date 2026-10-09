@@ -69,11 +69,62 @@ def _hex_lattice(lo, hi, h):
     return np.vstack(pts)
 
 
+def _grid(boundary_xy):
+    """境界の頂点が軸にそろった長方形の格子の外枠になっていれば、内側の格子点と三角形を返す。
+
+    マチ(帯)のような長方形のピースは、六角格子を斜めに横切って折れるとしわが寄る
+    (角で 90° 折れる帯の、角のまわりの折れ角の和が 600° 前後。縫い目で折れる角は 11°)。
+    格子を縦横にそろえれば、境界の頂点の列(角の位置を含む)に縦の辺が通り、そこで素直に折れる。
+    外枠になっていなければ None(呼び出し側が六角格子に戻す)。
+    戻り値: (内側の点 (k, 2), 三角形 (m, 3)。番号は境界の頂点のあとに内側の点を続けたもの)
+    """
+    xy = np.asarray(boundary_xy, dtype=np.float64)
+    span = float(np.ptp(xy, axis=0).max())
+    if span <= 0.0:
+        return None
+    tol = span * 1e-6
+
+    def levels(values):
+        order = np.sort(values)
+        keep = [order[0]]
+        for v in order[1:]:
+            if v - keep[-1] > tol:
+                keep.append(v)
+        return np.array(keep)
+
+    xs, ys = levels(xy[:, 0]), levels(xy[:, 1])
+    nx, ny = len(xs), len(ys)
+    if nx < 2 or ny < 2 or len(xy) != 2 * nx + 2 * ny - 4:
+        return None
+    cell = {}
+    for k, (x, y) in enumerate(xy):
+        j = int(np.argmin(np.abs(xs - x)))
+        i = int(np.argmin(np.abs(ys - y)))
+        if abs(xs[j] - x) > tol or abs(ys[i] - y) > tol:
+            return None
+        if not (j in (0, nx - 1) or i in (0, ny - 1)) or (i, j) in cell:
+            return None
+        cell[(i, j)] = k
+    inner = []
+    for i in range(1, ny - 1):
+        for j in range(1, nx - 1):
+            cell[(i, j)] = len(xy) + len(inner)
+            inner.append((xs[j], ys[i]))
+    tris = []
+    for i in range(ny - 1):
+        for j in range(nx - 1):
+            a, b, c, d = cell[(i, j)], cell[(i, j + 1)], cell[(i + 1, j + 1)], cell[(i + 1, j)]
+            tris += [(a, b, c), (a, c, d)]          # 反時計回り(x が右、y が上)
+    inner = np.array(inner, dtype=np.float64).reshape(-1, 2)
+    return inner, np.array(tris, dtype=np.int64)
+
+
 def discretize(outlines, target_length):
     """輪郭の一覧から派生データを作る。
 
-    outlines: [{"piece_uid", "uids", "co", "hl", "hr", "hole_of"}, ...]
-      hole_of が None なら外周、ピースの piece_uid を入れればその穴
+    outlines: [{"piece_uid", "uids", "co", "hl", "hr", "hole_of", "grid"(任意)}, ...]
+      hole_of が None なら外周、ピースの piece_uid を入れればその穴。
+      grid が真の外周(マチ)は、長方形なら縦横の格子で分ける(`_grid`)
     戻り値: dict(positions, triangles, boundary, seg_start, seg_end, u, piece, rings,
                  segment_counts, segment_lengths, target_length, algorithm_version)
     """
@@ -104,18 +155,23 @@ def discretize(outlines, target_length):
             start += len(xy)
         boundary_xy = np.vstack(piece_xy)
 
-        lo, hi = piece_xy[0].min(axis=0), piece_xy[0].max(axis=0)
-        lattice = _hex_lattice(lo, hi, h)
-        lattice = lattice[delaunay2d.point_in_rings(lattice, piece_xy)]
-        if len(lattice):
-            far = delaunay2d.distance_to_rings(lattice, piece_xy) >= INTERIOR_MARGIN * h
-            lattice = lattice[far]
+        grid = _grid(boundary_xy) if outer.get("grid") and not holes else None
+        if grid is not None:
+            lattice, tris = grid
+            pts = np.vstack([boundary_xy, lattice]) if len(lattice) else boundary_xy
+        else:
+            lo, hi = piece_xy[0].min(axis=0), piece_xy[0].max(axis=0)
+            lattice = _hex_lattice(lo, hi, h)
+            lattice = lattice[delaunay2d.point_in_rings(lattice, piece_xy)]
+            if len(lattice):
+                far = delaunay2d.distance_to_rings(lattice, piece_xy) >= INTERIOR_MARGIN * h
+                lattice = lattice[far]
 
-        pts = np.vstack([boundary_xy, lattice]) if len(lattice) else boundary_xy
-        tris = delaunay2d.triangulate(pts)
-        if len(tris):
-            centroid = pts[tris].mean(axis=1)
-            tris = tris[delaunay2d.point_in_rings(centroid, piece_xy)]
+            pts = np.vstack([boundary_xy, lattice]) if len(lattice) else boundary_xy
+            tris = delaunay2d.triangulate(pts)
+            if len(tris):
+                centroid = pts[tris].mean(axis=1)
+                tris = tris[delaunay2d.point_in_rings(centroid, piece_xy)]
         if len(tris) == 0:
             raise DiscretizeError(f"ピース {pid} を三角形にできませんでした")
 

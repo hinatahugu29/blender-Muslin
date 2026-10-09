@@ -1577,6 +1577,111 @@ def test_curve_discretize():
     check("知らない uid は空", edges_of(99, 0.0, 2, 0.0) == [])
 
 
+def _curve_circle(r, uids=(1, 2, 3, 4), piece_uid=1, center=(0.0, 0.0)):
+    """円(4 点の Bezier。反時計回り)。"""
+    import numpy as np
+    k = 0.5523 * r
+    cx, cy = center
+    co = np.array([[cx + r, cy], [cx, cy + r], [cx - r, cy], [cx, cy - r]], dtype=float)
+    tangent = np.array([[0, 1], [-1, 0], [0, -1], [1, 0]], dtype=float)
+    return {"piece_uid": piece_uid, "uids": list(uids), "co": co, "hl": co - tangent * k,
+            "hr": co + tangent * k, "hole_of": None}
+
+
+def test_curve_gusset():
+    """マチ(帯)の割り当て・縦横の格子・側面への配置(bpy 非依存。M11)"""
+    if not has_numpy():
+        skip("マチ", "numpy が無い")
+        return
+    import numpy as np
+    import curve_discretize as cd
+    import curve_gusset as cg
+    import delaunay2d as dl
+
+    top = _curve_rect(0.3, 0.3)
+    bottom = _curve_rect(0.3, 0.3, uids=(5, 6, 7, 8), piece_uid=2, origin=(0.5, 0.0))
+    p = cg.plan(top, bottom, 0.08)
+    check("帯の長さ = 表の外周、分け目は外周の半分の制御点",
+          abs(p["length"] - 1.2) < 1e-6 and abs(p["split_x"] - 0.6) < 1e-6,
+          f"{p['length']:.4f} / {p['split_x']:.4f}")
+    xs_bottom = [x for x, y in p["points"] if y == 0.0]
+    check("帯の上下の縁に、表の角と同じ位置の点がある(2 × (4 + 1) = 10 点)",
+          len(p["points"]) == 10 and np.allclose(xs_bottom, [0, 0.3, 0.6, 0.9, 1.2]), str(xs_bottom))
+    seams = {name: (a, b, folded) for name, a, b, folded in p["seams"]}
+    check("縫い目は 5 本(表 2・裏 2・両端)",
+          sorted(seams) == ["Gusset Bottom 1", "Gusset Bottom 2", "Gusset End",
+                            "Gusset Top 1", "Gusset Top 2"], str(sorted(seams)))
+    check("表の前半は始点から分け目まで、裏はそれに重なる点どうし",
+          seams["Gusset Top 1"][0] == (1, 0.0, 3, 0.0) and seams["Gusset Bottom 1"][0] == (5, 0.0, 7, 0.0)
+          and seams["Gusset Top 2"][0] == (3, 0.0, 1, 0.0) and seams["Gusset Bottom 2"][0] == (7, 0.0, 5, 0.0))
+    check("帯の前半は上の縁の分け目から x = 0、下の縁の x = 0 から分け目",
+          seams["Gusset Top 1"][1] == (("g", 7), 0.0, ("g", 9), 0.0)
+          and seams["Gusset Bottom 1"][1] == (("g", 0), 0.0, ("g", 2), 0.0))
+    check("表・裏との縫い目は折り返し、正方形の角で出会う両端も折り返し",
+          all(seams[n][2] for n in seams))
+
+    # 裏を時計回りに描いても、重なる区間を輪郭の向きに沿って書く
+    bottom_cw = dict(bottom, co=bottom["co"][::-1].copy(), hl=bottom["co"][::-1].copy(),
+                     hr=bottom["co"][::-1].copy(), uids=[8, 7, 6, 5])
+    q = {name: a for name, a, _b, _f in cg.plan(top, bottom_cw, 0.08)["seams"]}
+    check("逆回りの裏は区間を逆から書く(表の前半 1→3 に、裏の 7→5 が当たる)",
+          q["Gusset Bottom 1"] == (7, 0.0, 5, 0.0) and q["Gusset Bottom 2"] == (5, 0.0, 7, 0.0),
+          str(q["Gusset Bottom 1"]))
+    # 時計回りの表は、帯の x を逆からたどる(帯の面を外へ向けるため)
+    top_cw = dict(top, co=top["co"][::-1].copy(), hl=top["co"][::-1].copy(), hr=top["co"][::-1].copy(),
+                  uids=[4, 3, 2, 1])
+    r = {name: a for name, a, _b, _f in cg.plan(top_cw, bottom, 0.08)["seams"]}
+    check("時計回りの表は、帯の前半に分け目から始点までが当たる(始点 4、分け目 2)",
+          r["Gusset Top 1"] == (2, 0.0, 4, 0.0) and r["Gusset Top 2"] == (4, 0.0, 2, 0.0),
+          str(r["Gusset Top 1"]))
+    # 丸い輪郭の始点は角ではないので、両端は平らにつなぐ
+    round_top = _curve_circle(0.18)
+    round_bottom = _curve_circle(0.18, uids=(5, 6, 7, 8), piece_uid=2, center=(0.5, 0.0))
+    rp = cg.plan(round_top, round_bottom, 0.08)
+    check("丸い輪郭: 始点は角ではない(両端を平らにつなぐ)",
+          cg.turn_at_start(cg.outline_arcs(round_top["co"], round_top["hl"], round_top["hr"])[0]) < 1.0
+          and not dict((n, f) for n, _a, _b, f in rp["seams"])["Gusset End"])
+    check("丸い輪郭: 帯の長さ = 円周", abs(rp["length"] - 2 * np.pi * 0.18) < 2e-3, f"{rp['length']:.4f}")
+    def raises(fn):
+        try:
+            fn()
+        except cg.GussetError:
+            return True
+        return False
+
+    check("幅 0 のマチは作らない", raises(lambda: cg.plan(top, bottom, 0.0)))
+
+    # 帯は縦横の格子で分ける(角の位置に縦の辺の列が通る)
+    pts = np.array(p["points"])
+    strip = {"piece_uid": 3, "uids": list(range(20, 30)), "co": pts, "hl": pts.copy(),
+             "hr": pts.copy(), "hole_of": None, "grid": True}
+    m = cd.discretize([strip], 0.02)
+    nx, ny = 61, 5
+    areas = dl.signed_areas(m["positions"], m["triangles"])
+    check("帯は縦横の格子(三角形 2 × 60 × 4 枚、面積 = 長さ × 幅、すべて反時計回り)",
+          len(m["triangles"]) == 2 * (nx - 1) * (ny - 1) and abs(areas.sum() - 1.2 * 0.08) < 1e-9
+          and (areas > 0).all(), f"{len(m['triangles'])} 枚 / {areas.sum():.6f}")
+    edges = cd.mesh_edges(m["triangles"])
+    xy = m["positions"]
+    vertical = [(a, b) for a, b in edges
+                if abs(xy[a, 0] - 0.3) < 1e-9 and abs(xy[b, 0] - 0.3) < 1e-9]
+    check("角の位置(x = 0.3)に縦の辺が 4 本並ぶ", len(vertical) == 4, str(len(vertical)))
+    hexed = cd.discretize([dict(strip, grid=False)], 0.02)
+    check("grid を付けなければ六角格子のまま(従来どおり)",
+          len(hexed["triangles"]) != len(m["triangles"]))
+    check("長方形でない輪郭に grid を付けても、六角格子に戻して作れる",
+          len(cd.discretize([dict(_curve_circle(0.1), grid=True)], 0.02)["triangles"]) > 0)
+
+    # 側面への配置: 帯の x を表の外周の弧長に、y を面に垂直な方向に写す
+    wall, height = cg.wall_positions(m["positions"], top)
+    lo = m["positions"][:, 1] < 1e-9
+    at = lambda x: np.nonzero(lo & (np.abs(m["positions"][:, 0] - x) < 1e-9))[0][0]
+    check("帯の下の縁の x = 0 は表の始点、x = 0.3 は次の角、高さは -幅/2",
+          np.allclose(wall[at(0.0)], [0.0, 0.0, -0.04]) and np.allclose(wall[at(0.3)], [0.3, 0.0, -0.04])
+          and abs(height - 0.08) < 1e-12, f"{wall[at(0.3)]}")
+    check("帯の上の縁は +幅/2", np.allclose(wall[~lo][:, 2].max(), 0.04))
+
+
 def test_curve_update():
     """Shape Update: topology を保ったまま Curve に追従する(bpy 非依存)"""
     if not has_numpy():
@@ -1967,6 +2072,7 @@ def main():
     test_curve_eval()
     test_delaunay2d()
     test_curve_discretize()
+    test_curve_gusset()
     test_curve_update()
     test_curve_selection_runs()
     test_curve_transfer()

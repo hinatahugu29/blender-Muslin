@@ -27,6 +27,7 @@ import numpy as np
 
 from . import curve_arrange
 from . import curve_discretize
+from . import curve_gusset
 from . import curve_ids
 from . import curve_transfer
 from . import curve_update
@@ -319,11 +320,13 @@ def _outlines_for_generation(curve_obj, record):
     recorded = {p["piece_uid"]: p for p in record["pieces"]}
     taken, _new, _gone = curve_ids.match_pieces(
         {pid: p["uids"] for pid, p in recorded.items()}, [s["uids"] for s in splines])
+    gussets = gussets_of(record)
     outlines = []
     for si, pid in sorted(taken.items(), key=lambda kv: kv[1]):
         s = splines[si]
         outlines.append({"piece_uid": pid, "uids": list(s["uids"]), "co": s["co"], "hl": s["hl"],
-                         "hr": s["hr"], "hole_of": recorded[pid]["hole_of"]})
+                         "hr": s["hr"], "hole_of": recorded[pid]["hole_of"],
+                         "grid": pid in gussets})
     return outlines
 
 
@@ -685,8 +688,9 @@ def status(curve_obj):
     return {
         "initialized": True,
         "pieces": len(record["pieces"]),
-        # 穴ではない輪郭の数(= 袋にできる枚数)
-        "panels": sum(1 for p in record["pieces"] if p.get("hole_of") is None),
+        # 穴でもマチでもない輪郭の数(= 袋にできる枚数)
+        "panels": len(bag_panels(record)),
+        "gusset": bool(gussets_of(record)),
         "target": record["target_edge_length"],
         "problems": structure_problems(curve_obj, record),
         "cloth": cloth_of(curve_obj),
@@ -1096,8 +1100,8 @@ def stack_pieces(context, curve_obj, gap=DEFAULT_BAG_GAP):
     if cloth is not None and sim_state.is_running(cloth):
         raise CurvePatternError("シミュレーション中は置き直せません。停止してください")
 
-    # 穴ではない輪郭の数 = 袋を作る枚数
-    panels = [p["piece_uid"] for p in record["pieces"] if p.get("hole_of") is None]
+    # 穴でもマチでもない輪郭の数 = 袋を作る枚数
+    panels = bag_panels(record)
     if len(panels) < 2:
         raise CurvePatternError(
             f"袋にするには輪郭が 2 つ以上必要です(今は {len(panels)} つ)。"
@@ -1133,10 +1137,13 @@ def stacked_layout(cloth, record=None, gap=DEFAULT_BAG_GAP):
     orientation = orientation_of(record)
     # 面に垂直な方向(FLAT なら Z、STANDING なら Y)
     normal_axis = 2 if orientation == 'FLAT' else 1
-    panels = [p["piece_uid"] for p in record["pieces"] if p.get("hole_of") is None]
+    panels = bag_panels(record)
 
-    local = to_local(data["positions"], orientation)
     groups = [np.nonzero(data["piece"] == pid)[0] for pid in panels]
+    box = _box_layout(cloth, record, data, groups)
+    if box is not None:
+        return box
+    local = to_local(data["positions"], orientation)
     # 型紙の中心をそろえて重ねる(ピースごとに中心が違っても向かい合うように)
     centers = [local[idx].mean(axis=0) for idx in groups]
     base = centers[0]
@@ -1144,6 +1151,158 @@ def stacked_layout(cloth, record=None, gap=DEFAULT_BAG_GAP):
         local[idx] += base - center
         local[idx, normal_axis] += shift
     return local
+
+
+def _box_layout(cloth, record, data, groups):
+    """マチのある袋の配置: 表と裏をマチの幅だけ離して重ね、マチを表の外周に沿って立てる。
+
+    縫い目は初めから閉じた形になる(表の外周とマチの上の縁、裏の外周と下の縁が重なる)。
+    マチが無い・表と裏が 2 枚でないときは None(呼び出し側が平らに重ねる)。
+    """
+    gussets = gussets_of(record)
+    if not gussets or len(groups) != 2:
+        return None
+    source = curve_of(cloth)
+    top = current_outlines(source, record).get(bag_panels(record)[0]) if source is not None else None
+    g_idx = np.nonzero(np.isin(data["piece"], list(gussets)))[0]
+    if top is None or not len(g_idx):
+        return None
+    xy = data["positions"]
+    frame = np.zeros((len(xy), 3))
+    frame[:, :2] = xy
+    wall, height = curve_gusset.wall_positions(xy[g_idx], top)
+    frame[g_idx] = wall
+    top_idx, bottom_idx = groups
+    frame[top_idx, 2] = height / 2.0
+    frame[bottom_idx, :2] += xy[top_idx].mean(axis=0) - xy[bottom_idx].mean(axis=0)
+    frame[bottom_idx, 2] = -height / 2.0
+    # 型紙の面の座標 (x, y, 面に垂直) -> 布のローカル座標(重ねた配置と同じ軸の取り方)
+    if orientation_of(record) == 'STANDING':
+        return frame[:, [0, 2, 1]]
+    return frame
+
+
+# ---------------------------------------------------------------- マチ(M11)
+
+DEFAULT_GUSSET_HEIGHT = 0.08
+# マチの帯を Curve に置くとき、ほかの輪郭から離す距離
+GUSSET_GAP = 0.05
+
+
+def gussets_of(record):
+    """マチのピースの piece_uid の集合。"""
+    return set(int(u) for u in (record or {}).get("gussets", []))
+
+
+def bag_panels(record):
+    """袋の面になるピース(穴でもマチでもない輪郭)の piece_uid。記録の順。"""
+    gussets = gussets_of(record)
+    return [p["piece_uid"] for p in (record or {}).get("pieces", [])
+            if p.get("hole_of") is None and p["piece_uid"] not in gussets]
+
+
+def _check_bag_editable(context, curve_obj):
+    from . import sim_state
+    record = load_record(curve_obj)
+    if record is None:
+        raise CurvePatternError("Curve Pattern として初期化されていません")
+    if curve_obj.mode == 'EDIT':
+        raise CurvePatternError("オブジェクトモードで実行してください")
+    cloth = cloth_of(curve_obj)
+    if cloth is not None and sim_state.is_running(cloth):
+        raise CurvePatternError("シミュレーション中は変えられません。停止してください")
+    return record
+
+
+def add_gusset(context, curve_obj, height=DEFAULT_GUSSET_HEIGHT):
+    """表と裏の 2 枚の袋にマチ(帯)を足し、縫い目を張って、箱形に置いた布を作る。
+
+    帯は Curve の輪郭の下に長方形として描き足す(長さ = 表の外周、幅 = height)。
+    縫い目の割り当ては `curve_gusset.plan`。マチと表・裏の縫い目は折り返し(角になる縁)、
+    帯の両端の縫い目は、表の始点が角なら折り返し、滑らかなら平らにつなぐ。
+    帯は縦横の格子で分ける(角で素直に折れるように。`curve_discretize._grid`)。
+    戻り値: (布オブジェクト, 警告の一覧)
+    """
+    record = _check_bag_editable(context, curve_obj)
+    if gussets_of(record):
+        raise CurvePatternError("すでにマチがあります(作り直すには一度外してください)")
+    panels = bag_panels(record)
+    if len(panels) != 2:
+        raise CurvePatternError(f"マチは表と裏の 2 枚の袋に付けます(今は {len(panels)} 枚)")
+    outlines = current_outlines(curve_obj, record)
+    if panels[0] not in outlines or panels[1] not in outlines:
+        raise CurvePatternError("表か裏の輪郭が Curve にありません(Rebuild してください)")
+    try:
+        p = curve_gusset.plan(outlines[panels[0]], outlines[panels[1]], height)
+    except curve_gusset.GussetError as exc:
+        raise CurvePatternError(str(exc)) from exc
+
+    # 帯を、全ての輪郭の下に置く(XY で重なると穴と解釈されるため)
+    all_co = np.vstack([s["co"] for s in read_splines(curve_obj) if len(s["co"])])
+    ox = float(all_co[:, 0].min())
+    oy = float(all_co[:, 1].min()) - GUSSET_GAP - height
+    sx, sy, _sz = curve_obj.matrix_world.to_scale()
+    pts = [(ox + x, oy + y) for x, y in p["points"]]
+    sp = curve_obj.data.splines.new('BEZIER')
+    sp.bezier_points.add(len(pts) - 1)
+    n = len(pts)
+    for i, (x, y) in enumerate(pts):
+        prev, nxt = pts[i - 1], pts[(i + 1) % n]
+        bp = sp.bezier_points[i]
+        bp.handle_left_type = 'FREE'
+        bp.handle_right_type = 'FREE'
+        bp.co = (x / sx, y / sy, 0.0)
+        # 直線の区間(取っ手を隣の点への 1/3 に置く)
+        bp.handle_left = ((x + (prev[0] - x) / 3.0) / sx, (y + (prev[1] - y) / 3.0) / sy, 0.0)
+        bp.handle_right = ((x + (nxt[0] - x) / 3.0) / sx, (y + (nxt[1] - y) / 3.0) / sy, 0.0)
+    sp.use_cyclic_u = True
+
+    before = {q["piece_uid"] for q in record["pieces"]}
+    warnings = _adopt(curve_obj, record)
+    new = [q for q in record["pieces"] if q["piece_uid"] not in before]
+    if len(new) != 1 or len(new[0]["uids"]) != len(p["points"]):
+        raise CurvePatternError("マチの輪郭を取り込めませんでした")
+    g_uids = new[0]["uids"]
+    record["gussets"] = [int(new[0]["piece_uid"])]
+
+    def resolve(rng):
+        a, t0, b, t1 = rng
+        a = g_uids[a[1]] if isinstance(a, tuple) else a
+        b = g_uids[b[1]] if isinstance(b, tuple) else b
+        return [[int(a), float(t0), int(b), float(t1)]]
+
+    uid = _all_seam_uids()
+    for name, side_a, side_b, folded in p["seams"]:
+        record["seams"].append({
+            "uid": uid, "name": name, "invert": False, "enabled": True,
+            "a": resolve(side_a), "b": resolve(side_b), "folded": bool(folded), "gusset": True,
+        })
+        uid += 1
+    save_record(curve_obj, record)
+    cloth, more = stack_pieces(context, curve_obj)
+    return cloth, warnings + more
+
+
+def remove_gusset(context, curve_obj):
+    """マチの帯と、その縫い目を取り除き、平らに重ねた袋に戻す。戻り値: (布 または None, 警告)"""
+    record = _check_bag_editable(context, curve_obj)
+    gussets = gussets_of(record)
+    if not gussets:
+        raise CurvePatternError("マチがありません")
+    splines = read_splines(curve_obj)
+    recorded = {q["piece_uid"]: q["uids"] for q in record["pieces"]}
+    taken, _new, _gone = curve_ids.match_pieces(recorded, [s["uids"] for s in splines])
+    doomed = sorted((si for si, pid in taken.items() if pid in gussets), reverse=True)
+    for si in doomed:
+        curve_obj.data.splines.remove(curve_obj.data.splines[si])
+    record["seams"] = [s for s in record["seams"] if not s.get("gusset")]
+    record.pop("gussets", None)
+    warnings = _adopt(curve_obj, record)
+    save_record(curve_obj, record)
+    if cloth_of(curve_obj) is None:
+        return None, warnings
+    cloth, more = stack_pieces(context, curve_obj)
+    return cloth, warnings + more
 
 
 def _arrange(groups, data, base_z, collider_points, axis_xy, margin, angles):
@@ -1371,8 +1530,7 @@ class MUSLIN_OT_curve_stack(bpy.types.Operator):
         if context.mode != 'OBJECT':
             return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
         record = load_record(curve)
-        panels = [p for p in (record or {}).get("pieces", []) if p.get("hole_of") is None]
-        if len(panels) < 2:
+        if len(bag_panels(record)) < 2:
             return ui_poll.reject(cls, "袋にするには輪郭が 2 つ以上必要です")
         cloth = cloth_of(curve)
         if cloth is not None and sim_state.is_running(cloth):
@@ -1391,6 +1549,86 @@ class MUSLIN_OT_curve_stack(bpy.types.Operator):
         self.report({'INFO'},
                     f"'{cloth.name}' のピースを向かい合わせに重ねました"
                     "(外周を縫って Close Bag で閉じてください)")
+        return {'FINISHED'}
+
+
+def _gusset_poll(cls, context, want):
+    from . import ui_poll
+    from . import sim_state
+    curve = _target_curve(context)
+    if curve is None:
+        return ui_poll.reject(cls, "Curve、または Curve Pattern から作った布を選んでください")
+    if context.mode != 'OBJECT':
+        return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
+    record = load_record(curve)
+    if record is None:
+        return ui_poll.reject(cls, "Curve Pattern として初期化されていません")
+    has = bool(gussets_of(record))
+    if want and has:
+        return ui_poll.reject(cls, "すでにマチがあります")
+    if not want and not has:
+        return ui_poll.reject(cls, "マチがありません")
+    if want and len(bag_panels(record)) != 2:
+        return ui_poll.reject(cls, "マチは表と裏の 2 枚の袋に付けます")
+    cloth = cloth_of(curve)
+    if cloth is not None and sim_state.is_running(cloth):
+        return ui_poll.reject(cls, "シミュレーション中は変えられません。停止してください")
+    return True
+
+
+class MUSLIN_OT_curve_gusset_add(bpy.types.Operator):
+    """表と裏のあいだにマチ(帯)を足し、箱形に組んだ袋にする(座布団・箱形のクッション)"""
+
+    bl_idname = "muslin.curve_gusset_add"
+    bl_label = "Add Gusset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    height: bpy.props.FloatProperty(
+        name="Height", unit='LENGTH', min=0.005, soft_max=0.5, default=DEFAULT_GUSSET_HEIGHT,
+        description="マチの幅(= クッションの側面の高さ)。帯の長さは表の外周に合わせる",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _gusset_poll(cls, context, True)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        try:
+            cloth, warnings = add_gusset(context, curve, self.height)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'}, f"'{cloth.name}' にマチを足して箱形に組みました(Close Bag で膨らませてください)")
+        return {'FINISHED'}
+
+
+class MUSLIN_OT_curve_gusset_remove(bpy.types.Operator):
+    """マチの帯と、その縫い目を取り除き、2 枚を平らに重ねた袋に戻す"""
+
+    bl_idname = "muslin.curve_gusset_remove"
+    bl_label = "Remove Gusset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _gusset_poll(cls, context, False)
+
+    def execute(self, context):
+        curve = _target_curve(context)
+        try:
+            _cloth, warnings = remove_gusset(context, curve)
+        except CurvePatternError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        for w in warnings:
+            self.report({'WARNING'}, w)
+        self.report({'INFO'}, "マチを外しました")
         return {'FINISHED'}
 
 
@@ -1505,6 +1743,7 @@ class MUSLIN_OT_curve_elastic_remove(bpy.types.Operator):
 
 _classes = (MUSLIN_OT_curve_pattern_init, MUSLIN_OT_curve_pattern_rebuild,
             MUSLIN_OT_curve_arrange, MUSLIN_OT_curve_stack,
+            MUSLIN_OT_curve_gusset_add, MUSLIN_OT_curve_gusset_remove,
             MUSLIN_OT_curve_seam_add, MUSLIN_OT_curve_seam_remove,
             MUSLIN_OT_curve_elastic_add, MUSLIN_OT_curve_elastic_remove)
 

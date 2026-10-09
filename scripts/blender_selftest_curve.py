@@ -1143,8 +1143,127 @@ def main():
     check("1 枚では Stack は押せない(poll)", bpy.ops.muslin.curve_stack.poll() is False)
     check("1 枚では Stack が理由つきで失敗する",
           _raises(lambda: cp.stack_pieces(bpy.context, one)))
+    check("1 枚ではマチは足せない(poll)", bpy.ops.muslin.curve_gusset_add.poll() is False)
+
+    _test_gusset(cp, mesh_io, rest_shape)
 
     muslin.unregister()
+
+
+def _test_gusset(cp, mesh_io, rest_shape):
+    """マチ(帯)のある袋: 足す・箱形に置く・縫い目・格子・閉じる・詰め具合・外す(M11)。"""
+    section("マチ(帯状のピース)")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    cu = bpy.data.curves.new("Cushion", 'CURVE')
+    cu.dimensions = '2D'
+    for x0 in (0.0, 0.5):
+        sp = cu.splines.new('BEZIER')
+        sp.bezier_points.add(3)
+        for pt, (x, y) in zip(sp.bezier_points,
+                              [(x0, 0.0), (x0 + 0.3, 0.0), (x0 + 0.3, 0.3), (x0, 0.3)]):
+            pt.co = (x, y, 0.0)
+            pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+        sp.use_cyclic_u = True
+    bag = bpy.data.objects.new("Cushion", cu)
+    scene.collection.objects.link(bag)
+    for o in scene.objects:
+        o.select_set(o is bag)
+    bpy.context.view_layer.objects.active = bag
+    cp.initialize(bag, 0.02)
+    check("2 枚の袋にはマチを足せる(poll)", bpy.ops.muslin.curve_gusset_add.poll())
+    res = bpy.ops.muslin.curve_gusset_add('EXEC_DEFAULT', height=0.08)
+    check("Add Gusset が通る", res == {'FINISHED'}, str(res))
+    info = cp.status(bag)
+    record = cp.load_record(bag)
+    check("マチは袋の枚数に数えない(2 枚のまま)、マチがあることが分かる",
+          info["panels"] == 2 and info["gusset"] and len(record["pieces"]) == 3,
+          f"{info['panels']} 枚 / ピース {len(record['pieces'])}")
+    check("Curve に帯の輪郭が足される(表の角に合わせて 10 点)",
+          len(bag.data.splines) == 3 and len(bag.data.splines[2].bezier_points) == 10)
+    names = sorted(s["name"] for s in record["seams"])
+    check("縫い目が 5 本張られる",
+          names == ["Gusset Bottom 1", "Gusset Bottom 2", "Gusset End", "Gusset Top 1", "Gusset Top 2"],
+          str(names))
+    check("すべて使える縫い目で、Rebuild Required にならない",
+          cp.apply_seams(bag) == [] and info["problems"] == [], str(info["problems"]))
+    cloth = cp.cloth_of(bag)
+    check("角になる縫い目は折り返し(正方形の角で出会う帯の両端も)",
+          all(s.folded for s in cloth.muslin_seams))
+    check("帯の下側(裏)だけ面を裏返す", cp.flipped_pieces(record) == {cp.bag_panels(record)[1]})
+
+    co = np.array([tuple(v.co) for v in cloth.data.vertices])
+    pairs = mesh_io.build_seam_pairs(cloth)
+    gaps = np.array([np.linalg.norm(co[a] - co[b]) for a, b in pairs])
+    check("箱形に置くので、縫い目は初めから閉じている", len(pairs) > 100 and gaps.max() < 1e-6,
+          f"{len(pairs)} 組 / 最大 {gaps.max() * 1000:.3f} mm")
+    check("箱形の寸法(30 × 30 × 8 cm)", np.allclose(np.ptp(co, axis=0), [0.3, 0.3, 0.08], atol=1e-6),
+          f"{(np.ptp(co, axis=0) * 1000).round(1)} mm")
+    centre = co.mean(axis=0)
+    inward = sum(1 for poly in cloth.data.polygons
+                 if np.dot(np.array(poly.normal), np.array(poly.center) - centre) <= 0.0)
+    check("面はすべて外を向く(表・裏・帯)", inward == 0, f"内向き {inward}")
+
+    def mesh_volume():
+        me = cloth.data
+        me.calc_loop_triangles()
+        c = np.array([tuple(v.co) for v in me.vertices])
+        o_ = c.mean(axis=0)
+        tri = np.array([tuple(t.vertices) for t in me.loop_triangles])
+        a, b, d = c[tri[:, 0]] - o_, c[tri[:, 1]] - o_, c[tri[:, 2]] - o_
+        return float(np.einsum("ij,ij->i", a, np.cross(b, d)).sum() / 6.0)
+
+    check("閉じた箱の体積(7.2 L)", abs(mesh_volume() - 0.0072) < 1e-5, f"{mesh_volume() * 1000:.3f} L")
+    gusset = list(cp.gussets_of(record))[0]
+    piece = np.array([cloth.data.attributes[cp.ATTR_PIECE].data[i].value for i in range(len(co))])
+    g_faces = sum(1 for poly in cloth.data.polygons if piece[poly.vertices[0]] == gusset)
+    check("帯は縦横の格子で分ける(2 × 60 × 4 枚)", g_faces == 480, str(g_faces))
+
+    # 作り直しても、もう一度重ねても箱形のまま
+    cloth, _w = cp.rebuild(bpy.context, bag, keep_pose=False)
+    again, _w = cp.stack_pieces(bpy.context, bag)
+    co2 = np.array([tuple(v.co) for v in again.data.vertices])
+    check("Stack Pieces をやり直しても箱形に置く", np.allclose(np.ptp(co2, axis=0), [0.3, 0.3, 0.08], atol=1e-6))
+    check("マチがあるときは、もう一度は足せない(poll)", bpy.ops.muslin.curve_gusset_add.poll() is False)
+
+    # 閉じて膨らませる。重力 0 の袋は全体がゆっくり回り続けるが、形が落ち着けば止める
+    props = again.muslin
+    props.collision_enabled = False
+    props.self_collision_enabled = False
+    props.seam_close_frames = 10
+    props.pressure = 100.0
+    props.quality = 'HIGH'
+    for o in scene.objects:
+        o.select_set(o is again)
+    bpy.context.view_layer.objects.active = again
+    res = bpy.ops.muslin.close_bag(max_steps=300)
+    after = np.array([tuple(v.co) for v in again.data.vertices])
+    gaps = np.array([np.linalg.norm(after[a] - after[b]) for a, b in pairs])
+    dims = np.ptp(after, axis=0)
+    check("Close Bag で膨らむ(厚みが帯の幅より増え、向きは重ねたまま)",
+          res == {'FINISHED'} and dims[2] > 0.1 and dims[2] < dims[0], f"{(dims * 1000).round(0)} mm")
+    check("閉じても縫い目は離れない", gaps.max() < 0.002, f"最大 {gaps.max() * 1000:.2f} mm")
+    check("満杯の体積を記録する", props.full_volume > 0.0072, f"{props.full_volume * 1000:.2f} L")
+    props.pressure_mode = 'VOLUME'
+    props.fill = 0.6
+    bpy.ops.muslin.close_bag(max_steps=400)
+    vol = mesh_volume()
+    check("Fill 0.6 で、満杯の 6 割前後で落ち着く",
+          abs(vol / (0.6 * props.full_volume) - 1.0) < 0.1,
+          f"{vol * 1000:.2f} L / 目標 {0.6 * props.full_volume * 1000:.2f} L")
+
+    # 外すと、帯と縫い目が消えて、2 枚を平らに重ねた袋に戻る
+    for o in scene.objects:
+        o.select_set(o is bag)
+    bpy.context.view_layer.objects.active = bag
+    res = bpy.ops.muslin.curve_gusset_remove()
+    record = cp.load_record(bag)
+    check("Remove Gusset で帯と縫い目が消える",
+          res == {'FINISHED'} and len(bag.data.splines) == 2 and len(record["pieces"]) == 2
+          and record["seams"] == [] and not cp.gussets_of(record) and cp.status(bag)["problems"] == [])
+    flat = np.array([tuple(v.co) for v in cp.cloth_of(bag).data.vertices])
+    check("外したあとは平らに重ねた袋(厚み = 重ねる隙間)",
+          abs(np.ptp(flat[:, 2]) - cp.DEFAULT_BAG_GAP) < 1e-6, f"{np.ptp(flat[:, 2]) * 1000:.1f} mm")
 
 
 def _maxdiff(a, b):

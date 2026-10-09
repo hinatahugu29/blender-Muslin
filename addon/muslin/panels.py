@@ -438,6 +438,11 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
         # 輪郭が 2 つ以上あれば、体に巻くのではなく向かい合わせに重ねる置き方も選べる
         if info.get("panels", 0) >= 2:
             layout.operator("muslin.curve_stack", icon='MOD_SOLIDIFY')
+        # 表と裏の 2 枚の袋には、側面のマチ(帯)を足せる
+        if info.get("gusset"):
+            layout.operator("muslin.curve_gusset_remove", icon='X')
+        elif info.get("panels", 0) == 2:
+            layout.operator("muslin.curve_gusset_add", icon='MESH_CYLINDER')
 
         layout.separator()
         layout.label(text="縫い目")
