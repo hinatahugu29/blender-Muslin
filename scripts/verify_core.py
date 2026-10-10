@@ -115,6 +115,15 @@ def test_module_surface():
     check("core_version が取得できる", isinstance(ver, str) and ver != "", f"v{ver}")
     check("hello()", cloth_core.hello().startswith("Hello"))
     check("add(1,2)", cloth_core.add(1.0, 2.0) == 3.0)
+    # 毎フレームの受け渡しはバイト列(numpy.frombuffer で読む)。リストと同じ値になること
+    import struct
+    positions, edges, bending, tris, _top = build_grid(5, 5, 0.1)
+    sim = cloth_core.ClothSim(positions, edges, bending, tris, [], 0.2, 0.0, 1e-4)
+    sim.step(1.0 / 60.0, -9.81, 4, 2, 0.01)
+    buf = sim.get_positions_buffer()
+    flat = sim.get_positions()
+    check("get_positions_buffer は get_positions と同じ値(f64 のバイト列)",
+          len(buf) == 8 * len(flat) and list(struct.unpack(f"={len(flat)}d", buf)) == flat)
 
 
 def test_free_fall():

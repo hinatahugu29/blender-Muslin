@@ -253,6 +253,21 @@ mod bindings {
             to_flat(&self.inner.positions)
         }
 
+        /// 頂点座標を、f64 を並べたバイト列(この機械のバイト順)で返す。
+        ///
+        /// `numpy.frombuffer(..., dtype=numpy.float64)` でそのまま配列として読める。
+        /// `get_positions` は Python の数値のリスト(3 万頂点で 9 万個)を作り、それを numpy に
+        /// 変換し直していたので、毎フレームの受け渡しに数 ms かかっていた
+        fn get_positions_buffer<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
+            let mut out = Vec::with_capacity(self.inner.positions.len() * 24);
+            for p in &self.inner.positions {
+                out.extend_from_slice(&p.x.to_ne_bytes());
+                out.extend_from_slice(&p.y.to_ne_bytes());
+                out.extend_from_slice(&p.z.to_ne_bytes());
+            }
+            pyo3::types::PyBytes::new_bound(py, &out)
+        }
+
         /// 頂点座標を強制設定し速度をリセットする(巻き戻し用)
         fn set_positions(&mut self, positions: Vec<f64>) -> PyResult<()> {
             let pos = to_vec3s(&positions)?;
