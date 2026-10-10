@@ -490,6 +490,21 @@ impl ClothSim {
         } else {
             usize::MAX
         };
+        // 並列にする大きさなら、色分けの前に制約を頂点の番号順に並べる。ブロックは並び順のまま
+        // 区切るので、並びの中で頂点が飛び飛びだと、ブロックどうしが頂点を取り合って色が増え、
+        // ほとんど並列に回らない。Blender のメッシュの辺は作られた順の都合で飛び飛びに並ぶ
+        // ((0,173), (0,1), (176,177), (8,181) …)。約 3 万頂点の格子で、伸び 29 → 14ms、
+        // 曲げ 57 → 13ms になった(順に並んだ格子と同じ速さ)。並列にしない大きさでは並べ替えない
+        // (従来とビット単位で同じ)
+        let (stretch_constraints, bending_constraints) = if n >= PARALLEL_MIN_VERTICES {
+            let mut s = stretch_constraints;
+            s.sort_by_key(|c| (c.i0.min(c.i1), c.i0.max(c.i1)));
+            let mut b = bending_constraints;
+            b.sort_by_key(|c| (c.p1.min(c.p2), c.p1.max(c.p2)));
+            (s, b)
+        } else {
+            (stretch_constraints, bending_constraints)
+        };
         let (stretch_constraints, stretch_colors) = {
             let verts: Vec<[usize; 2]> =
                 stretch_constraints.iter().map(|c| [c.i0, c.i1]).collect();

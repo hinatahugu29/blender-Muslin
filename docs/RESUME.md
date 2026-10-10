@@ -28,7 +28,10 @@ cd rust/cloth_core && cargo test --no-default-features --release                
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)。この PC では Steam 版が
   `D:\SteamLibrary\steamapps\common\Blenderlender.exe` にあるので、**試験は 5.2 でも回す**
   (2026-10-10 に 5.1 にしか無いアイコン `SPLITSCREEN` を使い、5.2 でパネルが描けなかった。
-  パネルを描く試験があるので、5.2 で回していれば捕まえられた)
+  パネルを描く試験があるので、5.2 で回していれば捕まえられた)。
+  **Blender を `--factory-startup` で起動するときは、環境変数 `BLENDER_USER_RESOURCES` を一時フォルダに
+  向ける。** 向けないと、利用者が入れている拡張機能の部品(5.2 の `extensions/.local` の cloth_core)を
+  「使われていない」と見なして退避してしまう(2026-10-10 に一度起きた。再起動で入れ直される)
 - **`samples/*.blend` は `blender_selftest.py` が全部開いて検査する。** 作業用の .blend を `samples/` に置かない
   (調査用のファイルは `scripts/spikes/data/` へ)
 
