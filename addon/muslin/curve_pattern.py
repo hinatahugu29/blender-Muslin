@@ -1014,7 +1014,7 @@ def rebuild(context, curve_obj, target_length=None, keep_pose=True,
     # メッシュはできても見えない。片付けて、新しい布を作る(姿勢も引き継がない)
     _discard_stale_cloth(curve_obj)
     cloth = cloth_of(curve_obj)
-    if cloth is not None and sim_state.is_running(cloth):
+    if cloth is not None and sim_state.is_busy(cloth):
         raise CurvePatternError("シミュレーション中は Rebuild できません。停止してから実行してください")
 
     warnings = []
@@ -1133,7 +1133,7 @@ def arrange_around(curve_obj, collider, margin=None, angles=None, base_z=None):
     cloth = cloth_of(curve_obj)
     if cloth is None:
         raise CurvePatternError("布がまだありません(Rebuild で作ってください)")
-    if sim_state.is_running(cloth):
+    if sim_state.is_busy(cloth):
         raise CurvePatternError("シミュレーション中は置き直せません。停止してください")
     if collider is None or collider.type != 'MESH':
         raise CurvePatternError("体にするメッシュ(コライダー)を指定してください")
@@ -1201,7 +1201,7 @@ def stack_pieces(context, curve_obj, gap=DEFAULT_BAG_GAP):
     if curve_obj.mode == 'EDIT':
         raise CurvePatternError("オブジェクトモードで実行してください")
     cloth = cloth_of(curve_obj)
-    if cloth is not None and sim_state.is_running(cloth):
+    if cloth is not None and sim_state.is_busy(cloth):
         raise CurvePatternError("シミュレーション中は置き直せません。停止してください")
 
     # 穴でもマチでもない輪郭の数 = 袋を作る枚数
@@ -1317,7 +1317,7 @@ def _check_bag_editable(context, curve_obj):
     if curve_obj.mode == 'EDIT':
         raise CurvePatternError("オブジェクトモードで実行してください")
     cloth = cloth_of(curve_obj)
-    if cloth is not None and sim_state.is_running(cloth):
+    if cloth is not None and sim_state.is_busy(cloth):
         raise CurvePatternError("シミュレーション中は変えられません。停止してください")
     return record
 
@@ -1793,7 +1793,7 @@ class MUSLIN_OT_curve_pattern_rebuild(bpy.types.Operator):
         if load_record(curve) is None:
             return ui_poll.reject(cls, "先に Initialize Curve Pattern を実行してください")
         cloth = cloth_of(curve)
-        if cloth is not None and sim_state.is_running(cloth):
+        if cloth is not None and sim_state.is_busy(cloth):
             return ui_poll.reject(cls, "シミュレーション中は Rebuild できません。停止してください")
         return True
 
@@ -1866,7 +1866,7 @@ class MUSLIN_OT_curve_arrange(bpy.types.Operator):
             return ui_poll.reject(cls, "オブジェクトモードで実行してください (Tab)")
         if cloth.muslin.collider_object is None:
             return ui_poll.reject(cls, "布の Collision で体(コライダー)を指定してください")
-        if sim_state.is_running(cloth):
+        if sim_state.is_busy(cloth):
             return ui_poll.reject(cls, "シミュレーション中は置き直せません。停止してください")
         return True
 
@@ -1925,7 +1925,7 @@ class MUSLIN_OT_curve_stack(bpy.types.Operator):
         if len(bag_panels(record)) < 2:
             return ui_poll.reject(cls, "袋にするには輪郭が 2 つ以上必要です")
         cloth = cloth_of(curve)
-        if cloth is not None and sim_state.is_running(cloth):
+        if cloth is not None and sim_state.is_busy(cloth):
             return ui_poll.reject(cls, "シミュレーション中は置き直せません。停止してください")
         return True
 
@@ -1963,7 +1963,7 @@ def _gusset_poll(cls, context, want):
     if want and len(bag_panels(record)) != 2:
         return ui_poll.reject(cls, "マチは表と裏の 2 枚の袋に付けます")
     cloth = cloth_of(curve)
-    if cloth is not None and sim_state.is_running(cloth):
+    if cloth is not None and sim_state.is_busy(cloth):
         return ui_poll.reject(cls, "シミュレーション中は変えられません。停止してください")
     return True
 
@@ -2043,7 +2043,7 @@ def _quilt_poll(cls, context, want):
     if not want and not any(s.get("quilt") for s in record["seams"]):
         return ui_poll.reject(cls, "キルティングの縫い目がありません")
     cloth = cloth_of(curve)
-    if cloth is not None and sim_state.is_running(cloth):
+    if cloth is not None and sim_state.is_busy(cloth):
         return ui_poll.reject(cls, "シミュレーション中は変えられません。停止してください")
     return True
 

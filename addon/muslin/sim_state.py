@@ -51,6 +51,16 @@ def is_running(obj):
     return obj is not None and obj_key(obj) in _running
 
 
+# Dress / Adjust で回している布の key。タイムラインのシミュレーションとは別に持つが、
+# 布の形(頂点の構成)を変える操作は、どちらの最中でも止める
+_dressing = set()
+
+
+def is_busy(obj):
+    """シミュレーションか Dress / Adjust で回している最中か。"""
+    return obj is not None and (obj_key(obj) in _running or obj_key(obj) in _dressing)
+
+
 def get_state(obj):
     if obj is None:
         return None

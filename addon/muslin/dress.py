@@ -451,10 +451,18 @@ class _ClothModal:
 
     def _start(self, context):
         self._dresser = self._make_dresser(context)
+        self._dressing = [sim_state.obj_key(m) for m in self._dresser.members]
+        sim_state._dressing.update(self._dressing)
         for w in self._dresser.warnings:
             self.report({'WARNING'}, w)
 
+    def _release(self):
+        # 布の参照は Ctrl+Z などで無効になるので、key で外す
+        sim_state._dressing.difference_update(getattr(self, "_dressing", ()))
+        self._dressing = []
+
     def _end(self, context, commit):
+        self._release()
         dresser = self._dresser
         if commit and dresser.finish():
             self.report({'INFO'}, f"{self.SAVED}: " + dresser.summary())
@@ -539,6 +547,7 @@ class _ClothModal:
         except LostCloth as exc:
             # 布が消えたら、書き戻す先も無いので静かに終える
             self._stop_timer(context)
+            self._release()
             self.report({'WARNING'}, str(exc))
             return {'CANCELLED'}
 

@@ -184,7 +184,7 @@ class MUSLIN_OT_pattern_draw(bpy.types.Operator):
             return ui_poll.reject(cls, "描いている途中です(Finish Piece で確定してください)")
         if curve is not None and curve_pattern.cloth_of(curve) is not None:
             from . import sim_state
-            if sim_state.is_running(curve_pattern.cloth_of(curve)):
+            if sim_state.is_busy(curve_pattern.cloth_of(curve)):
                 return ui_poll.reject(cls, "シミュレーション中は描けません。停止してください")
         return True
 

@@ -234,6 +234,11 @@ def references(state, members):
         if signatures.get(key) == sig:
             continue
         local, _ = read(m)
+        if local.size != count * 3:
+            # 組み立てた後に布の頂点数が変わった(Curve からの作り直しなど)。
+            # 頂点の対応が取れないので反映せず、組み立て直しを促す
+            reasons.append(f"'{m.name}' の頂点数が組み立てた時と違います({count} → {local.size // 3})")
+            continue
         world = _to_world(local, m.matrix_world)
         reference[start * 3:(start + count) * 3] = world
         signatures[key] = sig

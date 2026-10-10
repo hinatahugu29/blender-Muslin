@@ -661,6 +661,11 @@ def main():
         o.select_set(o is pair_cloth)
     bpy.context.view_layer.objects.active = pair_cloth
     check("コライダーを指定すれば使える", bpy.ops.muslin.curve_arrange.poll())
+    from muslin import sim_state as _ss
+    _ss._dressing.add(_ss.obj_key(pair_cloth))
+    check("Dress 中は Rebuild できない(poll)", bpy.ops.muslin.curve_pattern_rebuild.poll() is False)
+    _ss._dressing.clear()
+    check("Dress を終えれば Rebuild できる(poll)", bpy.ops.muslin.curve_pattern_rebuild.poll())
     res = bpy.ops.muslin.curve_arrange()
     check("Arrange が通る", res == {'FINISHED'}, str(res))
     xyz = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
