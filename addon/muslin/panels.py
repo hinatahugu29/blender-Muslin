@@ -293,8 +293,9 @@ class MUSLIN_PT_pinning(_MuslinSettingsPanel, bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # 頂点グループは編集モードで作るので、ここだけは編集中も出す
-        return context.mode in {'OBJECT', 'EDIT_MESH'} and _mesh_selected(context)
+        # ピンの操作はどれも頂点を選んでから使うので、編集モードの時だけ出す
+        # (ピンの数は親パネルの状態の欄にも出ている)
+        return context.mode == 'EDIT_MESH' and _mesh_selected(context)
 
     def draw_cloth(self, context, layout, props):
         obj = context.active_object
@@ -349,10 +350,13 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
         layout = self.layout
 
         # 型紙の輪郭を手で描く(Curve Pattern のピースになる)。これからの主な作り方なので先頭に
-        row = layout.row(align=True)
-        row.scale_y = 1.3
-        row.operator("muslin.pattern_draw", icon='GREASEPENCIL').mirror = False
-        row.operator("muslin.pattern_draw", text="", icon='MOD_MIRROR').mirror = True
+        # 布を選んでいる時は出さない(描き足すなら Curve を選ぶ)
+        active = context.active_object
+        if active is None or active.type == 'CURVE':
+            row = layout.row(align=True)
+            row.scale_y = 1.3
+            row.operator("muslin.pattern_draw", icon='GREASEPENCIL').mirror = False
+            row.operator("muslin.pattern_draw", text="", icon='MOD_MIRROR').mirror = True
 
         # 型紙の確定。胴のまわりに曲げて置く前に押す(曲げた形が型紙に
         # なるのを防ぐ)。確定したかどうかをここで見せる
@@ -817,6 +821,7 @@ _classes = (
     MUSLIN_UL_seams,
     MUSLIN_UL_elastics,
     MUSLIN_PT_main,
+    MUSLIN_PT_material,
     MUSLIN_PT_pattern,
     MUSLIN_PT_mesh_pattern,
     MUSLIN_PT_curve_pattern,
@@ -825,7 +830,6 @@ _classes = (
     MUSLIN_PT_curve_elastic,
     MUSLIN_PT_sewing,
     MUSLIN_PT_elastic,
-    MUSLIN_PT_material,
     MUSLIN_PT_collision,
     MUSLIN_PT_forces,
     MUSLIN_PT_pinning,
