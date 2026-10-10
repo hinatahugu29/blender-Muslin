@@ -398,6 +398,8 @@ pub struct ClothSim {
     tri_hash: crate::collision::TriangleHash,
     /// 頂点-三角形の衝突候補。列挙の結果をここに貯めてから逐次で解く。
     self_tri_pairs: Vec<(u32, u32)>,
+    /// 接触のリストの作業領域(サブステップをまたいで使い回す)
+    contacts_scratch: Vec<(usize, Vec3, f64)>,
     /// 自己衝突の近傍列挙に使う作業領域。毎サブステップ確保し直さず使い回す。
     neighbor_scratch: Vec<usize>,
     /// 自己衝突で押し離す頂点対。列挙の結果をここに貯めてから逐次で解く。
@@ -578,6 +580,7 @@ impl ClothSim {
             hash: SpatialHash::new(0.01),
             tri_hash: crate::collision::TriangleHash::new(),
             self_tri_pairs: Vec::new(),
+            contacts_scratch: Vec::new(),
             neighbor_scratch: Vec::new(),
             self_pairs: Vec::new(),
             last_collision_count: 0,
@@ -1478,6 +1481,9 @@ impl ClothSim {
 
         self.timings.velocity += ms_since(t_velocity);
         self.last_collision_count = contacts.len();
+        // 接触のリストの領域は次のサブステップで使い回す(自己衝突ありの服で 1 サブステップ
+        // 7 万件ほどになり、毎回 0 から倍々に広げ直してコピーしていた)
+        self.contacts_scratch = contacts;
     }
 
     /// 接触の摩擦を**頂点ごとに1回だけ**適用する。
@@ -1559,7 +1565,8 @@ impl ClothSim {
     /// 床面・コリジョンオブジェクト・自己衝突をまとめて解決し、接触情報を返す。
     /// 戻り値: (頂点インデックス, 接触法線, 摩擦係数)
     fn resolve_collisions(&mut self, params: &SimParams) -> Vec<(usize, Vec3, f64)> {
-        let mut contacts = Vec::new();
+        let mut contacts = std::mem::take(&mut self.contacts_scratch);
+        contacts.clear();
 
         let t_floor = std::time::Instant::now();
         if params.floor_enabled {
