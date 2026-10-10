@@ -22,7 +22,7 @@ blender --background --factory-startup --python scripts/blender_selftest.py
 
 Curve を型紙の一次データにして、そこから布のメッシュを作る機能(設計は
 [docs/design/curve_pattern.md](docs/design/curve_pattern.md))。仕組みは
-`scripts/blender_selftest_curve.py`(Blender 5.1 と 4.2 で 259 項目、2026-10-10)が確認している。
+`scripts/blender_selftest_curve.py`(Blender 4.2 / 5.1 / 5.2 で 267 項目、2026-10-10)が確認している。
 下は**画面と操作の感触**を見る項目(一部は 2026-10-01 に GUI で確認済み)。
 最初は `samples/06_curve_pattern.blend`(Curve `Shirt_Pattern` と、それから作って着せた布 `Shirt`)を開くと早い。
 
@@ -85,6 +85,15 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       **白い点**で光るか。選択を変えると、その場で追従するか。全部選ぶ(A)と布の外周すべてが光るか。
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
+
+### パターン描画モード(2026-10-10)で増えた確認項目
+
+- [ ] 何も選ばずに Pattern パネルの `Draw Pattern` を押すと、新しい Curve が編集モード・真上からの正投影・
+      Draw ツールになるか。マウスで閉じた輪郭を描いて Curve Pattern パネルの `Finish Piece` を押すと、
+      閉じた Bezier のピースになり、Rebuild で布ができるか。描き味(線の当てはめの細かさ、点の数)はどうか
+- [ ] 左右対称(Draw Pattern の隣のボタン)で、縦の軸(Curve の原点を通る)の片側だけ描くと、反対側が
+      見えるか。`Finish Piece` で左右対称の閉じた輪郭に焼き込まれ、Mirror モディファイアが消えるか
+- [ ] 2 枚目を描き足せるか(同じ Curve を選んで Draw Pattern)。`Cancel Drawing` で描いた線が消えるか
 
 ### 型紙と布を並べる画面(2026-10-10)で増えた確認項目
 

@@ -352,6 +352,11 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
         col.prop(tools, "pattern_resolution")
         layout.separator()
 
+        # 型紙の輪郭を手で描く(Curve Pattern のピースになる)
+        row = layout.row(align=True)
+        row.operator("muslin.pattern_draw", icon='GREASEPENCIL').mirror = False
+        row.operator("muslin.pattern_draw", text="", icon='MOD_MIRROR').mirror = True
+        layout.separator()
         layout.operator("muslin.add_pattern_piece", icon='MESH_GRID')
         layout.operator("muslin.fill_outline", icon='MOD_TRIANGULATE')
         layout.separator()
@@ -412,6 +417,20 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
         if curve is None:
             return
         info = curve_pattern.status(curve)
+
+        # 描いている途中(パターン描画モード)
+        from . import pattern_draw
+        if pattern_draw.is_drawing(curve):
+            box = layout.box()
+            box.label(text="描いています(閉じた線を描いて確定)", icon='GREASEPENCIL')
+            row = box.row(align=True)
+            row.operator("muslin.pattern_draw_mirror", text="左右対称",
+                         icon='CHECKBOX_HLT' if curve.get(pattern_draw.MIRROR_KEY) else 'CHECKBOX_DEHLT')
+            row = box.row(align=True)
+            row.scale_y = 1.4
+            row.operator("muslin.pattern_draw_finish", icon='CHECKMARK')
+            row.operator("muslin.pattern_draw_cancel", text="", icon='X')
+            return
 
         if obj.type != 'CURVE':
             row = layout.row()

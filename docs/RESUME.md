@@ -8,7 +8,7 @@
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -SkipTests   # cloth_core.pyd を作る(約 1 分)
-python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(260 項目)
+python scripts\verify_core.py                                           # 物理コアと bpy 非依存の部分(269 項目)
 ```
 
 必要なもの: Rust(rustup/cargo)、Python 3.11 以降、maturin(`python -m pip install maturin`)。
@@ -19,12 +19,12 @@ Blender を入れた環境なら、アドオン層もヘッドレスで検査で
 
 ```bash
 blender --background --factory-startup --python scripts/blender_selftest.py         # 435 項目(Blender 5.1)
-blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 259 項目(Curve Pattern)
+blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 267 項目(Curve Pattern)
 cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 91 件
 ```
 
 - Blender 4.2 と 5.1 で確認している(`blender_selftest.py` は 5.1 で 435 項目、4.2 で 417 項目。4.2 は 5.x で
-  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 259 項目)
+  保存したサンプルを開けないので、その分だけ少ない。`blender_selftest_curve.py` はどちらも 267 項目)
 - 利用者の実機は Blender 5.2.2 LTS(GUI で確認するのはこちら)。この PC では Steam 版が
   `D:\SteamLibrary\steamapps\common\Blenderlender.exe` にあるので、**試験は 5.2 でも回す**
   (2026-10-10 に 5.1 にしか無いアイコン `SPLITSCREEN` を使い、5.2 でパネルが描けなかった。

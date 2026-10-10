@@ -35,12 +35,13 @@ from . import bake_ops
 from . import dress
 from . import curve_pattern
 from . import pattern_view
+from . import pattern_draw
 from . import weld
 from . import overlay
 from . import panels
 
 # previews は properties より先に。生地の items がアイコン ID を引くため。
-_modules = (previews, properties, sim_state, operators, pin_ops, sewing_ops, bake_ops, dress, curve_pattern, pattern_view, weld, overlay, panels)
+_modules = (previews, properties, sim_state, operators, pin_ops, sewing_ops, bake_ops, dress, curve_pattern, pattern_view, pattern_draw, weld, overlay, panels)
 
 
 def register():

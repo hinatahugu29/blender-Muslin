@@ -1345,6 +1345,14 @@ Normal 相当(iterations 10・substeps 8・キャッシュあり)、自己衝突
 
 ### その先
 - トポロジが変わる型紙編集(型紙の 2D 位置で着せた形を移し替える)、2D の型紙編集画面、別オブジェクト間の縫製
+- [x] パターン描画モード(2026-10-10、`pattern_draw.py` / `curve_draw.py`)。Simply Cloth の Cut & Sew Pattern
+  (空の Curve に Mirror を付けて Draw ツールで描き、メッシュに変換する)を参考に、**Curve のまま**型紙を描く導線。
+  Pattern パネルの `Draw Pattern`(左右対称は隣のボタン)で、Curve Pattern の Curve(無ければ新しく作る)を
+  編集モード・真上からの正投影・Draw ツール(Bezier に当てはめる)にする。`Finish Piece` で描いた線を閉じた
+  Bezier にしてピースとして取り込む(`Cancel Drawing` で捨てる)。**左右対称はオプションで、確定のときに焼き込む**:
+  描いている間は Mirror モディファイアで反対側を見せるだけ(Muslin は Curve の点を読む)。Blender の Curve には
+  Mirror を適用できない(「constructive modifiers」はメッシュにしか適用できない。5.2 で確認)ので、確定のときに
+  軸 x = 0 の反対側の点を逆順に書き足して閉じた 1 本にする。焼き込んだあとは左右が別々の点
 - [x] 2D と 3D の並置(試作、2026-10-10、`pattern_view.py`)。専用の 2D エディタは作らず、Curve Pattern
   パネルの `Pattern View` で 3D ビューを左右に分け、左を「Curve の型紙だけ(ローカルビュー)を真上から
   見る、回転を固定した正投影」、右を布に寄せた 3D にする。縫い目の色と名前が左右で対応して見える。

@@ -1766,6 +1766,42 @@ def test_curve_lines():
                                                               next(r for r in g["rings"] if r.get("open"))["vertices"][1:])]))
 
 
+def test_curve_draw():
+    """パターン描画モードの後処理: 左右対称の焼き込み・閉じた線(bpy 非依存)"""
+    if not has_numpy():
+        skip("パターン描画", "numpy が無い")
+        return
+    import numpy as np
+    import curve_draw as cdr
+
+    # 右半分: 軸の近く (0.01, 0) から始まり、右下・右上を回って軸の近く (-0.005, 0.5) で終わる
+    co = np.array([[0.01, 0.0], [0.3, 0.0], [0.3, 0.5], [-0.005, 0.5]])
+    hl = co + [[-0.05, 0.0], [-0.05, 0.0], [0.0, -0.05], [0.05, 0.0]]
+    hr = co + [[0.05, 0.0], [0.0, 0.05], [-0.05, 0.0], [-0.05, 0.0]]
+    fco, fhl, fhr = cdr.mirror_half(co, hl, hr)
+    check("左右対称: 2n - 2 点の閉じた輪郭(軸の上の 2 点は共有)", len(fco) == 6, str(len(fco)))
+    check("端点は軸の上(x = 0)に寄せる", fco[0, 0] == 0.0 and fco[3, 0] == 0.0)
+    check("反対側は鏡写しを逆順に(右上 → 左上、右下 → 左下)",
+          np.allclose(fco[4], [-0.3, 0.5]) and np.allclose(fco[5], [-0.3, 0.0]))
+    xs = sorted(round(x, 9) for x in fco[:, 0])
+    check("輪郭は左右対称(x の集合が符号反転で同じ)", xs == sorted(round(-x, 9) for x in fco[:, 0]))
+    check("反対側の取っ手は左右を入れ替えて鏡写し",
+          np.allclose(fhl[4], [-hr[2, 0], hr[2, 1]]) and np.allclose(fhr[4], [-hl[2, 0], hl[2, 1]]))
+    check("軸の上の点の取っ手は、軸をまたいで鏡写し(なめらかにつながる)",
+          np.allclose(fhl[0], [-fhr[0, 0], fhr[0, 1]]) and np.allclose(fhr[3], [-fhl[3, 0], fhl[3, 1]]))
+    try:
+        cdr.mirror_half(co[:1], hl[:1], hr[:1])
+        short = False
+    except ValueError:
+        short = True
+    check("点が 1 つでは左右対称にできない", short)
+    # 閉じた線: 始点と終点が近ければ終点を落とす
+    ring = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0.005, 0.0]], dtype=float)
+    sco, _shl, _shr = cdr.snap_closed(ring, ring, ring, 0.02)
+    open_co, _a, _b = cdr.snap_closed(ring[:4], ring[:4], ring[:4], 0.02)
+    check("始点と終点が近い線は、終点を落として閉じる", len(sco) == 4 and len(open_co) == 4)
+
+
 def test_curve_update():
     """Shape Update: topology を保ったまま Curve に追従する(bpy 非依存)"""
     if not has_numpy():
@@ -2158,6 +2194,7 @@ def main():
     test_curve_discretize()
     test_curve_gusset()
     test_curve_lines()
+    test_curve_draw()
     test_curve_update()
     test_curve_selection_runs()
     test_curve_transfer()

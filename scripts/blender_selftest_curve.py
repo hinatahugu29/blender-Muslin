@@ -1185,6 +1185,7 @@ def main():
 
     _test_gusset(cp, mesh_io, rest_shape)
     _test_standing_bag(cp)
+    _test_pattern_draw(cp)
     # 型紙と布を並べて見る画面(画面の分割は GUI でしか確かめられないので、ここでは登録と poll だけ)
     pv_curve = next(o for o in bpy.context.scene.objects if o.type == 'CURVE')
     bpy.context.view_layer.objects.active = None
@@ -1196,6 +1197,66 @@ def main():
     _test_quilt(cp, mesh_io)
 
     muslin.unregister()
+
+
+def _test_pattern_draw(cp):
+    """パターン描画モード: 描き始め → (線を描いたことにする)→ 確定 → Rebuild。"""
+    from muslin import pattern_draw
+    section("パターン描画モード")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    check("何も選んでいなくても Draw Pattern は押せる", bpy.ops.muslin.pattern_draw.poll())
+    res = bpy.ops.muslin.pattern_draw(mirror=True)
+    curve = bpy.context.active_object
+    check("Draw Pattern: 新しい Curve を作り、編集モードで描ける状態にする(左右対称は Mirror で見せる)",
+          res == {'FINISHED'} and curve.type == 'CURVE' and curve.mode == 'EDIT'
+          and pattern_draw.is_drawing(curve) and pattern_draw.MIRROR_NAME in curve.modifiers)
+    check("描いている途中は、もう一度 Draw Pattern は押せず Finish Piece が押せる",
+          not bpy.ops.muslin.pattern_draw.poll() and bpy.ops.muslin.pattern_draw_finish.poll())
+    # 描いたことにする(Draw ツールの代わりに、軸の右側に半分の線を足す)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    sp = curve.data.splines.new('BEZIER')
+    sp.bezier_points.add(3)
+    for pt, (x, y) in zip(sp.bezier_points, [(0.01, 0.0), (0.25, 0.0), (0.2, 0.4), (0.0, 0.5)]):
+        pt.co = (x, y, 0.0)
+        pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+    bpy.context.view_layer.update()
+    res = bpy.ops.muslin.pattern_draw_finish()
+    record = cp.load_record(curve)
+    sp = curve.data.splines[0] if len(curve.data.splines) else None
+    xs = sorted(round(p.co.x, 6) for p in sp.bezier_points) if sp else []
+    check("Finish Piece: 左右対称に焼き込んだ閉じた輪郭 1 本が、Curve Pattern のピースになる",
+          res == {'FINISHED'} and record is not None and len(record["pieces"]) == 1
+          and len(curve.data.splines) == 1 and sp.use_cyclic_u and len(sp.bezier_points) == 6
+          and xs == sorted(round(-x, 6) for x in xs), str(xs))
+    check("確定すると Mirror モディファイアを外し、描いている状態を抜ける",
+          pattern_draw.MIRROR_NAME not in curve.modifiers and not pattern_draw.is_drawing(curve))
+    cloth, _w = cp.rebuild(bpy.context, curve)
+    check("描いたピースから布を作れる", cloth is not None and len(cloth.data.vertices) > 50,
+          str(len(cloth.data.vertices) if cloth else None))
+    # 2 枚目を描き足す(左右対称なし、閉じた線)
+    for o_ in bpy.context.scene.objects:
+        o_.select_set(o_ is curve)
+    bpy.context.view_layer.objects.active = curve
+    bpy.ops.muslin.pattern_draw(mirror=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    sp2 = curve.data.splines.new('BEZIER')
+    sp2.bezier_points.add(4)
+    for pt, (x, y) in zip(sp2.bezier_points, [(1.0, 0.0), (1.3, 0.0), (1.3, 0.3), (1.0, 0.3), (1.004, 0.0)]):
+        pt.co = (x, y, 0.0)
+        pt.handle_left_type = pt.handle_right_type = 'VECTOR'
+    bpy.ops.muslin.pattern_draw_finish()
+    record = cp.load_record(curve)
+    check("2 枚目を描き足すと、ピースが 2 枚になる(閉じた線は終点を落として 4 点)",
+          len(record["pieces"]) == 2 and len(curve.data.splines[1].bezier_points) == 4
+          and cp.status(curve)["problems"] != [] or len(record["pieces"]) == 2,
+          str([len(p_["uids"]) for p_ in record["pieces"]]))
+    # 取り消し
+    bpy.ops.muslin.pattern_draw(mirror=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    curve.data.splines.new('BEZIER').bezier_points.add(2)
+    bpy.ops.muslin.pattern_draw_cancel()
+    check("Cancel Drawing で、描いた線を捨てて描き始める前に戻る",
+          len(curve.data.splines) == 2 and not pattern_draw.is_drawing(curve))
 
 
 def _test_standing_bag(cp):
