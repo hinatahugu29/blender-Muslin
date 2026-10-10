@@ -86,6 +86,16 @@ Curve を型紙の一次データにして、そこから布のメッシュを�
       白が縫い目の色と見分けられるか、太さ(7px)と点の大きさがちょうどよいか。
       Curve の点を動かしている最中(G)も、光る位置が布の上でずれないか。Tab で抜けると消えるか
 
+### パネルの並び替え(2026-10-10)で増えた確認項目
+
+- [ ] サイドバーの Muslin が、作業の順(Pattern → Curve Pattern → Sewing → Fabric → Collision → Forces →
+      Pinning → Solver → Bake)に並んでいるか。Curve を選ぶと布用のパネル(Fabric など)が消え、型紙の
+      パネルだけになるか。Curve Pattern は既定で開き、中が Bag(閉じている)・Seams・Elastic に分かれているか
+- [ ] Pattern の先頭が Draw Pattern で、メッシュで作る道具(Add Pattern Piece など)は Mesh Pattern に
+      まとまっているか。Curve から作った布の Sewing に「縫い目の追加・削除は Curve Pattern で」と出るか
+- [ ] メインの状態の欄から Stretch error / Contacts が消え、Debug に移っているか。
+      着せた布の「型紙の段階に戻す」ボタンのアイコンが ← になっているか
+
 ### パターン描画モード(2026-10-10)で増えた確認項目
 
 - [ ] 何も選ばずに Pattern パネルの `Draw Pattern` を押すと、新しい Curve が編集モード・真上からの正投影・

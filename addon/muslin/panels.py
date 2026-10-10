@@ -11,6 +11,11 @@ class _MuslinPanelBase:
     bl_category = "Muslin"
 
 
+def _mesh_selected(context):
+    obj = context.active_object
+    return obj is not None and obj.type == 'MESH'
+
+
 class _MuslinSettingsPanel(_MuslinPanelBase):
     """布ごとの設定を出すパネルの共通部分。
 
@@ -23,7 +28,9 @@ class _MuslinSettingsPanel(_MuslinPanelBase):
         # 編集中はシミュレーション自体を止めている(編集用の BMesh が
         # 書き戻されて計算結果が捨てられるため)。止まっている設定を
         # 並べても何も起きないので隠し、代わりに Pattern / Sewing を前に出す。
-        return context.mode == 'OBJECT'
+        # 布(メッシュ)を選んでいないときも隠す(Curve の型紙を描いている間に、
+        # 「メッシュを選択してください」だけのパネルが並んで場所を取っていた)
+        return context.mode == 'OBJECT' and _mesh_selected(context)
 
     def draw(self, context):
         obj = context.active_object
@@ -87,7 +94,7 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
             # 整える(つまむモード)は着せた後だけ押せる。押せない理由は poll が出す
             row.operator("muslin.adjust", icon='VIEW_PAN')
             if rest_shape.is_dressed(obj):
-                row.operator("muslin.restore_pattern", text="", icon='MESH_GRID')
+                row.operator("muslin.restore_pattern", text="", icon='BACK')
                 layout.label(text="着せた姿勢から開始(寸法は型紙)", icon='CHECKMARK')
             else:
                 row.operator("muslin.set_rest_shape", text="", icon='PINNED')
@@ -121,8 +128,6 @@ class MUSLIN_PT_main(_MuslinPanelBase, bpy.types.Panel):
                     text=f"Colliders {len(info['colliders'])} "
                          f"({info['collider_triangles']} tris)"
                 )
-            col.label(text=f"Stretch error: {state['last_error']:.4f}")
-            col.label(text=f"Contacts: {state.get('last_contacts', 0)}")
 
 
 class MUSLIN_PT_solver(_MuslinSettingsPanel, bpy.types.Panel):
@@ -289,7 +294,7 @@ class MUSLIN_PT_pinning(_MuslinSettingsPanel, bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         # 頂点グループは編集モードで作るので、ここだけは編集中も出す
-        return context.mode in {'OBJECT', 'EDIT_MESH'}
+        return context.mode in {'OBJECT', 'EDIT_MESH'} and _mesh_selected(context)
 
     def draw_cloth(self, context, layout, props):
         obj = context.active_object
@@ -342,26 +347,12 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        tools = context.scene.muslin_tools
 
-        col = layout.column(align=True)
-        col.use_property_split = True
-        col.use_property_decorate = False
-        col.prop(tools, "pattern_width")
-        col.prop(tools, "pattern_height")
-        col.prop(tools, "pattern_resolution")
-        layout.separator()
-
-        # 型紙の輪郭を手で描く(Curve Pattern のピースになる)
+        # 型紙の輪郭を手で描く(Curve Pattern のピースになる)。これからの主な作り方なので先頭に
         row = layout.row(align=True)
+        row.scale_y = 1.3
         row.operator("muslin.pattern_draw", icon='GREASEPENCIL').mirror = False
         row.operator("muslin.pattern_draw", text="", icon='MOD_MIRROR').mirror = True
-        layout.separator()
-        layout.operator("muslin.add_pattern_piece", icon='MESH_GRID')
-        layout.operator("muslin.fill_outline", icon='MOD_TRIANGULATE')
-        layout.separator()
-        layout.operator("muslin.join_pieces", icon='AUTOMERGE_ON')
-        layout.label(text="縫うピースは事前に統合が必要", icon='INFO')
 
         # 型紙の確定。胴のまわりに曲げて置く前に押す(曲げた形が型紙に
         # なるのを防ぐ)。確定したかどうかをここで見せる
@@ -394,12 +385,150 @@ class MUSLIN_PT_pattern(_MuslinPanelBase, bpy.types.Panel):
                 layout.operator("muslin.create_pattern_object", icon='MOD_MESHDEFORM')
 
 
+class MUSLIN_PT_mesh_pattern(_MuslinPanelBase, bpy.types.Panel):
+    """メッシュで型紙を作る道具(長方形のピース、輪郭の塗りつぶし、ピースの統合)。
+
+    Curve で描く道(Draw Pattern / Curve Pattern)と並ぶ、もう一つの作り方。ふだんは閉じておく。
+    """
+
+    bl_label = "Mesh Pattern"
+    bl_parent_id = "MUSLIN_PT_pattern"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        tools = context.scene.muslin_tools
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(tools, "pattern_width")
+        col.prop(tools, "pattern_height")
+        col.prop(tools, "pattern_resolution")
+        layout.operator("muslin.add_pattern_piece", icon='MESH_GRID')
+        layout.operator("muslin.fill_outline", icon='MOD_TRIANGULATE')
+        layout.separator()
+        layout.operator("muslin.join_pieces", icon='AUTOMERGE_ON')
+        layout.label(text="縫うピースは事前に統合が必要", icon='INFO')
+
+
+def _curve_pattern_target(context):
+    """Curve Pattern のパネルが扱う Curve(Curve か、そこから作った布を選んでいるとき)。"""
+    from . import curve_pattern
+    obj = context.active_object
+    if obj is None:
+        return None
+    return obj if obj.type == 'CURVE' else curve_pattern.curve_of(obj)
+
+
+class _CurvePatternChild(_MuslinPanelBase):
+    """Curve Pattern の小分けのパネル。型紙として初期化済みで、描いている途中でないときだけ出す。"""
+
+    bl_parent_id = "MUSLIN_PT_curve_pattern"
+
+    @classmethod
+    def poll(cls, context):
+        from . import curve_pattern, pattern_draw
+        curve = _curve_pattern_target(context)
+        return (curve is not None and curve_pattern.load_record(curve) is not None
+                and not pattern_draw.is_drawing(curve))
+
+
+class MUSLIN_PT_curve_bag(_CurvePatternChild, bpy.types.Panel):
+    """袋(クッション): 重ねる・マチ・キルティング。輪郭が 2 つ以上のときだけ。"""
+
+    bl_label = "Bag"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        from . import curve_pattern
+        if not super().poll(context):
+            return False
+        return curve_pattern.status(_curve_pattern_target(context)).get("panels", 0) >= 2
+
+    def draw(self, context):
+        from . import curve_pattern
+        layout = self.layout
+        curve = _curve_pattern_target(context)
+        info = curve_pattern.status(curve) if curve is not None else {}
+        if not info.get("initialized"):
+            return
+        layout.operator("muslin.curve_stack", icon='MOD_SOLIDIFY')
+        if info.get("panels", 0) != 2:
+            return
+        # 表と裏の 2 枚の袋には、側面のマチ(帯)と、内部線のキルティングを足せる
+        if info.get("gusset"):
+            layout.operator("muslin.curve_gusset_remove", icon='X')
+        else:
+            layout.operator("muslin.curve_gusset_add", icon='MESH_CYLINDER')
+        if info.get("lines"):
+            layout.label(text=f"内部線 {info['lines']} 本", icon='IPO_LINEAR')
+            layout.operator("muslin.curve_quilt", icon='MOD_LATTICE')
+        else:
+            layout.label(text="表の内側に開いた線を描くとキルティングできます", icon='INFO')
+        if info.get("quilted"):
+            layout.operator("muslin.curve_quilt_remove", icon='X')
+
+
+class MUSLIN_PT_curve_seams(_CurvePatternChild, bpy.types.Panel):
+    """Curve の区間で持つ縫い目。"""
+
+    bl_label = "Seams"
+
+    def draw(self, context):
+        from . import curve_pattern
+        layout = self.layout
+        curve = _curve_pattern_target(context)
+        info = curve_pattern.status(curve) if curve is not None else {}
+        if not info.get("initialized"):
+            return
+        for uid, name in info["seams"]:
+            row = layout.row(align=True)
+            row.label(text=name, icon='UV_SYNC_SELECT')
+            op = row.operator("muslin.curve_seam_remove", text="", icon='X')
+            op.uid = uid
+        if context.active_object is curve:
+            layout.operator("muslin.curve_seam_add", icon='ADD')
+            layout.label(text="編集モードで 2 か所の点の連なりを選ぶ", icon='INFO')
+        else:
+            layout.label(text="追加は Curve を選んで", icon='INFO')
+
+
+class MUSLIN_PT_curve_elastic(_CurvePatternChild, bpy.types.Panel):
+    """Curve の区間で持つゴム紐(Rebuild しても保たれる)。"""
+
+    bl_label = "Elastic"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        from . import curve_pattern
+        layout = self.layout
+        curve = _curve_pattern_target(context)
+        info = curve_pattern.status(curve) if curve is not None else {}
+        if not info.get("initialized"):
+            return
+        cloth = info["cloth"]
+        items = {e.uid: e for e in cloth.muslin_elastics} if cloth is not None else {}
+        for uid, name in info.get("elastics", []):
+            row = layout.row(align=True)
+            item = items.get(uid)
+            if item is not None:
+                row.prop(item, "enabled", text="")
+                row.label(text=name, icon='MOD_SCREW')
+                row.prop(item, "scale", text="")
+            else:
+                row.label(text=name, icon='MOD_SCREW')
+            op = row.operator("muslin.curve_elastic_remove", text="", icon='X')
+            op.uid = uid
+        if context.active_object is curve:
+            layout.operator("muslin.curve_elastic_add", icon='ADD')
+
+
 class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
     """Curve Pattern。Curve を型紙の一次データにし、布のメッシュはそこから作る。"""
 
     bl_label = "Curve Pattern"
     bl_parent_id = "MUSLIN_PT_main"
-    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -424,7 +553,7 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
             box = layout.box()
             box.label(text="描いています(閉じた線を描いて確定)", icon='GREASEPENCIL')
             row = box.row(align=True)
-            row.operator("muslin.pattern_draw_mirror", text="左右対称",
+            row.operator("muslin.pattern_draw_mirror", text="Mirror",
                          icon='CHECKBOX_HLT' if curve.get(pattern_draw.MIRROR_KEY) else 'CHECKBOX_DEHLT')
             row = box.row(align=True)
             row.scale_y = 1.4
@@ -470,60 +599,16 @@ class MUSLIN_PT_curve_pattern(_MuslinPanelBase, bpy.types.Panel):
         layout.operator("muslin.pattern_view", icon='WINDOW')
         if cloth is not None:
             layout.operator("muslin.curve_arrange", icon='MOD_CLOTH')
-        # 輪郭が 2 つ以上あれば、体に巻くのではなく向かい合わせに重ねる置き方も選べる
-        if info.get("panels", 0) >= 2:
-            layout.operator("muslin.curve_stack", icon='MOD_SOLIDIFY')
-        # 表と裏の 2 枚の袋には、側面のマチ(帯)と、内部線のキルティングを足せる
-        if info.get("gusset"):
-            layout.operator("muslin.curve_gusset_remove", icon='X')
-        elif info.get("panels", 0) == 2:
-            layout.operator("muslin.curve_gusset_add", icon='MESH_CYLINDER')
-        if info.get("panels", 0) == 2:
-            if info.get("lines"):
-                layout.label(text=f"内部線 {info['lines']} 本", icon='IPO_LINEAR')
-            if info.get("quilted"):
-                layout.operator("muslin.curve_quilt_remove", icon='X')
-            if info.get("lines"):
-                layout.operator("muslin.curve_quilt", icon='MOD_LATTICE')
-            else:
-                layout.label(text="表の内側に開いた線を描くとキルティングできます", icon='INFO')
-
-        layout.separator()
-        layout.label(text="縫い目")
-        for uid, name in info["seams"]:
-            row = layout.row(align=True)
-            row.label(text=name, icon='UV_SYNC_SELECT')
-            op = row.operator("muslin.curve_seam_remove", text="", icon='X')
-            op.uid = uid
-        if obj.type == 'CURVE':
-            layout.operator("muslin.curve_seam_add", icon='ADD')
-            layout.label(text="編集モードで 2 か所の点の連なりを選ぶ", icon='INFO')
-
-        # ゴム紐(Curve の区間で持つので、Rebuild しても保たれる)
-        layout.separator()
-        layout.label(text="ゴム紐")
-        items = {e.uid: e for e in cloth.muslin_elastics} if cloth is not None else {}
-        for uid, name in info.get("elastics", []):
-            row = layout.row(align=True)
-            item = items.get(uid)
-            if item is not None:
-                row.prop(item, "enabled", text="")
-                row.label(text=name, icon='MOD_SCREW')
-                row.prop(item, "scale", text="")
-            else:
-                row.label(text=name, icon='MOD_SCREW')
-            op = row.operator("muslin.curve_elastic_remove", text="", icon='X')
-            op.uid = uid
-        if obj.type == 'CURVE':
-            layout.operator("muslin.curve_elastic_add", icon='ADD')
-
-        layout.separator()
         layout.prop(context.scene.muslin_tools, "show_curve_outline")
 
 
 class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Sewing"
     bl_parent_id = "MUSLIN_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return _mesh_selected(context)
 
     def draw(self, context):
         layout = self.layout
@@ -535,19 +620,28 @@ class MUSLIN_PT_sewing(_MuslinPanelBase, bpy.types.Panel):
         props = obj.muslin
         tools = context.scene.muslin_tools
 
-        layout.label(text="編集モードで2本の縫い代エッジを選択:")
-        layout.operator("muslin.add_seam", icon='ADD')
+        from . import curve_pattern
+        from_curve = curve_pattern.curve_of(obj) is not None
+        if from_curve:
+            # 縫い目は Curve の区間で持つ。ここに出るのは布へ展開したもので、足したり消したり
+            # すると Curve の記録と食い違うので、向きと折り返しの切り替えだけにする
+            layout.label(text="縫い目の追加・削除は Curve Pattern で", icon='INFO')
+        else:
+            layout.label(text="編集モードで2本の縫い代エッジを選択:")
+            layout.operator("muslin.add_seam", icon='ADD')
 
         row = layout.row()
         row.template_list(
             "MUSLIN_UL_seams", "", obj, "muslin_seams", obj, "muslin_seam_active", rows=3
         )
         col = row.column(align=True)
-        col.operator("muslin.remove_seam", text="", icon='REMOVE')
-        col.operator("muslin.clear_seams", text="", icon='TRASH')
+        if not from_curve:
+            col.operator("muslin.remove_seam", text="", icon='REMOVE')
+            col.operator("muslin.clear_seams", text="", icon='TRASH')
         col.operator("muslin.select_seam", text="", icon='RESTRICT_SELECT_OFF')
 
-        layout.operator("muslin.validate_seams", icon='CHECKMARK')
+        if not from_curve:
+            layout.operator("muslin.validate_seams", icon='CHECKMARK')
 
         layout.separator()
         col = layout.column(align=True)
@@ -600,6 +694,10 @@ class MUSLIN_PT_elastic(_MuslinPanelBase, bpy.types.Panel):
 class MUSLIN_PT_bake(_MuslinPanelBase, bpy.types.Panel):
     bl_label = "Bake"
     bl_parent_id = "MUSLIN_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return _mesh_selected(context)
 
     def draw(self, context):
         from . import bake_ops
@@ -662,6 +760,13 @@ class MUSLIN_PT_debug(_MuslinPanelBase, bpy.types.Panel):
             )
             layout.separator()
 
+        state = sim_state.get_state(obj) if obj is not None else None
+        if state is not None:
+            col = layout.column(align=True)
+            col.label(text=f"Stretch error: {state['last_error']:.4f}")
+            col.label(text=f"Contacts: {state.get('last_contacts', 0)}")
+            layout.separator()
+
         layout.operator("muslin.test_rust", icon='CONSOLE')
         layout.operator("muslin.self_test", icon='CHECKMARK')
         layout.operator("muslin.print_timings", icon='TIME')
@@ -707,20 +812,25 @@ class MUSLIN_PT_part_fabric(bpy.types.Panel):
         col.prop(fabric, "bending_compliance")
 
 
+# 登録した順に並ぶ。作業の順(型紙 → 縫う → 生地 → 衝突 → 力 → ピン → 解き方 → ベイク)にする
 _classes = (
     MUSLIN_UL_seams,
     MUSLIN_UL_elastics,
     MUSLIN_PT_main,
-    MUSLIN_PT_solver,
-    MUSLIN_PT_solver_advanced,
-    MUSLIN_PT_material,
-    MUSLIN_PT_forces,
-    MUSLIN_PT_collision,
-    MUSLIN_PT_pinning,
     MUSLIN_PT_pattern,
+    MUSLIN_PT_mesh_pattern,
     MUSLIN_PT_curve_pattern,
+    MUSLIN_PT_curve_bag,
+    MUSLIN_PT_curve_seams,
+    MUSLIN_PT_curve_elastic,
     MUSLIN_PT_sewing,
     MUSLIN_PT_elastic,
+    MUSLIN_PT_material,
+    MUSLIN_PT_collision,
+    MUSLIN_PT_forces,
+    MUSLIN_PT_pinning,
+    MUSLIN_PT_solver,
+    MUSLIN_PT_solver_advanced,
     MUSLIN_PT_bake,
     MUSLIN_PT_debug,
     MUSLIN_PT_part_fabric,

@@ -116,8 +116,13 @@ class _PanelShim:
 
 
 def draw_panel(context):
+    """Curve Pattern のパネルと、出る条件を満たす小分けのパネル(袋・縫い目・ゴム紐)を描く。"""
     log = []
     _PanelShim(bpy.types.MUSLIN_PT_curve_pattern, _FakeLayout(log)).draw(context)
+    for name in ("MUSLIN_PT_curve_bag", "MUSLIN_PT_curve_seams", "MUSLIN_PT_curve_elastic"):
+        cls = getattr(bpy.types, name)
+        if cls.poll(context):
+            _PanelShim(cls, _FakeLayout(log)).draw(context)
     return log
 
 
