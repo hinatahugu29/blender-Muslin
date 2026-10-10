@@ -1704,7 +1704,7 @@ impl ClothSim {
         // 複数のコライダーに候補があれば、前のコライダーで押し出した位置から続ける
         let solve = |&(vi, start, end): &(u32, u32, u32)| {
             let mut p = positions[vi as usize];
-            let mut hits: Vec<Vec3> = Vec::new();
+            let mut hits = Hits::new();
             let mut idx = start as usize;
             let end = end as usize;
             while idx < end {
@@ -1762,7 +1762,7 @@ impl ClothSim {
         };
 
         let ranges = &self.object_candidate_ranges;
-        let results: Vec<(u32, Vec3, Vec<Vec3>)> = if positions.len() >= self.parallel_threshold {
+        let results: Vec<(u32, Vec3, Hits)> = if positions.len() >= self.parallel_threshold {
             ranges.par_iter().map(solve).collect()
         } else {
             ranges.iter().map(solve).collect()
@@ -1773,7 +1773,7 @@ impl ClothSim {
                 continue;
             }
             self.positions[vi as usize] = p;
-            for outward in hits {
+            for outward in hits.iter() {
                 contacts.push((vi as usize, outward, friction));
             }
         }
@@ -2315,6 +2315,39 @@ impl ClothSim {
         self.positions
             .iter()
             .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+    }
+}
+
+/// 1 頂点がコライダーから押し出された向きの並び(押し出した順)。
+///
+/// ほとんどの頂点は 0 か 1 個(コライダーが 1 つなら高々 1 個)なので、2 個までは確保せずに
+/// 持つ。毎サブステップ、候補のある頂点ごとに `Vec` を確保していた。3 個目からは `Vec` に入れる
+struct Hits {
+    count: usize,
+    inline: [Vec3; 2],
+    extra: Vec<Vec3>,
+}
+
+impl Hits {
+    fn new() -> Self {
+        Hits { count: 0, inline: [Vec3::zero(); 2], extra: Vec::new() }
+    }
+
+    fn push(&mut self, v: Vec3) {
+        if self.count < 2 {
+            self.inline[self.count] = v;
+        } else {
+            self.extra.push(v);
+        }
+        self.count += 1;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Vec3> + '_ {
+        self.inline[..self.count.min(2)].iter().copied().chain(self.extra.iter().copied())
     }
 }
 
