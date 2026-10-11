@@ -9,6 +9,13 @@ from . import sim_state
 from . import ui_poll
 
 
+def _leave_edit_mode(context):
+    """編集モードならオブジェクトモードへ戻す。編集中は頂点の属性が読み書きできない(長さ 0 になる)ので、
+    型紙や元の形を読み書きする操作の前に呼ぶ。"""
+    if context.mode == 'EDIT_MESH':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+
 class MUSLIN_OT_test_rust(bpy.types.Operator):
     """Rustコアの拡張モジュールが正しく呼べるか確認する"""
 
@@ -249,6 +256,7 @@ class MUSLIN_OT_start_sim(bpy.types.Operator):
         return ui_poll.mesh_selected(cls, context)
 
     def execute(self, context):
+        _leave_edit_mode(context)
         obj = context.active_object
         props = obj.muslin
 
@@ -308,6 +316,7 @@ class MUSLIN_OT_reset_shape(bpy.types.Operator):
         return True
 
     def execute(self, context):
+        _leave_edit_mode(context)
         obj = context.active_object
         sim_state.stop_simulation(obj)
         if not rest_shape.restore(obj):
@@ -333,6 +342,7 @@ class MUSLIN_OT_set_rest_shape(bpy.types.Operator):
         return ui_poll.mesh_selected(cls, context)
 
     def execute(self, context):
+        _leave_edit_mode(context)
         obj = context.active_object
         sim_state.stop_simulation(obj)
         # 一度も走らせていない形を保存する場合は、今の形が型紙になる
@@ -431,6 +441,7 @@ class MUSLIN_OT_restore_pattern(bpy.types.Operator):
         return True
 
     def execute(self, context):
+        _leave_edit_mode(context)
         from . import pattern_link
         obj = context.active_object
         sim_state.stop_simulation(obj)

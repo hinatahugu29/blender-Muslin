@@ -827,6 +827,17 @@ def main():
     check("タイムラインは進まない", bpy.context.scene.frame_current == 1,
           str(bpy.context.scene.frame_current))
     check("着せた段階になる", rest_shape.is_dressed(piece))
+    # 編集モードでは頂点の属性が読み書きできない。押したらオブジェクトモードへ戻して続ける
+    for op in ("set_rest_shape", "reset_shape", "restore_pattern"):
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            res = getattr(bpy.ops.muslin, op)()
+        except RuntimeError as exc:
+            res = str(exc)
+        check(f"編集モードでも {op} が通る", res == {'FINISHED'}, str(res))
+    bpy.ops.object.mode_set(mode='OBJECT')
+    piece = make_dress_scene()
+    bpy.ops.muslin.dress()
     closed_gap = seam_gap(piece)
     # 布が本当に円柱に触れていること(最初の版の場面は平面で二つ折りになり触れていなかった)
     radial = min(math.hypot(x, y) for x, y, _z in positions_of(piece))
