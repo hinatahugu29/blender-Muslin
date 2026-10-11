@@ -836,6 +836,14 @@ def main():
             res = str(exc)
         check(f"編集モードでも {op} が通る", res == {'FINISHED'}, str(res))
     bpy.ops.object.mode_set(mode='OBJECT')
+    # Dress / Adjust で回している間は、同じ布への操作(もう一度 Dress など)を受け付けない
+    sim_state._dressing.add(sim_state.obj_key(piece))
+    busy = [n for n in ("dress", "adjust", "start_sim", "reset_shape", "set_rest_shape",
+                        "restore_pattern", "play", "rewind", "bake")
+            if getattr(bpy.ops.muslin, n).poll()]
+    sim_state._dressing.clear()
+    check("Dress 中は同じ布の操作を押せない", not busy, str(busy))
+    check("Dress を終えれば押せる", bpy.ops.muslin.dress.poll())
     piece = make_dress_scene()
     bpy.ops.muslin.dress()
     closed_gap = seam_gap(piece)

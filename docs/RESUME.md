@@ -18,7 +18,7 @@ python scripts\verify_core.py                                           # 物理
 Blender を入れた環境なら、アドオン層もヘッドレスで検査できる:
 
 ```bash
-blender --background --factory-startup --python scripts/blender_selftest.py         # 446 項目(Blender 5.1)
+blender --background --factory-startup --python scripts/blender_selftest.py         # 448 項目(Blender 5.1)
 blender --background --factory-startup --python scripts/blender_selftest_curve.py   # 272 項目(Curve Pattern)
 cd rust/cloth_core && cargo test --no-default-features --release                    # Rust の単体テスト 91 件
 ```

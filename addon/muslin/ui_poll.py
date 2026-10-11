@@ -24,6 +24,10 @@ def mesh_selected(cls, context):
         return reject(cls, "オブジェクトが選択されていません")
     if obj.type != 'MESH':
         return reject(cls, f"'{obj.name}' はメッシュではありません")
+    from . import sim_state
+    if sim_state.obj_key(obj) in sim_state._dressing:
+        # Dress / Adjust で回している布。終わる(Enter / Esc)まで他の操作は受け付けない
+        return reject(cls, "Dress / Adjust の実行中です(Enter で確定、Esc で中止)")
     return True
 
 
