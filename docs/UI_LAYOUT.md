@@ -18,10 +18,10 @@
 
 ### 3. Pattern
 - 3.1 Draw Pattern / Mirror で描く(何も選んでいないか、Curve を選択時)
-- 3.2 型紙の確定(Lock / Unlock / Restore Pattern)(メッシュの布)
-- 3.3 Pattern to UV(メッシュの布)
-- 3.4 型紙オブジェクト(Create Pattern Object)/ Curve 由来なら案内のみ
-- 3.5 Mesh Pattern `[閉]`
+- 3.2 型紙の確定(Lock / Unlock / Restore Pattern)(メッシュの布。Curve の布では出ない)
+- 3.3 Pattern to UV(布を選択時)
+- 3.4 型紙オブジェクト(Create Pattern Object)(メッシュの布)/ Curve の布は「型紙は Curve が決めます」の案内
+- 3.5 Mesh Pattern `[閉]`(Curve も Curve の布も選んでいないとき)
   - 幅・高さ・解像度 / Add Pattern Piece / Fill Outline / Join Pieces
 
 ### 4. Curve Pattern
@@ -30,14 +30,14 @@
 - 4.3 情報(ピース数・目標の辺)/ Rebuild の警告
 - 4.4 Rebuild / Pattern View / Arrange / 輪郭表示
 - 4.5 Bag `[閉]`(ピース 2 枚以上):Stack / Gusset / Quilt
-- 4.6 Seams:一覧 / Add Seam
+- 4.6 Seams:一覧(有効・向きの反転・折り返し・削除)/ Add Seam
 - 4.7 Elastic `[閉]`:一覧 / Add Elastic
 
 ### 5. Sewing(布を選択時)
-- 5.1 縫い目の一覧(Curve 由来は追加・削除なし、案内のみ)
-- 5.2 Validate Seams
+- 5.1 縫い目の一覧と追加・削除(メッシュの布。Curve の布は Curve Pattern > Seams への案内のみ)
+- 5.2 Validate Seams(メッシュの布)
 - 5.3 Show Seams / Close Frames / Compliance / Weld(+ Update Weld)
-- 5.4 Elastic `[閉]`(メッシュの布向け)
+- 5.4 Elastic `[閉]`(メッシュの布のみ。Curve の布は 4.7)
 
 ### 6. Collision(布を選択時)
 - 6.1 Fit Thickness

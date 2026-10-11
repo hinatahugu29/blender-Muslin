@@ -668,6 +668,10 @@ def main():
     check("Dress を終えれば Rebuild できる(poll)", bpy.ops.muslin.curve_pattern_rebuild.poll())
     check("Pinning はオブジェクトモードでは出ない",
           bpy.types.MUSLIN_PT_pinning.poll(bpy.context) is False)
+    check("Curve の布では Sewing > Elastic を出さない",
+          bpy.types.MUSLIN_PT_elastic.poll(bpy.context) is False)
+    check("Curve の布では Mesh Pattern を出さない",
+          bpy.types.MUSLIN_PT_mesh_pattern.poll(bpy.context) is False)
     res = bpy.ops.muslin.curve_arrange()
     check("Arrange が通る", res == {'FINISHED'}, str(res))
     xyz = np.array([tuple(v.co) for v in pair_cloth.data.vertices])
